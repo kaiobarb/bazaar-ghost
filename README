@@ -1,0 +1,12 @@
+.env ariables neeeded to run this project
+
+### Secret
+SUPABASE_URL=
+SUPABASE_API=
+SUPABASE_SERVICE_ROLE=
+### Public
+SUPABASE_STORAGE_BUCKET="matchups"
+VOD_FILE="vod_list.txt"
+STREAMER_ID="29795919" # 29795919 is nl_kripp's twitch id
+MAX_PARALLEL_JOBS=2
+TMPFS_DIR="/mnt/tmpfs"
