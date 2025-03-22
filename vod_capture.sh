@@ -35,8 +35,9 @@ curl -X POST "$SUPABASE_URL/rest/v1/vods" \
 echo "Capturing frames from $STREAM_URL (VOD ID: $VOD_ID, Start: $VOD_TIMESTAMP)"
 
 # Streamlink → FFmpeg → Save frames to tmpfs
-VF="crop=184:31:563:362,fps=0.2"
-# VF="crop=271:54:503:352,fps=0.2"
+# VF="crop=184:31:563:362,fps=0.2" # nameplate only, no rank
+VF="crop=271:54:503:352,fps=0.2" # larger frame, includes rank emblem
+# diff 184:31:60:10
 streamlink --default-stream 480p "$STREAM_URL" -O | \
     ffmpeg -skip_frame nokey -i pipe:0 -vf $VF -frame_pts true -r 0.2 -f image2 "$FRAME_DIR/${VOD_ID}_${VOD_TIMESTAMP}_%06d.png"
 

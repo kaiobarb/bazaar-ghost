@@ -38,10 +38,10 @@ process_vod() {
 
     source ./venv/bin/activate 
     # Run frame extraction and OCR in parallel
-    python -u process_frames.py "$VOD_ID" 2>&1 | tee logs/process_frames_$VOD_ID.log &
+    ( python -u process_frames.py "$VOD_ID" 2>&1 | tee logs/process_frames_$VOD_ID.log ) &
     FRAMES_PID=$!
 
-    python -u process_matchups_ocr.py "$VOD_ID" 2>&1 | tee logs/process_matchups_$VOD_ID.log &
+    (python -u process_matchups_ocr.py "$VOD_ID" 2>&1 | tee logs/process_matchups_$VOD_ID.log) &
     MATCHUPS_PID=$!
 
     echo "Started process_frames.py (PID: $FRAMES_PID)"
@@ -52,8 +52,8 @@ process_vod() {
 
     # Once vod_capture.sh exits, terminate the processing scripts
     echo "Terminating process_frames.py and process_matchups_ocr.py..."
-    kill $FRAMES_PID $MATCHUPS_PID 2>/dev/null
-    wait $FRAMES_PID $MATCHUPS_PID 2>/dev/null
+    kill -TERM -$FRAMES_PID -$MATCHUPS_PID 2>/dev/null
+    # wait $FRAMES_PID $MATCHUPS_PID 2>/dev/null
 
     echo "Finished processing VOD: $VOD_ID"
 

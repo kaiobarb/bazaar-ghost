@@ -6,6 +6,7 @@ import cv2
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import sys
+import signal
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -26,8 +27,6 @@ MATCHUP_DIR = f"/mnt/tmpfs/{VOD_ID}/matchups"
 
 log_file = f"logs/process_matchups_{VOD_ID}.log"
 
-# Redirect stdout and stderr to log file
-
 # Ensure directories exist
 os.makedirs(MATCHUP_DIR, exist_ok=True)
 
@@ -44,10 +43,16 @@ class MatchupHandler(FileSystemEventHandler):
         print(f"Detected new matchup image: {matchup_filename}")
 
         try:
-            frame_time = matchup_filename.replace(".png", "")
-            frame_time = int(frame_time)
+            parts = matchup_filename.replace(".png", "").split("_")
+            frame_time = int(parts[0])
+            rank = parts[1] if len(parts) > 1 else None
         except ValueError:
             print(f"Invalid filename format: {matchup_filename}, skipping...")
+            return
+
+        valid_ranks = {"bronze", "silver", "gold", "diamond", "legend"}
+        if rank not in valid_ranks:
+            print(f"Invalid rank in filename: {rank}, skipping...")
             return
 
         twitch_vod_link = f"https://www.twitch.tv/videos/{VOD_ID}?t={frame_time}s"
@@ -110,7 +115,8 @@ class MatchupHandler(FileSystemEventHandler):
                 "confidence": confidence_score,
                 "image_url": image_url,
                 "frame_time": frame_time,
-                "vod_link": twitch_vod_link
+                "vod_link": twitch_vod_link,
+                "rank": rank
             }
         )
 
@@ -118,18 +124,25 @@ class MatchupHandler(FileSystemEventHandler):
             print(f"Matchup {matchup_filename} processed and stored in Supabase.")
         else:
             print(f"Failed to insert matchup into Supabase: {response.text}")
-
-        # Delete matchup file after processing
-        try:
-            os.remove(matchup_path)
-        except Exception as e:
-            print(f"Could not delete {matchup_filename}: {e}")
+            
+    # Delete matchup file after processing
+        # try:
+        #     os.remove(matchup_path)
+        # except Exception as e:
+        #     print(f"Could not delete {matchup_filename}: {e}")
 
 if __name__ == "__main__":
     print(f"Watching for new matchups in {MATCHUP_DIR}")
     event_handler = MatchupHandler()
     observer = Observer()
     observer.schedule(event_handler, MATCHUP_DIR, recursive=False)
+
+    def handle_sigterm(signum, frame):
+        print("Received SIGTERM, shutting down...")
+        observer.stop()
+
+    signal.signal(signal.SIGTERM, handle_sigterm)
+
     observer.start()
 
     try:

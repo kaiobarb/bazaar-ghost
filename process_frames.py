@@ -6,6 +6,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import re
 import sys
+import signal 
 
 # Inputs
 VOD_ID = sys.argv[1]  # Pass VOD ID as an argument
@@ -16,17 +17,44 @@ MATCHUP_DIR = f"/mnt/tmpfs/{VOD_ID}/matchups"
 # Ensure matchup directory exists
 os.makedirs(MATCHUP_DIR, exist_ok=True)
 
-# Load template for matching
-TEMPLATE_PATH = "./border_480.png"
-template = cv2.imread(TEMPLATE_PATH, cv2.IMREAD_GRAYSCALE)
-if template is None:
-    raise FileNotFoundError(f"Template image not found: {TEMPLATE_PATH}")
+RANK_TEMPLATES = {
+    "legend": cv2.imread("templates/legend_480.png", cv2.IMREAD_COLOR),
+    "diamond": cv2.imread("templates/diamond_480.png", cv2.IMREAD_COLOR),
+    "gold": cv2.imread("templates/gold_480.png", cv2.IMREAD_COLOR),
+    "silver": cv2.imread("templates/silver_480.png", cv2.IMREAD_COLOR),
+    "bronze": cv2.imread("templates/bronze_480.png", cv2.IMREAD_COLOR),
+}
 
-TEMPLATE_W, TEMPLATE_H = template.shape[1], template.shape[0]
-THRESHOLD = 0.6  # Template matching confidence threshold
+# Ensure all templates loaded correctly
+for rank, template in RANK_TEMPLATES.items():
+    if template is None:
+        raise FileNotFoundError(f"Template for {rank} not found.")
+
+# TEMPLATE_W, TEMPLATE_H = template.shape[1], template.shape[0]
+THRESHOLD = 0.78  # Template matching confidence threshold
+
+CROP_X, CROP_Y, CROP_W, CROP_H = 60, 10, 184, 31
 
 # Regex to extract timestamps from filename
 FILENAME_REGEX = re.compile(r"(\d+)_(\d+)_(\d+)\.png")
+
+def rank_match(frame):
+    """
+    Determines the rank of the opponent based on template matching.
+    Checks in order: Legend → Diamond → Gold → Silver → Bronze.
+    Returns the detected rank or None if no match is found.
+    """
+    for rank, template in RANK_TEMPLATES.items():
+        if template is None:
+            continue  # Skip if template failed to load
+
+        res = cv2.matchTemplate(frame, template, cv2.TM_CCOEFF_NORMED)
+        match_value = np.max(res)
+
+        if match_value >= THRESHOLD:
+            print(f"Rank matched: {rank.upper()} (Confidence: {match_value:.2f})")
+            return rank  # Return the first matched rank
+    return None
 
 class FrameHandler(FileSystemEventHandler):
     """Watches for new frames and processes them."""
@@ -49,21 +77,26 @@ class FrameHandler(FileSystemEventHandler):
         frame_time = int(frame_time) * 5
 
         # Load frame
-        frame = cv2.imread(frame_path, cv2.IMREAD_GRAYSCALE)
+        frame = cv2.imread(frame_path, cv2.IMREAD_COLOR_BGR)
         if frame is None:
             print(f"Error: Could not load {frame_path}")
             return
 
-        # Apply Template Matching
-        res = cv2.matchTemplate(frame, template, cv2.TM_CCOEFF_NORMED)
-        match_value = np.max(res)
+        # detect rank
+        detected_rank = rank_match(frame)
+        
+        # limiting area where contouring can happen
+        cropped_frame = frame[CROP_Y:CROP_Y + CROP_H, CROP_X:CROP_X + CROP_W]
 
-        if match_value >= THRESHOLD:
-            print(f"Match Found at {frame_time}s (Confidence: {match_value:.2f})")
+        # if match_value >= THRESHOLD:
+        if detected_rank:
+            # print(f"Match Found at {frame_time}s (Confidence: {match_value:.2f})")
+
+            gray_frame = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2GRAY)
 
             # Thresholding for better contour detection
-            _, frame_bin = cv2.threshold(frame, 200, 255, cv2.THRESH_BINARY)
-            kernel = np.ones((5, 5), np.uint8)
+            _, frame_bin = cv2.threshold(gray_frame, 105, 255, cv2.THRESH_BINARY)
+            kernel = np.ones((3, 3), np.uint8)
             frame_dilate = cv2.dilate(frame_bin, kernel, iterations=2)
 
             # Find contours (text region isolation)
@@ -76,11 +109,10 @@ class FrameHandler(FileSystemEventHandler):
                 cropped_nameplate = frame_bin[y:y+h, x:x+w]
 
                 # Save cropped nameplate
-                matchup_filename = f"{MATCHUP_DIR}/{frame_time}.png"
+                matchup_filename = f"{MATCHUP_DIR}/{frame_time}_{detected_rank}.png"
                 cv2.imwrite(matchup_filename, cropped_nameplate)
-                print(f"Saved: {matchup_filename}")
+                print(f"Saved: {matchup_filename} from {frame_path}")
 
-        # Delete frame after processing
         try:
             os.remove(frame_path)
         except Exception as e:
@@ -91,6 +123,13 @@ if __name__ == "__main__":
     event_handler = FrameHandler()
     observer = Observer()
     observer.schedule(event_handler, FRAME_DIR, recursive=False)
+
+    def handle_sigterm(signum, frame):
+        print("Received SIGTERM, shutting down...")
+        observer.stop()
+
+    signal.signal(signal.SIGTERM, handle_sigterm)
+
     observer.start()
 
     try:
