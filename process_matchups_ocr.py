@@ -126,10 +126,10 @@ class MatchupHandler(FileSystemEventHandler):
             print(f"Failed to insert matchup into Supabase: {response.text}")
             
     # Delete matchup file after processing
-        # try:
-        #     os.remove(matchup_path)
-        # except Exception as e:
-        #     print(f"Could not delete {matchup_filename}: {e}")
+        try:
+            os.remove(matchup_path)
+        except Exception as e:
+            print(f"Could not delete {matchup_filename}: {e}")
 
 if __name__ == "__main__":
     print(f"Watching for new matchups in {MATCHUP_DIR}")

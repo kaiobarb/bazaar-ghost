@@ -16,21 +16,6 @@ FRAME_DIR="$VOD_DIR/frames"
 MATCHUP_DIR="$VOD_DIR/matchups"
 mkdir -p "$FRAME_DIR" "$MATCHUP_DIR"
 
-# Upsert VOD entry into Supabase (ignores duplicate key errors)
-curl -X POST "$SUPABASE_URL/rest/v1/vods" \
-    -H "apikey: $SUPABASE_SERVICE_ROLE" \
-    -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE" \
-    -H "Content-Type: application/json" \
-    -H "Prefer: resolution=merge-duplicates" \
-    -d '{
-        "vod_id": '"$VOD_ID"',
-        "streamer_id": '"$STREAMER_ID"',
-        "last_matchup_frame_seen": null,
-        "matchups_processed": 0,
-        "fully_processed": false,
-        "processed_at": "'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'",
-        "matchups_count": 0
-    }'
 
 echo "Capturing frames from $STREAM_URL (VOD ID: $VOD_ID, Start: $VOD_TIMESTAMP)"
 
