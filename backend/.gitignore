@@ -4,3 +4,4 @@ matchups/
 .env
 vod_list.txt
 master_vod_list.txt
+venv/
