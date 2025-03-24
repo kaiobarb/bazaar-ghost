@@ -13,21 +13,37 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useSearchParams, usePathname, useRouter } from "next/navigation";
 
 export default function StreamerSearch() {
-  const [username, setUsername] = useState("");
-  const [selectedStreamer, setSelectedStreamer] = useState("");
+  const searchParams = useSearchParams();
+  const pathname = usePathname();
+  const { replace } = useRouter();
 
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    console.log("Searching for:", { streamer: selectedStreamer, username });
-    // Here you would implement the actual search functionality
+  const handleSelectChange = (value: string) => {
+    const params = new URLSearchParams(searchParams);
+    if (value) {
+      params.set("streamer", value);
+    } else {
+      params.delete("streamer");
+    }
+    replace(`${pathname}?${params.toString()}`);
+  };
+
+  const handleInputChange = (input: string) => {
+    const params = new URLSearchParams(searchParams);
+    if (input) {
+      params.set("username", input);
+    } else {
+      params.delete("username");
+    }
+    replace(`${pathname}?${params.toString()}`);
   };
 
   return (
     <div className="rounded-xl bg-zinc-800/50 p-6 shadow-lg">
-      <form
-        onSubmit={handleSearch}
+      <div
+        // onSubmit={handleSearch}
         className="space-y-4 space-x-4 flex flex-wrap"
       >
         <div className="space-y-2 flex-3">
@@ -37,7 +53,11 @@ export default function StreamerSearch() {
           >
             Select Streamer
           </label>
-          <Select value={selectedStreamer} onValueChange={setSelectedStreamer}>
+          <Select
+            value={searchParams.get("streamer")?.toString()}
+            defaultValue={searchParams.get("streamer")?.toString()}
+            onValueChange={handleSelectChange}
+          >
             <SelectTrigger className="h-12 border-zinc-700 bg-zinc-900 text-white w-full">
               <SelectValue
                 placeholder="Choose a streamer"
@@ -61,8 +81,9 @@ export default function StreamerSearch() {
             <Input
               id="username"
               type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
+              defaultValue={searchParams.get("username")?.toString()}
+              // value={username}
+              onChange={(e) => handleInputChange(e.target.value)}
               placeholder="Enter the username of the player you want to find clips against"
               className="border-zinc-700 bg-zinc-900 pl-10 text-white placeholder:text-zinc-500"
             />
@@ -79,7 +100,7 @@ export default function StreamerSearch() {
         >
           Search Clips
         </Button>
-      </form>
+      </div>
     </div>
   );
 }
