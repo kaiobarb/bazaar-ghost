@@ -37,10 +37,11 @@ export function TablePagination({
 
   return (
     <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-      <div className="text-sm text-zinc-400">
+      {/* <div className="text-sm text-zinc-400">
         Showing {startItem} to {endItem} of {totalItems} results
-      </div>
+      </div> */}
 
+      <div />
       <div className="flex items-center gap-4">
         {/* Page Size Selector */}
         <div className="flex items-center gap-2">

@@ -8,9 +8,20 @@ const supabase = createClient<Database>(
 
 const MAX_PAGE_SIZE = 100;
 
+export const fetchStreams = async () => {
+  const query = supabase.from("streamers").select("name");
+  const { data, error } = await query;
+
+  if (error) {
+    throw error;
+  }
+
+  return data;
+};
+
 export const fetchMatchups = async (
   usernameQuery: string,
-  streamer?: string,
+  stream?: string,
   page: number = 1,
   pageSize: number = 20 // Default to 20 results per page
 ) => {
@@ -28,8 +39,8 @@ export const fetchMatchups = async (
     .ilike("username", `%${usernameQuery}%`)
     .range(from, to);
 
-  if (streamer) {
-    query = query.ilike("vods.streamers.name", `%${streamer}%`);
+  if (stream) {
+    query = query.ilike("vods.streamers.name", `%${stream}%`);
   }
 
   const { data, error, count } = await query;
@@ -40,9 +51,11 @@ export const fetchMatchups = async (
 
   return {
     matchups: data,
-    total: count ?? 0, // Total number of results
-    page,
-    pageSize,
-    totalPages: Math.ceil((count ?? 0) / pageSize),
+    pageData: {
+      total: count ?? 0, // Total number of results
+      page,
+      pageSize,
+      totalPages: Math.ceil((count ?? 0) / pageSize),
+    },
   };
 };

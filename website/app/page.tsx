@@ -1,21 +1,33 @@
 import Image from "next/image";
 import StreamerSearch from "@/components/streamer-search";
 import SearchResultsTable from "@/components/search-results-table";
-import { fetchMatchups } from "./data";
+import { fetchMatchups, fetchStreams } from "./data";
+import { TablePagination } from "@/components/table-pagination";
 
 export default async function Home(props: {
   searchParams?: Promise<{
     username?: string;
-    page?: string;
+    p?: string;
     stream?: string;
+    pt?: number;
+    ps?: number;
   }>;
 }) {
   const searchParams = await props.searchParams;
   const username = searchParams?.username || "";
   const stream = searchParams?.stream || undefined;
+  const page = Number(searchParams?.p) || 1;
+  const totalPages = Number(searchParams?.pt) || 0;
+  const pageSize = Number(searchParams?.ps) || 20;
 
-  const matchups = await fetchMatchups(username, stream);
-  console.log(matchups);
+  const streams = await fetchStreams();
+  const { matchups, pageData } = await fetchMatchups(
+    username,
+    stream,
+    page,
+    pageSize
+  );
+
   return (
     <div className="min-h-screen bg-[#0e0e10] text-white">
       {/* Header */}
@@ -45,9 +57,9 @@ export default async function Home(props: {
           </p>
 
           {/* Search Component */}
-          <StreamerSearch />
+          <StreamerSearch streams={streams} />
 
-          <SearchResultsTable results={matchups} />
+          <SearchResultsTable results={matchups} pageData={pageData} />
         </div>
       </main>
 

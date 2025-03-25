@@ -15,7 +15,11 @@ import {
 } from "@/components/ui/select";
 import { useSearchParams, usePathname, useRouter } from "next/navigation";
 
-export default function StreamerSearch() {
+export default function StreamerSearch({
+  streams,
+}: {
+  streams: { name: string }[];
+}) {
   const searchParams = useSearchParams();
   const pathname = usePathname();
   const { replace } = useRouter();
@@ -23,9 +27,9 @@ export default function StreamerSearch() {
   const handleSelectChange = (value: string) => {
     const params = new URLSearchParams(searchParams);
     if (value) {
-      params.set("streamer", value);
+      params.set("stream", value);
     } else {
-      params.delete("streamer");
+      params.delete("stream");
     }
     replace(`${pathname}?${params.toString()}`);
   };
@@ -54,18 +58,18 @@ export default function StreamerSearch() {
             Select Streamer
           </label>
           <Select
-            value={searchParams.get("streamer")?.toString()}
+            value={searchParams.get("stream")?.toString()}
             defaultValue={searchParams.get("streamer")?.toString()}
             onValueChange={handleSelectChange}
           >
             <SelectTrigger className="h-12 border-zinc-700 bg-zinc-900 text-white w-full">
-              <SelectValue
-                placeholder="Choose a streamer"
-                defaultValue="nl_kripp"
-              />
+              <SelectValue placeholder="Any Stream" />
             </SelectTrigger>
             <SelectContent className="border-zinc-700 bg-zinc-900 text-white">
-              <SelectItem value="nl_kripp">Kripp</SelectItem>
+              <SelectItem value="*">*</SelectItem>
+              {streams.map((stream) => (
+                <SelectItem value={stream.name}>{stream.name}</SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>
