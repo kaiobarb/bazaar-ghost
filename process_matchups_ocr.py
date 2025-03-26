@@ -63,7 +63,7 @@ class MatchupHandler(FileSystemEventHandler):
             print(f"Could not load image: {matchup_filename}, skipping...")
             return
 
-        tesseract_config = "--psm 8 --oem 3"
+        tesseract_config = "--psm 8 --oem 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_."
         ocr_result = pytesseract.image_to_data(img, config=tesseract_config, output_type=pytesseract.Output.DICT)
 
         # Extract best guess (highest confidence text)

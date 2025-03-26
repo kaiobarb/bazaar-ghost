@@ -11,8 +11,8 @@ import signal
 # Inputs
 VOD_ID = sys.argv[1]  # Pass VOD ID as an argument
 print(VOD_ID)
-FRAME_DIR = f"/mnt/tmpfs/{VOD_ID}/frames"
-MATCHUP_DIR = f"/mnt/tmpfs/{VOD_ID}/matchups"
+FRAME_DIR = f"/mnt/tmpfs/{VOD_ID}/frames2"
+MATCHUP_DIR = f"/mnt/tmpfs/{VOD_ID}/matchups2"
 
 # Ensure matchup directory exists
 os.makedirs(MATCHUP_DIR, exist_ok=True)

@@ -2,9 +2,11 @@
 
 source .env
 
-TARGET_VOD_ID="2289278802" # First VOD of Kripp playing closed beta
+# TARGET_VOD_ID="2289278802" # First VOD of Kripp playing closed beta
 VOD_FILE="master_vod_list.txt"
-STREAMER_ID="29795919" # nl_kripp
+# STREAMER_ID="29795919" # nl_kripp
+# STREAMER_ID="156576581" # rahresh
+STREAMER_ID=""
 SUPABASE_URL="https://gdpblyinfpkohpgiuspe.supabase.co"
 SUPABASE_API_KEY="$SUPABASE_SERVICE_ROLE"
 
@@ -13,29 +15,26 @@ CURSOR=""
 FOUND_TARGET=false
 PAGE_COUNT=0
 
-echo "Fetching VODs for streamer ID: $STREAMER_ID"
+echo "Fetching VODs for streamer ID: $STREAMER_ID using Twitch CLI..."
 
 # Function to fetch VODs and update Supabase
 fetch_vods() {
-    local url="https://api.twitch.tv/helix/videos?user_id=$STREAMER_ID&type=archive&first=100"
+    local api_command="twitch api get videos -q user_id=$STREAMER_ID -q type=archive -q first=100"
     if [[ -n "$CURSOR" ]]; then
-        url+="&after=$CURSOR"
+        api_command+=" -q after=$CURSOR"
     fi
 
-    VODS_JSON=$(curl -s -H "Authorization: Bearer $TWITCH_ACCESS_TOKEN" \
-                      -H "Client-Id: $TWITCH_CLIENT_ID" \
-                      "$url")
+    VODS_JSON=$($api_command | jq '.')
 
     CURSOR=$(echo "$VODS_JSON" | jq -r '.pagination.cursor')
     
-    # Use process substitution to avoid a subshell so that FOUND_TARGET is updated properly
+    # Process each VOD
     while read -r vod; do
         VOD_ID=$(echo "$vod" | jq -r '.id')
         CREATED_AT=$(echo "$vod" | jq -r '.created_at')
         DURATION=$(echo "$vod" | jq -r '.duration')
 
         # Convert Twitch duration (e.g., "2h30m") to seconds
-        # Remove any trailing '+' sign before evaluating the expression
         DURATION_SEC=$(echo "$DURATION" | awk '
             {
                 gsub(/h/, "*3600+");
