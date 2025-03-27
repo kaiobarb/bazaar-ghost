@@ -6,29 +6,26 @@ source .env
 VOD_FILE="master_vod_list.txt"
 # STREAMER_ID="29795919" # nl_kripp
 # STREAMER_ID="156576581" # rahresh
-STREAMER_ID=""
+STREAMER_ID="1251663536" # 2sixten
 SUPABASE_URL="https://gdpblyinfpkohpgiuspe.supabase.co"
 SUPABASE_API_KEY="$SUPABASE_SERVICE_ROLE"
 
 # Pagination variables
 CURSOR=""
-FOUND_TARGET=false
 PAGE_COUNT=0
 
 echo "Fetching VODs for streamer ID: $STREAMER_ID using Twitch CLI..."
 
-# Function to fetch VODs and update Supabase
 fetch_vods() {
     local api_command="twitch api get videos -q user_id=$STREAMER_ID -q type=archive -q first=100"
     if [[ -n "$CURSOR" ]]; then
         api_command+=" -q after=$CURSOR"
     fi
 
-    VODS_JSON=$($api_command | jq '.')
+    VODS_JSON=$(eval "$api_command")
 
     CURSOR=$(echo "$VODS_JSON" | jq -r '.pagination.cursor')
-    
-    # Process each VOD
+
     while read -r vod; do
         VOD_ID=$(echo "$vod" | jq -r '.id')
         CREATED_AT=$(echo "$vod" | jq -r '.created_at')
@@ -45,14 +42,10 @@ fetch_vods() {
                 print expr
             }' | bc)
 
-        # Stop fetching if we found the target VOD
-        if [[ "$VOD_ID" -eq "$TARGET_VOD_ID" ]]; then
-            FOUND_TARGET=true
-        fi
-
-        # Insert or update VOD in Supabase
         echo "Processing VOD: $VOD_ID ($CREATED_AT, Duration: $DURATION_SEC sec)"
-        curl -X POST "$SUPABASE_URL/rest/v1/vods" \
+
+        # Insert or update into Supabase
+        curl -s -X POST "$SUPABASE_URL/rest/v1/vods" \
             -H "apikey: $SUPABASE_API_KEY" \
             -H "Authorization: Bearer $SUPABASE_API_KEY" \
             -H "Content-Type: application/json" \
@@ -60,34 +53,23 @@ fetch_vods() {
             -d '{
                 "vod_id": '"$VOD_ID"',
                 "streamer_id": '"$STREAMER_ID"',
-                "duration": '"$DURATION_SEC"'
+                "duration": '"$DURATION_SEC"',
+                "date_uploaded": "'"$CREATED_AT"'"
             }'
 
-        # Append to local file
+        # Save locally
         echo "$VOD_ID $CREATED_AT" >> "$VOD_FILE"
+
     done < <(echo "$VODS_JSON" | jq -c '.data[]')
 
-    # Stop fetching if we found the target VOD
-    if [[ "$FOUND_TARGET" == true ]]; then
-        echo "✅ Found target VOD ($TARGET_VOD_ID). Stopping fetch."
-        return 1
-    fi
-
-    return 0
+    [[ "$CURSOR" == "null" || -z "$CURSOR" ]] && return 1 || return 0
 }
 
-# Loop until target VOD is found or no more pages
+# Main fetch loop
 while true; do
     PAGE_COUNT=$((PAGE_COUNT + 1))
     echo "Fetching page $PAGE_COUNT..."
-    
-    fetch_vods
-    [[ $? -ne 0 ]] && break
-
-    if [[ -z "$CURSOR" || "$CURSOR" == "null" ]]; then
-        echo "No more pages available."
-        break
-    fi
+    fetch_vods || break
 done
 
 echo "VOD fetching complete. Entries stored in $VOD_FILE and Supabase."
