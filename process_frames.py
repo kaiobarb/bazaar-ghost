@@ -26,7 +26,6 @@ MATCHUP_DIR = f"/mnt/tmpfs/{VOD_ID}/matchups"
 os.makedirs(MATCHUP_DIR, exist_ok=True)
 os.makedirs(FRAME_DIR, exist_ok=True)
 
-
 RANK_TEMPLATES = {
     "legend": cv2.imread("templates/legend_480.png", cv2.IMREAD_COLOR),
     "diamond": cv2.imread("templates/diamond_480.png", cv2.IMREAD_COLOR),
@@ -50,13 +49,44 @@ last_frame_time = 0
 last_matchup_time = 0
 last_update = time.time()
 
-
 def update_metadata():
     global last_frame_time, last_matchup_time
+
+    # Fetch duration from Supabase
+    duration_resp = requests.get(
+        f"{SUPABASE_URL}/rest/v1/vods?vod_id=eq.{VOD_ID}&select=duration",
+        headers={
+            "apikey": SUPABASE_SERVICE_ROLE,
+            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE}"
+        }
+    )
+
+    if duration_resp.status_code != 200 or not duration_resp.json():
+        print(f"❌ Failed to fetch duration: {duration_resp.text}")
+        return
+
+    duration = duration_resp.json()[0].get("duration", 0)
+    try:
+        duration = int(duration)
+    except ValueError:
+        print(f"Invalid duration format: {duration}")
+        return
+
+    # Check if VOD is essentially done
+    is_finished = abs(last_frame_time - duration) <= 60
+
     payload = {
         "last_frame_processed": last_frame_time,
         "last_matchup_frame": last_matchup_time
     }
+
+    if is_finished:
+        payload.update({
+            "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "status": "finished",
+            "progress": 100
+        })
+
     response = requests.patch(
         f"{SUPABASE_URL}/rest/v1/metadata?vod_id=eq.{VOD_ID}",
         headers={
@@ -66,11 +96,11 @@ def update_metadata():
         },
         json=payload
     )
-    if response.status_code == 204:
-        print(f"✅ Metadata updated: {payload}")
-    else:
-        print(f"❌ Failed to update metadata: {response.text}")
 
+    if response.status_code == 204:
+        print(f"Metadata updated: {payload}")
+    else:
+        print(f"Failed to update metadata: {response.text}")
 
 def rank_match(frame):
     for rank, template in RANK_TEMPLATES.items():
@@ -113,6 +143,9 @@ class FrameHandler(FileSystemEventHandler):
         cropped_frame = frame[CROP_Y:CROP_Y + CROP_H, CROP_X:CROP_X + CROP_W]
 
         if detected_rank:
+            # Mask the emblem area
+            cropped_frame[0:31, 0:31] = 0
+
             gray_frame = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2GRAY)
             _, frame_bin = cv2.threshold(gray_frame, 105, 255, cv2.THRESH_BINARY)
             kernel = np.ones((3, 3), np.uint8)
@@ -122,7 +155,7 @@ class FrameHandler(FileSystemEventHandler):
             if contours:
                 x, y, w, h = max([cv2.boundingRect(cnt) for cnt in contours], key=lambda b: b[2] * b[3])
                 frame_bin = cv2.bitwise_not(frame_bin)
-                cropped_nameplate = frame_bin[y:y+h, x:x+w]
+                cropped_nameplate = frame_bin[y:y + h, x:x + w]
                 matchup_filename = f"{MATCHUP_DIR}/{frame_time}_{detected_rank}.png"
                 cv2.imwrite(matchup_filename, cropped_nameplate)
                 last_matchup_time = frame_time
@@ -136,7 +169,6 @@ class FrameHandler(FileSystemEventHandler):
         if time.time() - last_update >= 20:
             update_metadata()
             last_update = time.time()
-
 
 if __name__ == "__main__":
     print(f"Watching for new frames in {FRAME_DIR}/")
