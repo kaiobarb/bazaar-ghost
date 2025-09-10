@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  sfot:
+    build: .
+    image: ghcr.io/bazaar-ghost/sfot:latest
+    environment:
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - VOD_ID=${VOD_ID}
+      - START_TIME=${START_TIME:-0}
+      - END_TIME=${END_TIME:-1800}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./templates:/app/templates:ro
+      - ./logs:/app/logs
+    network_mode: host
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
