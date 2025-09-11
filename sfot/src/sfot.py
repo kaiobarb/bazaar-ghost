@@ -194,10 +194,20 @@ class SFOTProcessor:
                 return
             
             # Build FFmpeg command for keyframe extraction
+            # Build video filter chain
+            vf_filters = [f'fps={self.config["processing"]["frame_rate"]}']
+            
+            # Add crop filter if crop_region is specified
+            if self.config['detection'].get('crop_region'):
+                w, h, x, y = self.config['detection']['crop_region']
+                vf_filters.append(f'crop={w}:{h}:{x}:{y}')
+            
+            vf_chain = ','.join(vf_filters)
+            
             ffmpeg_cmd = [
                 'ffmpeg',
                 '-i', 'pipe:0',  # Input from stdin
-                '-vf', f'fps={self.config["processing"]["frame_rate"]}',
+                '-vf', vf_chain,
                 '-f', 'image2pipe',
                 '-vcodec', 'mjpeg',
                 '-loglevel', self.config['ffmpeg']['loglevel'],
@@ -261,7 +271,9 @@ class SFOTProcessor:
                     frame_data = self.frame_queue.get(timeout=1)
                     
                     # Process frame
-                    timestamp = self.start_time + (self.frames_processed * 5)  # Based on frame rate
+                    fps = self.config["processing"]["frame_rate"]
+                    seconds_per_frame = 1 / fps if fps > 0 else 0
+                    timestamp = self.start_time + int(self.frames_processed * seconds_per_frame)
                     result = self.frame_processor.process_frame(
                         frame_data, 
                         timestamp,

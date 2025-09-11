@@ -1,54 +1,89 @@
-Overview
+# Bazaar Ghost
 
-This project is Bazaar Ghost, a system that indexes Twitch VODs for the game The Bazaar, detects matchup screens, extracts usernames, and makes them searchable.
+System for indexing The Bazaar VODs from Twitch - detects matchups and extracts usernames via OCR.
 
-SFOT = Streamlink → FFmpeg → OpenCV → Tesseract.
+## Setup
 
-SFOT is the pipeline for detecting matchup frames and OCR’ing usernames.
+### Prerequisites
 
-Target platform is Twitch only for now. YouTube support comes later.
+- Python 3.11+
+- Supabase CLI
+- Docker (optional)
+- Streamlink, FFmpeg, Tesseract installed locally
 
-See DESIGN_DOC.md for high-level architecture, flows, and system responsibilities.
+### Start Supabase
 
-Scope & Style
+```bash
+supabase start
+```
 
-Not opinionated: this document does not prescribe exact implementations. Some ambiguities will be resolved incrementally.
+### Environment Variables
 
-Schema-first: database schema definition is the first concrete work item.
+Create `.env` in project root:
 
-Treat any DB mentions in DESIGN_DOC.md as pseudocode only.
+```bash
+# Required
+SUPABASE_URL=http://localhost:54321
+SUPABASE_SERVICE_ROLE_KEY=<from supabase start output>
 
-Ignore implicit/assumed columns from design doc; schema will be authored here explicitly.
+# Optional
+TWITCH_CLIENT_ID=<your-client-id>
+TWITCH_CLIENT_SECRET=<your-client-secret>
+```
 
-Repo Layout
+## Running SFOT Processor
 
-/home/kaio/Dev/bazaar-ghost
+### Install dependencies
 
-Second iteration, intended to be more polished.
+```bash
+cd sfot
+pip install -r requirements.txt
+```
 
-/home/kaio/Dev/krippTrack (first iteration, PoC)
+### Run processor
 
-website/ → Next.js frontend (low priority in 2nd iteration).
+```bash
+python src/sfot.py <vod_id> [start_time] [end_time]
 
-supabase/ → CLI artifacts, ignorable.
+# Example: Process first 30 minutes of VOD 123456789
+python src/sfot.py 123456789 0 1800
+```
 
-bazaar-ghost/ → Old bash/python SFOT scripts (PoC), some downloaded vods, and lots frames created and used to test, debug, and develop the PoC.
-Can be referenced, but do not reference it an authoritative implementation example.
+### Run with Docker
 
-Rules
+```bash
+cd sfot
+docker-compose up
+```
 
-Use DESIGN_DOC.md for architecture guidance only.
+## Configuration
 
-Ignore references in DESIGN_DOC.md to DB columns or schema; treat them as illustrative pseudocode.
+Edit `sfot/config.yaml`:
 
-Focus development work in /home/kaio/Dev/bazaar-ghost.
+```yaml
+processing:
+  frame_rate: 0.2 # Frames per second to extract
+  queue_size: 10
+  timeout: 1800
+  batch_update_interval: 20
 
-First milestone: define schema in Supabase/Postgres.
+detection:
+  threshold: 0.78 # Template matching threshold
+  crop_region: [271, 54, 503, 352] # w, h, x, y for nameplate
+  template_path: "templates/matchup_template.png"
 
-Notes
+streamlink:
+  default_stream: "480p"
+  retry_attempts: 3
 
-Long-term vision includes YouTube ingestion, but only Twitch should be implemented in this phase.
+tesseract:
+  lang: "eng"
+  config: "--psm 8 --oem 3"
+```
 
-Human-in-the-loop vetting is required before backfilling VODs (streamer profile verification, ROI not blocked, etc.).
+## Storage
 
-SFOT work must remain containerized for runtime parity across local/VM/Cloud Run.
+Detection images stored in Supabase Storage:
+
+- Full color nameplate: `{vod_id}/{timestamp}.jpg`
+- OCR debug frame: `{vod_id}/ocr_debug/{timestamp}.jpg`

@@ -21,7 +21,6 @@ class FrameProcessor:
         
         # Load detection parameters
         self.threshold = config['detection']['threshold']
-        self.crop_region = config['detection']['crop_region']
         
         # Load template if specified
         self.template = None
@@ -70,8 +69,19 @@ class FrameProcessor:
             
             self.last_matchup_time = timestamp
             
-            # Extract usernames via OCR
-            usernames = self._extract_usernames(frame)
+            # Preprocess frame for OCR
+            processed = self._preprocess_for_ocr(frame)
+            
+            # Extract username via OCR using preprocessed frame
+            username = self._extract_usernames(processed)
+            
+            # Encode the original frame (already cropped by FFmpeg)
+            success, encoded = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            frame_jpeg = encoded.tobytes() if success else None
+            
+            # Encode the preprocessed frame for debug
+            success_debug, encoded_debug = cv2.imencode('.jpg', processed, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            debug_jpeg = encoded_debug.tobytes() if success_debug else None
             
             # Prepare result
             result = {
@@ -79,12 +89,12 @@ class FrameProcessor:
                 'timestamp': timestamp,
                 'is_matchup': True,
                 'confidence': confidence,
-                'player1_username': usernames.get('player1'),
-                'player2_username': usernames.get('player2'),
-                'frame_base64': base64.b64encode(frame_data).decode('utf-8')
+                'username': username,
+                'frame_base64': base64.b64encode(frame_jpeg).decode('utf-8') if frame_jpeg else None,
+                'ocr_debug_frame': base64.b64encode(debug_jpeg).decode('utf-8') if debug_jpeg else None
             }
             
-            self.logger.debug(f"Detected matchup at {timestamp}s: {usernames}")
+            self.logger.debug(f"Detected matchup at {timestamp}s: {username}")
             return result
             
         except Exception as e:
@@ -113,12 +123,8 @@ class FrameProcessor:
             # Convert to grayscale
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             
-            # If we have a template, use template matching
             if self.template is not None:
                 return self._template_matching(gray)
-            
-            # Otherwise use feature detection
-            return self._feature_detection(gray)
             
         except Exception as e:
             self.logger.error(f"Matchup detection error: {e}")
@@ -139,76 +145,33 @@ class FrameProcessor:
             self.logger.error(f"Template matching error: {e}")
             return False, 0.0
     
-    def _feature_detection(self, gray: np.ndarray) -> Tuple[bool, float]:
-        """
-        Use feature detection for matchup screen
-        Looking for specific patterns that indicate a matchup screen
-        """
-        try:
-            # Crop to region of interest if specified
-            if self.crop_region:
-                x, y, w, h = self.crop_region
-                roi = gray[y:y+h, x:x+w]
-            else:
-                roi = gray
-            
-            # Look for "VS" text pattern
-            # Apply edge detection
-            edges = cv2.Canny(roi, 50, 150)
-            
-            # Count edge pixels (matchup screens have consistent UI elements)
-            edge_ratio = np.count_nonzero(edges) / edges.size
-            
-            # Matchup screens typically have 5-15% edge pixels in the ROI
-            is_matchup = 0.05 <= edge_ratio <= 0.15
-            confidence = min(1.0, edge_ratio / 0.10) if is_matchup else edge_ratio
-            
-            return is_matchup, confidence
-            
-        except Exception as e:
-            self.logger.error(f"Feature detection error: {e}")
-            return False, 0.0
     
-    def _extract_usernames(self, frame: np.ndarray) -> Dict[str, Optional[str]]:
+    def _extract_usernames(self, frame: np.ndarray) -> Optional[str]:
         """
-        Extract player usernames from matchup screen using OCR
+        Extract username from preprocessed nameplate frame using OCR
+        
+        Args:
+            frame: Already preprocessed frame (grayscale, scaled, binary, denoised)
         
         Returns:
-            Dictionary with player1 and player2 usernames
+            Extracted username or None
         """
-        usernames = {'player1': None, 'player2': None}
-        
         try:
-            # Define regions for username extraction
-            # These coordinates should be calibrated for The Bazaar UI
-            username_regions = {
-                'player1': (100, 200, 300, 50),  # x, y, width, height
-                'player2': (500, 200, 300, 50)
-            }
+            # Run OCR on preprocessed frame
+            text = pytesseract.image_to_string(
+                frame,
+                lang=self.tesseract_lang,
+                config=self.tesseract_config
+            ).strip()
             
-            for player, (x, y, w, h) in username_regions.items():
-                # Crop region
-                username_roi = frame[y:y+h, x:x+w]
-                
-                # Preprocess for OCR
-                processed = self._preprocess_for_ocr(username_roi)
-                
-                # Run OCR
-                text = pytesseract.image_to_string(
-                    processed,
-                    lang=self.tesseract_lang,
-                    config=self.tesseract_config
-                ).strip()
-                
-                # Clean up text
-                cleaned = self._clean_username(text)
-                if cleaned:
-                    usernames[player] = cleaned
+            # Clean up text
+            cleaned = self._clean_username(text)
+            return cleaned
                     
         except Exception as e:
             self.logger.error(f"Username extraction error: {e}")
         
-        return usernames
+        return None
     
     def _preprocess_for_ocr(self, roi: np.ndarray) -> np.ndarray:
         """Preprocess image region for better OCR accuracy"""
@@ -248,3 +211,4 @@ class FrameProcessor:
             return cleaned
         
         return None
+    

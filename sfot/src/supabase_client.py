@@ -105,18 +105,12 @@ class SupabaseClient:
                     
                     actual_vod_id = vod_id_cache[source_id]
                     
-                    # Create one detection per username found
-                    usernames = []
-                    if matchup.get('player1_username'):
-                        usernames.append(matchup['player1_username'])
-                    if matchup.get('player2_username'):
-                        usernames.append(matchup['player2_username'])
-                    
-                    for username in usernames:
+                    # Create detection record if username was extracted
+                    if matchup.get('username'):
                         record = {
                             'vod_id': actual_vod_id,  # Use the database ID
                             'frame_time_seconds': matchup['timestamp'],
-                            'username': username,
+                            'username': matchup['username'],
                             'confidence': matchup.get('confidence', 0),
                             # chunk_id would be set if we had it
                             # 'chunk_id': matchup.get('chunk_id'),
@@ -128,7 +122,17 @@ class SupabaseClient:
                         image_uploads.append({
                             'vod_id': matchup['vod_id'],
                             'timestamp': matchup['timestamp'],
-                            'data': matchup['frame_base64']
+                            'data': matchup['frame_base64'],
+                            'type': 'detection'
+                        })
+                    
+                    # Queue OCR debug frame upload if present
+                    if 'ocr_debug_frame' in matchup:
+                        image_uploads.append({
+                            'vod_id': matchup['vod_id'],
+                            'timestamp': matchup['timestamp'],
+                            'data': matchup['ocr_debug_frame'],
+                            'type': 'ocr_debug'
                         })
                 
                 # Insert detection records
@@ -138,7 +142,7 @@ class SupabaseClient:
                 
                 # Upload images to storage
                 for img in image_uploads:
-                    self._upload_image(img['vod_id'], img['timestamp'], img['data'])
+                    self._upload_image(img['vod_id'], img['timestamp'], img['data'], img.get('type', 'detection'))
                 
                 return True
                 
@@ -149,11 +153,15 @@ class SupabaseClient:
                 else:
                     raise
     
-    def _upload_image(self, vod_id: str, timestamp: int, base64_data: str):
+    def _upload_image(self, vod_id: str, timestamp: int, base64_data: str, image_type: str = 'detection'):
         """Upload matchup screenshot to storage"""
         try:
-            # Generate filename
-            filename = f"{vod_id}/{timestamp}.jpg"
+            # Generate filename based on type
+            if image_type == 'detection':
+                filename = f"{vod_id}/{timestamp}.jpg"
+            else:
+                # For OCR debug frames
+                filename = f"{vod_id}/{image_type}/{timestamp}.jpg"
             
             # Decode base64
             import base64

@@ -6,7 +6,8 @@ processing:
 
 detection:
   threshold: 0.78
-  crop_region: [60, 10, 184, 31]
+  crop_region: [271, 54, 503, 352] # nameplate region on a 480p matchup frame w, h, x, y Includes rank emblem
+  # crop_region: [60, 10, 184, 31] # Croppings dims for approx. just the text in the nameplate, within the above region, need to confirm
   template_path: "templates/matchup_template.png"
 
 resources:
@@ -30,7 +31,7 @@ tesseract:
   timeout: 5
 
 supabase:
-  storage_bucket: "matchups"
+  storage_bucket: "detections"
   batch_size: 10
   connection_timeout: 30
   retry_attempts: 3
