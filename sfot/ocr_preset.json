@@ -1,0 +1,46 @@
+{
+  "emblem_removal": {
+    "enabled": 1,
+    "threshold": 0.25,
+    "expand": 10
+  },
+  "frame_crop": {
+    "top": 12,
+    "bottom": 12,
+    "left": 0,
+    "right": 20
+  },
+  "scale_factor": 3.0,
+  "grayscale": 1,
+  "gaussian_blur": 2,
+  "median_blur": 0,
+  "bilateral": {
+    "d": 0,
+    "sigmaColor": 25,
+    "sigmaSpace": 67
+  },
+  "clahe": {
+    "enabled": 1,
+    "clip": 1.4,
+    "grid": 11
+  },
+  "threshold": {
+    "type": 0,
+    "binary_value": 154,
+    "adaptive_block": 0,
+    "adaptive_C": 0
+  },
+  "morphology": {
+    "operation": 0,
+    "kernel_size": 0,
+    "iterations": 0
+  },
+  "invert": 1,
+  "border_pad": 0,
+  "sharpen": 0,
+  "ocr": {
+    "psm": 7,
+    "oem": 1,
+    "dpi": 479
+  }
+}

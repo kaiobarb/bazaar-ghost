@@ -2,3 +2,5 @@
 .env
 SFOT_IMPLEMENTATION.md
 CLAUDE.md
+.ignore/
+*.pyc
