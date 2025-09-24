@@ -1,0 +1,131 @@
+name: Process Video Chunk
+
+on:
+  workflow_dispatch:
+    inputs:
+      chunk_id:
+        description: 'Chunk ID to process'
+        required: true
+        type: string
+
+env:
+  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+  SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+jobs:
+  process-chunk:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Update chunk status to processing
+      run: |
+        curl -X POST "$SUPABASE_URL/rest/v1/chunks" \
+          -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+          -H "Content-Type: application/json" \
+          -H "Prefer: resolution=merge-duplicates" \
+          -d "{
+            \"id\": \"${{ inputs.chunk_id }}\",
+            \"status\": \"processing\",
+            \"started_at\": \"$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)\",
+            \"worker_id\": \"github-${{ github.run_id }}\"
+          }"
+
+    - name: Get chunk details
+      id: chunk
+      run: |
+        RESPONSE=$(curl -s -X GET "$SUPABASE_URL/rest/v1/chunks?id=eq.${{ inputs.chunk_id }}&select=*,vods(source_id,streamer_id,streamers(login))" \
+          -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+          -H "Accept: application/json")
+
+        echo "response=$RESPONSE" >> $GITHUB_OUTPUT
+
+        # Extract values for SFOT processing
+        VOD_ID=$(echo "$RESPONSE" | jq -r '.[0].vods.source_id')
+        START_SECONDS=$(echo "$RESPONSE" | jq -r '.[0].start_seconds')
+        END_SECONDS=$(echo "$RESPONSE" | jq -r '.[0].end_seconds')
+        STREAMER=$(echo "$RESPONSE" | jq -r '.[0].vods.streamers.login')
+
+        echo "vod_id=$VOD_ID" >> $GITHUB_OUTPUT
+        echo "start_seconds=$START_SECONDS" >> $GITHUB_OUTPUT
+        echo "end_seconds=$END_SECONDS" >> $GITHUB_OUTPUT
+        echo "streamer=$STREAMER" >> $GITHUB_OUTPUT
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build SFOT container
+      run: |
+        docker build -t bazaar-ghost-sfot ./sfot
+
+    - name: Process chunk with SFOT
+      id: sfot
+      run: |
+        # Create output directory
+        mkdir -p ./output
+
+        # Run SFOT container to process the chunk
+        docker run --rm \
+          -v "./output:/app/output" \
+          bazaar-ghost-sfot \
+          --vod-id "${{ steps.chunk.outputs.vod_id }}" \
+          --start "${{ steps.chunk.outputs.start_seconds }}" \
+          --end "${{ steps.chunk.outputs.end_seconds }}" \
+          --streamer "${{ steps.chunk.outputs.streamer }}" \
+          --output-dir "/app/output" \
+          > ./output/processing.log 2>&1
+
+        # Check if processing succeeded
+        if [ $? -eq 0 ]; then
+          echo "success=true" >> $GITHUB_OUTPUT
+          echo "Processing completed successfully"
+        else
+          echo "success=false" >> $GITHUB_OUTPUT
+          echo "Processing failed"
+        fi
+
+        # Capture any error output
+        if [ -f ./output/processing.log ]; then
+          ERROR_LOG=$(tail -n 50 ./output/processing.log | jq -Rs .)
+          echo "error_log=$ERROR_LOG" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Upload results to Supabase
+      if: steps.sfot.outputs.success == 'true'
+      run: |
+        # Check if results file exists
+        if [ -f ./output/results.json ]; then
+          # Upload results to detections table
+          curl -X POST "$SUPABASE_URL/rest/v1/detections" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Content-Type: application/json" \
+            -d @./output/results.json
+        fi
+
+    - name: Update chunk status to completed
+      if: steps.sfot.outputs.success == 'true'
+      run: |
+        curl -X PATCH "$SUPABASE_URL/rest/v1/chunks?id=eq.${{ inputs.chunk_id }}" \
+          -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+          -H "Content-Type: application/json" \
+          -H "Prefer: return=minimal" \
+          -d "{
+            \"status\": \"completed\",
+            \"completed_at\": \"$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)\"
+          }"
+
+    - name: Update chunk status to failed
+      if: steps.sfot.outputs.success == 'false'
+      run: |
+        curl -X PATCH "$SUPABASE_URL/rest/v1/chunks?id=eq.${{ inputs.chunk_id }}" \
+          -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+          -H "Content-Type: application/json" \
+          -H "Prefer: return=minimal" \
+          -d "{
+            \"status\": \"failed\",
+            \"completed_at\": \"$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)\",
+            \"attempt_count\": \"attempt_count + 1\",
+            \"last_error\": ${{ steps.sfot.outputs.error_log || '\"Unknown error\"' }}
+          }"

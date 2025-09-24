@@ -7,8 +7,24 @@ processing:
 detection:
   threshold: 0.78
   crop_region: [271, 54, 503, 352] # nameplate region on a 480p matchup frame w, h, x, y Includes rank emblem
-  # crop_region: [60, 10, 184, 31] # Croppings dims for approx. just the text in the nameplate, within the above region, need to confirm
   template_path: "templates/matchup_template.png"
+
+# Emblem detection and removal configuration
+emblem_detection:
+  enabled: true
+  threshold: 0.25
+  expand_pixels: 10
+  templates_dir: "templates/"
+
+# OCR preprocessing based on tuned parameters
+ocr_preprocessing:
+  scale_factor: 3.0
+  gaussian_blur: 2
+  clahe_enabled: true
+  clahe_clip: 1.4
+  clahe_grid: 11
+  binary_threshold: 154
+  invert: true
 
 resources:
   max_memory_mb: 512
@@ -27,7 +43,10 @@ ffmpeg:
 
 tesseract:
   lang: "eng"
-  config: "--psm 8 --oem 3"
+  config: "-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-. -c load_system_dawg=0 -c load_freq_dawg=0"
+  psm: 7 # Single text line
+  oem: 1 # LSTM OCR Engine mode
+  dpi: 480 # Higher DPI for better accuracy
   timeout: 5
 
 supabase:
