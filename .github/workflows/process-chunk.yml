@@ -100,14 +100,16 @@ jobs:
           echo "Available Docker images:"
           docker images | grep bazaar-ghost-sfot || echo "No bazaar-ghost-sfot image found"
 
-          # Debug: Test basic container startup
-          echo "Testing container startup:"
-          docker run --rm bazaar-ghost-sfot --help || echo "Container startup failed"
+          # Debug: List output directory
+          echo "Output directory contents:"
+          ls -la ./output || echo "Output directory not yet created"
 
           # Run SFOT container to process the chunk
           echo "Running SFOT container with arguments: ${{ steps.chunk.outputs.vod_id }} ${{ steps.chunk.outputs.start_seconds }} ${{ steps.chunk.outputs.end_seconds }}"
           docker run --rm \
             -v "./output:/app/output" \
+            -e SUPABASE_URL="$SUPABASE_URL" \
+            -e SUPABASE_SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY" \
             bazaar-ghost-sfot \
             "${{ steps.chunk.outputs.vod_id }}" \
             "${{ steps.chunk.outputs.start_seconds }}" \
