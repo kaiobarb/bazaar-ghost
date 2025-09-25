@@ -22,12 +22,11 @@ jobs:
 
     - name: Update chunk status to processing
       run: |
-        curl -X POST "$SUPABASE_URL/rest/v1/chunks" \
+        curl -X PATCH "$SUPABASE_URL/rest/v1/chunks?id=eq.${{ inputs.chunk_id }}" \
           -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
           -H "Content-Type: application/json" \
-          -H "Prefer: resolution=merge-duplicates" \
+          -H "Prefer: return=minimal" \
           -d "{
-            \"id\": \"${{ inputs.chunk_id }}\",
             \"status\": \"processing\",
             \"started_at\": \"$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)\",
             \"worker_id\": \"github-${{ github.run_id }}\"
@@ -40,13 +39,25 @@ jobs:
           -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
           -H "Accept: application/json")
 
+        echo "Raw response: $RESPONSE"
         echo "response=$RESPONSE" >> $GITHUB_OUTPUT
 
-        # Extract values for SFOT processing
-        VOD_ID=$(echo "$RESPONSE" | jq -r '.[0].vods.source_id')
-        START_SECONDS=$(echo "$RESPONSE" | jq -r '.[0].start_seconds')
-        END_SECONDS=$(echo "$RESPONSE" | jq -r '.[0].end_seconds')
-        STREAMER=$(echo "$RESPONSE" | jq -r '.[0].vods.streamers.login')
+        # Check if response is an array or single object
+        if echo "$RESPONSE" | jq -e 'type == "array"' > /dev/null; then
+          # It's an array, use [0]
+          VOD_ID=$(echo "$RESPONSE" | jq -r '.[0].vods.source_id')
+          START_SECONDS=$(echo "$RESPONSE" | jq -r '.[0].start_seconds')
+          END_SECONDS=$(echo "$RESPONSE" | jq -r '.[0].end_seconds')
+          STREAMER=$(echo "$RESPONSE" | jq -r '.[0].vods.streamers.login')
+        else
+          # It's a single object, access directly
+          VOD_ID=$(echo "$RESPONSE" | jq -r '.vods.source_id')
+          START_SECONDS=$(echo "$RESPONSE" | jq -r '.start_seconds')
+          END_SECONDS=$(echo "$RESPONSE" | jq -r '.end_seconds')
+          STREAMER=$(echo "$RESPONSE" | jq -r '.vods.streamers.login')
+        fi
+
+        echo "Extracted values: VOD_ID=$VOD_ID, START_SECONDS=$START_SECONDS, END_SECONDS=$END_SECONDS, STREAMER=$STREAMER"
 
         echo "vod_id=$VOD_ID" >> $GITHUB_OUTPUT
         echo "start_seconds=$START_SECONDS" >> $GITHUB_OUTPUT
