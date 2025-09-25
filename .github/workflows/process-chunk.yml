@@ -104,9 +104,11 @@ jobs:
           echo "Output directory contents:"
           ls -la ./output || echo "Output directory not yet created"
 
-          # Run SFOT container to process the chunk
+          # Run SFOT container to process the chunk with live output
           echo "Running SFOT container with arguments: ${{ steps.chunk.outputs.vod_id }} ${{ steps.chunk.outputs.start_seconds }} ${{ steps.chunk.outputs.end_seconds }}"
-          docker run --rm \
+
+          # Run with timeout and live output
+          timeout 2420 docker run --rm \
             -v "./output:/app/output" \
             -e SUPABASE_URL="$SUPABASE_URL" \
             -e SUPABASE_SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY" \
@@ -114,7 +116,7 @@ jobs:
             "${{ steps.chunk.outputs.vod_id }}" \
             "${{ steps.chunk.outputs.start_seconds }}" \
             "${{ steps.chunk.outputs.end_seconds }}" \
-            > ./output/processing.log 2>&1
+            2>&1 | tee ./output/processing.log
 
           echo "Docker run exit code: $?"
 
