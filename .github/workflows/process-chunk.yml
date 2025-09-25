@@ -96,16 +96,25 @@ jobs:
           # Create output directory
           mkdir -p ./output
 
+          # Debug: Check if container image exists
+          echo "Available Docker images:"
+          docker images | grep bazaar-ghost-sfot || echo "No bazaar-ghost-sfot image found"
+
+          # Debug: Test basic container startup
+          echo "Testing container startup:"
+          docker run --rm bazaar-ghost-sfot --help || echo "Container startup failed"
+
           # Run SFOT container to process the chunk
+          echo "Running SFOT container with arguments: ${{ steps.chunk.outputs.vod_id }} ${{ steps.chunk.outputs.start_seconds }} ${{ steps.chunk.outputs.end_seconds }}"
           docker run --rm \
             -v "./output:/app/output" \
             bazaar-ghost-sfot \
-            --vod-id "${{ steps.chunk.outputs.vod_id }}" \
-            --start "${{ steps.chunk.outputs.start_seconds }}" \
-            --end "${{ steps.chunk.outputs.end_seconds }}" \
-            --streamer "${{ steps.chunk.outputs.streamer }}" \
-            --output-dir "/app/output" \
+            "${{ steps.chunk.outputs.vod_id }}" \
+            "${{ steps.chunk.outputs.start_seconds }}" \
+            "${{ steps.chunk.outputs.end_seconds }}" \
             > ./output/processing.log 2>&1
+
+          echo "Docker run exit code: $?"
 
           # Check if processing succeeded
           if [ $? -eq 0 ]; then
@@ -118,8 +127,13 @@ jobs:
 
           # Capture any error output
           if [ -f ./output/processing.log ]; then
+            echo "=== SFOT Processing Log ==="
+            cat ./output/processing.log
+            echo "=== End of Log ==="
             ERROR_LOG=$(tail -n 50 ./output/processing.log | jq -Rs .)
             echo "error_log=$ERROR_LOG" >> $GITHUB_OUTPUT
+          else
+            echo "No processing.log file found"
           fi
 
       - name: Upload results to Supabase
