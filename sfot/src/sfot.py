@@ -170,12 +170,16 @@ class SFOTProcessor:
             )
             
             # Monitor streamlink process
+            self.logger.info("Streamlink process started, monitoring...")
             while not self.shutdown.is_set():
                 if self.streamlink_proc.poll() is not None:
                     # Process ended
                     stderr = self.streamlink_proc.stderr.read().decode('utf-8', errors='ignore')
                     if self.streamlink_proc.returncode != 0:
-                        self.logger.error(f"Streamlink failed: {stderr}")
+                        self.logger.error(f"Streamlink failed with code {self.streamlink_proc.returncode}: {stderr}")
+                        self.shutdown.set()  # Signal shutdown on streamlink failure
+                    else:
+                        self.logger.info(f"Streamlink completed successfully.")
                     break
                 time.sleep(1)
                 
@@ -188,10 +192,11 @@ class SFOTProcessor:
         try:
             # Wait for streamlink to start
             time.sleep(2)
-            
             if not self.streamlink_proc or self.streamlink_proc.poll() is not None:
-                self.logger.error("Streamlink not running")
+                self.logger.error("Streamlink not running when FFmpeg tried to start")
                 return
+
+            self.logger.info("Streamlink confirmed running, starting FFmpeg...")
             
             # Build FFmpeg command for keyframe extraction
             # Build video filter chain
@@ -213,10 +218,11 @@ class SFOTProcessor:
                 '-loglevel', self.config['ffmpeg']['loglevel'],
                 'pipe:1'  # Output to stdout
             ]
-            
+
             if self.config['ffmpeg']['keyframes_only']:
-                ffmpeg_cmd.insert(3, '-skip_frame')
-                ffmpeg_cmd.insert(4, 'nokey')
+                # Insert input options before -i
+                ffmpeg_cmd.insert(1, '-skip_frame')
+                ffmpeg_cmd.insert(2, 'nokey')
             
             self.logger.info("Starting FFmpeg pipeline")
             
@@ -228,35 +234,67 @@ class SFOTProcessor:
                 stderr=subprocess.PIPE,
                 bufsize=65536
             )
+
+            # Check if FFmpeg started successfully
+            time.sleep(0.5)  # Give FFmpeg a moment to start
+            if self.ffmpeg_proc.poll() is not None:
+                stderr = self.ffmpeg_proc.stderr.read().decode('utf-8', errors='ignore')
+                self.logger.error(f"FFmpeg failed to start. Exit code: {self.ffmpeg_proc.returncode}, stderr: {stderr}")
+                return
+            else:
+                self.logger.info("FFmpeg process started successfully")
             
             # Read frames from FFmpeg
             frame_buffer = b''
+            frames_extracted = 0
+            bytes_read = 0
+            self.logger.info("Starting to read frames from FFmpeg...")
+
             while not self.shutdown.is_set():
                 chunk = self.ffmpeg_proc.stdout.read(4096)
                 if not chunk:
+                    # Check FFmpeg stderr for any error messages
+                    stderr_data = b''
+                    try:
+                        stderr_data = self.ffmpeg_proc.stderr.read()
+                        stderr_text = stderr_data.decode('utf-8', errors='ignore') if stderr_data else "No stderr output"
+                    except:
+                        stderr_text = "Could not read stderr"
+
+                    self.logger.info(f"FFmpeg stream ended. Total bytes read: {bytes_read}, frames extracted: {frames_extracted}")
+                    if stderr_text.strip():
+                        self.logger.info(f"FFmpeg stderr: {stderr_text}")
                     break
-                    
+
+                bytes_read += len(chunk)
                 frame_buffer += chunk
-                
+
                 # Look for JPEG markers
                 while True:
                     start = frame_buffer.find(b'\xff\xd8')  # JPEG start
                     if start == -1:
                         break
-                        
+
                     end = frame_buffer.find(b'\xff\xd9', start)  # JPEG end
                     if end == -1:
                         break
-                    
+
                     # Extract complete frame
                     frame_data = frame_buffer[start:end+2]
                     frame_buffer = frame_buffer[end+2:]
-                    
+                    frames_extracted += 1
                     # Add to queue if not full
                     try:
                         self.frame_queue.put(frame_data, timeout=0.1)
                     except queue.Full:
                         self.logger.warning("Frame queue full, dropping frame")
+
+            self.logger.info(f"FFmpeg worker finished. Final stats: {bytes_read} bytes read, {frames_extracted} frames extracted")
+
+            # Signal shutdown when FFmpeg finishes normally (not due to error)
+            if not self.shutdown.is_set():
+                self.logger.info("FFmpeg completed successfully, signaling shutdown")
+                self.shutdown.set()
                         
         except Exception as e:
             self.logger.error(f"FFmpeg worker failed: {e}")
@@ -264,6 +302,7 @@ class SFOTProcessor:
     
     def opencv_worker(self):
         """Worker to process frames with OpenCV"""
+        self.logger.info("OpenCV worker starting...")
         try:
             while not self.shutdown.is_set():
                 try:
@@ -281,7 +320,10 @@ class SFOTProcessor:
                     )
                     
                     self.frames_processed += 1
-                    
+
+                    # Log every frame processed
+                    self.logger.debug(f"Processed frame {self.frames_processed} at {timestamp}s")
+
                     # If matchup detected, add to result queue
                     if result and result.get('is_matchup'):
                         self.result_queue.put(result)
