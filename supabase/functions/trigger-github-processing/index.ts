@@ -10,8 +10,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const GITHUB_TOKEN = Deno.env.get("GITHUB_TOKEN")!;
-const GITHUB_OWNER = Deno.env.get("GITHUB_OWNER") || "kaio"; // Default owner
-const GITHUB_REPO = Deno.env.get("GITHUB_REPO") || "bazaar-ghost"; // Default repo
+const GITHUB_REPO = "bazaar-ghost";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
@@ -28,13 +27,13 @@ interface TriggerGithubProcessingResponse {
 }
 
 async function triggerGithubWorkflow(chunkId: string): Promise<string | null> {
-  const workflowDispatchUrl = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/process-chunk.yml/dispatches`;
+  const workflowDispatchUrl = `https://api.github.com/repos/kaiobarb/${GITHUB_REPO}/actions/workflows/process-chunk.yml/dispatches`;
 
   const response = await fetch(workflowDispatchUrl, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${GITHUB_TOKEN}`,
-      "Accept": "application/vnd.github+json",
+      Authorization: `Bearer ${GITHUB_TOKEN}`,
+      Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
       "Content-Type": "application/json",
     },
@@ -48,20 +47,26 @@ async function triggerGithubWorkflow(chunkId: string): Promise<string | null> {
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error(`GitHub workflow dispatch failed: ${response.status} ${response.statusText}`, errorText);
-    throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
+    console.error(
+      `GitHub workflow dispatch failed: ${response.status} ${response.statusText}`,
+      errorText
+    );
+    throw new Error(
+      `GitHub API error: ${response.status} ${response.statusText}`
+    );
   }
 
   // GitHub API returns 204 No Content on success
   // We can't get the run URL directly, but we can construct the Actions page URL
-  const actionsUrl = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/process-chunk.yml`;
+  const actionsUrl = `https://github.com/kaiobarb/${GITHUB_REPO}/actions/workflows/process-chunk.yml`;
   return actionsUrl;
 }
 
 async function findNextPendingChunk(priorityMin: number = 0) {
   const { data: chunks, error } = await supabase
     .from("chunks")
-    .select(`
+    .select(
+      `
       id,
       vod_id,
       start_seconds,
@@ -73,7 +78,8 @@ async function findNextPendingChunk(priorityMin: number = 0) {
         title,
         streamers(login, display_name)
       )
-    `)
+    `
+    )
     .eq("status", "pending")
     .gte("priority", priorityMin)
     .order("priority", { ascending: false })
@@ -109,10 +115,14 @@ Deno.serve(async (req) => {
       return new Response("Method not allowed", { status: 405 });
     }
 
-    const requestBody: TriggerGithubProcessingRequest = await req.json().catch(() => ({}));
+    const requestBody: TriggerGithubProcessingRequest = await req
+      .json()
+      .catch(() => ({}));
     const { force = false, priority_min = 0 } = requestBody;
 
-    console.log(`Triggering GitHub processing. Force: ${force}, Priority min: ${priority_min}`);
+    console.log(
+      `Triggering GitHub processing. Force: ${force}, Priority min: ${priority_min}`
+    );
 
     // Find next pending chunk
     const chunk = await findNextPendingChunk(priority_min);
@@ -139,7 +149,9 @@ Deno.serve(async (req) => {
       });
     }
 
-    console.log(`Found chunk ${chunk.id} for VOD ${chunk.vods?.source_id} by ${chunk.vods?.streamers?.login}`);
+    console.log(
+      `Found chunk ${chunk.id} for VOD ${chunk.vods?.source_id} by ${chunk.vods?.streamers?.login}`
+    );
 
     // Mark chunk as queued before triggering GitHub
     await markChunkAsQueued(chunk.id);
@@ -160,7 +172,6 @@ Deno.serve(async (req) => {
       headers: { "Content-Type": "application/json" },
       status: 200,
     });
-
   } catch (error: any) {
     console.error("Trigger GitHub processing error:", error);
 
