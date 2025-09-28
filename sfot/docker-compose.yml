@@ -6,7 +6,7 @@ services:
     image: ghcr.io/bazaar-ghost/sfot:latest
     environment:
       - SUPABASE_URL=${SUPABASE_URL}
-      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - SUPABASE_SECRET_KEY=${SUPABASE_SECRET_KEY}
       - VOD_ID=${VOD_ID}
       - START_TIME=${START_TIME:-0}
       - END_TIME=${END_TIME:-1800}
