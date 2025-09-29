@@ -107,13 +107,17 @@ class SupabaseClient:
                     
                     # Create detection record if username was extracted
                     if matchup.get('username'):
+                        # Generate storage path for the detection image
+                        storage_path = f"/detections/{source_id}/{matchup['timestamp']}.jpg" if 'frame_base64' in matchup else None
+
                         record = {
                             'vod_id': actual_vod_id,  # Use the database ID
                             'frame_time_seconds': matchup['timestamp'],
                             'username': matchup['username'],
                             'confidence': matchup.get('confidence', 0),
-                            # chunk_id would be set if we had it
-                            # 'chunk_id': matchup.get('chunk_id'),
+                            'rank': matchup.get('detected_rank'),
+                            'chunk_id': matchup.get('chunk_id'),
+                            'storage_path': storage_path,
                         }
                         batch_data.append(record)
                     

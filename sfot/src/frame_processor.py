@@ -59,7 +59,7 @@ class FrameProcessor:
         self.last_matchup_time = 0
         self.min_matchup_interval = 10  # Minimum seconds between matchups
     
-    def process_frame(self, frame_data: bytes, timestamp: int, vod_id: str) -> Optional[Dict[str, Any]]:
+    def process_frame(self, frame_data: bytes, timestamp: int, vod_id: str, chunk_id: str) -> Optional[Dict[str, Any]]:
         """
         Process a single frame for matchup detection
         
@@ -67,6 +67,7 @@ class FrameProcessor:
             frame_data: JPEG frame data
             timestamp: Timestamp in seconds
             vod_id: VOD identifier
+            chunk_id: Chunk uuid
             
         Returns:
             Detection result or None
@@ -119,9 +120,10 @@ class FrameProcessor:
                 'vod_id': vod_id,
                 'timestamp': timestamp,
                 'is_matchup': True,
-                'confidence': confidence,
+                'confidence': -1 if detected_rank is None else confidence,
                 'username': username,
                 'detected_rank': detected_rank,
+                'chunk_id': chunk_id,
                 'template_left_x': template_left_x,
                 'emblem_right_x': emblem_right_x,
                 'frame_base64': base64.b64encode(frame_jpeg).decode('utf-8') if frame_jpeg else None,

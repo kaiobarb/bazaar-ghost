@@ -36,6 +36,7 @@ class SFOTProcessor:
         self.vod_id = config['vod_id']
         self.start_time = config['start_time']
         self.end_time = config['end_time']
+        self.chunk_id = config['chunk_id']
         
         # Load configuration
         self.config = self._load_config()
@@ -322,7 +323,8 @@ class SFOTProcessor:
                     result = self.frame_processor.process_frame(
                         frame_data, 
                         timestamp,
-                        self.vod_id
+                        self.vod_id,
+                        self.chunk_id
                     )
                     
                     self.frames_processed += 1
@@ -451,11 +453,12 @@ def main():
         'vod_id': os.getenv('VOD_ID', sys.argv[1] if len(sys.argv) > 1 else None),
         'start_time': int(os.getenv('START_TIME', sys.argv[2] if len(sys.argv) > 2 else 0)),
         'end_time': int(os.getenv('END_TIME', sys.argv[3] if len(sys.argv) > 3 else 1800)),
+        'chunk_id': os.getenv('CHUNK_ID', sys.argv[4] if len(sys.argv) > 4 else None),
     }
     
-    if not config['vod_id']:
-        print("Usage: sfot.py <vod_id> [start_time] [end_time]")
-        print("Or set VOD_ID, START_TIME, END_TIME environment variables")
+    if not config['vod_id'] or not config['chunk_id']:
+        print("Usage: sfot.py <vod_id> [start_time] [end_time] [chunk_id]")
+        print("Or set VOD_ID, START_TIME, END_TIME, CHUNK_ID environment variables")
         sys.exit(1)
     
     # Create and run processor

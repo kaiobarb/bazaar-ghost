@@ -104,7 +104,7 @@ jobs:
           ls -la ./output || echo "Output directory not yet created"
 
           # Run SFOT container to process the chunk with live output
-          echo "Running SFOT container with arguments: ${{ steps.chunk.outputs.vod_id }} ${{ steps.chunk.outputs.start_seconds }} ${{ steps.chunk.outputs.end_seconds }}"
+          echo "Running SFOT container with arguments: ${{ steps.chunk.outputs.vod_id }} ${{ steps.chunk.outputs.start_seconds }} ${{ steps.chunk.outputs.end_seconds }} ${{ inputs.chunk_id }}"
 
           # Run with timeout and live output
           timeout 2420 docker run --rm \
@@ -115,7 +115,8 @@ jobs:
             bazaar-ghost-sfot \
             "${{ steps.chunk.outputs.vod_id }}" \
             "${{ steps.chunk.outputs.start_seconds }}" \
-            "${{ steps.chunk.outputs.end_seconds }}"
+            "${{ steps.chunk.outputs.end_seconds }}" \
+            "${{ inputs.chunk_id }}"
 
           DOCKER_EXIT_CODE=$?
 
