@@ -20,10 +20,10 @@ class SupabaseClient:
         
         # Get credentials from environment
         url = os.getenv('SUPABASE_URL', config.get('supabase', {}).get('url'))
-        key = os.getenv('SUPABASE_SERVICE_ROLE_KEY', config.get('supabase', {}).get('service_role_key'))
-        
+        key = os.getenv('SUPABASE_SECRET_KEY', config.get('supabase', {}).get('secret_key'))
+
         if not url or not key:
-            raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set")
+            raise ValueError("SUPABASE_URL and SUPABASE_SECRET_KEY must be set")
         
         # Initialize client
         self.client: Client = create_client(url, key)

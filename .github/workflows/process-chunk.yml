@@ -10,7 +10,7 @@ on:
 
 env:
   SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-  SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE }}
+  SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
 
 jobs:
   process-chunk:
@@ -22,23 +22,22 @@ jobs:
 
       - name: Update chunk status to processing
         run: |
-          curl -X PATCH "$SUPABASE_URL/rest/v1/chunks?id=eq.${{ inputs.chunk_id }}" \
-            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+          echo "Updating chunk ${{ inputs.chunk_id }} to processing status"
+          RESPONSE=$(curl -X POST "$SUPABASE_URL/rest/v1/rpc/update_chunk_status" \
+            -H "apikey: $SUPABASE_SECRET_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
             -H "Content-Type: application/json" \
-            -H "Prefer: return=minimal" \
-            -d "{
-              \"status\": \"processing\",
-              \"started_at\": \"$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)\",
-              \"worker_id\": \"github-${{ github.run_id }}\"
-            }"
+            -d '{"p_chunk_id": "${{ inputs.chunk_id }}", "p_status": "processing"}')
+          echo "Response: $RESPONSE"
 
       - name: Get chunk details
         id: chunk
         run: |
           echo "Fetching chunk with ID: ${{ inputs.chunk_id }}"
 
-          RESPONSE=$(curl -s -X GET "$SUPABASE_URL/rest/v1/chunks?id=eq.${{ inputs.chunk_id }}&select=*,vods(source_id,streamer_id,streamers(login))&apikey=$SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+          RESPONSE=$(curl -s -X GET "$SUPABASE_URL/rest/v1/chunks?id=eq.${{ inputs.chunk_id }}&select=*,vods(source_id,streamer_id,streamers(login))" \
+            -H "apikey: $SUPABASE_SECRET_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
             -H "Accept: application/json")
 
           echo "Raw response: $RESPONSE"
@@ -109,19 +108,21 @@ jobs:
 
           # Run with timeout and live output
           timeout 2420 docker run --rm \
+            --network="host" \
             -v "./output:/app/output" \
             -e SUPABASE_URL="$SUPABASE_URL" \
-            -e SUPABASE_SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY" \
+            -e SUPABASE_SECRET_KEY="$SUPABASE_SECRET_KEY" \
             bazaar-ghost-sfot \
             "${{ steps.chunk.outputs.vod_id }}" \
             "${{ steps.chunk.outputs.start_seconds }}" \
-            "${{ steps.chunk.outputs.end_seconds }}" \
-            2>&1 | tee ./output/processing.log
+            "${{ steps.chunk.outputs.end_seconds }}"
 
-          echo "Docker run exit code: $?"
+          DOCKER_EXIT_CODE=$?
+
+          echo "Docker run exit code: $DOCKER_EXIT_CODE"
 
           # Check if processing succeeded
-          if [ $? -eq 0 ]; then
+          if [ $DOCKER_EXIT_CODE -eq 0 ]; then
             echo "success=true" >> $GITHUB_OUTPUT
             echo "Processing completed successfully"
           else
@@ -129,51 +130,22 @@ jobs:
             echo "Processing failed"
           fi
 
-          # Capture any error output
-          if [ -f ./output/processing.log ]; then
-            echo "=== SFOT Processing Log ==="
-            cat ./output/processing.log
-            echo "=== End of Log ==="
-            ERROR_LOG=$(tail -n 50 ./output/processing.log | jq -Rs .)
-            echo "error_log=$ERROR_LOG" >> $GITHUB_OUTPUT
-          else
-            echo "No processing.log file found"
-          fi
-
-      - name: Upload results to Supabase
-        if: steps.sfot.outputs.success == 'true'
-        run: |
-          # Check if results file exists
-          if [ -f ./output/results.json ]; then
-            # Upload results to detections table
-            curl -X POST "$SUPABASE_URL/rest/v1/detections" \
-              -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-              -H "Content-Type: application/json" \
-              -d @./output/results.json
-          fi
-
       - name: Update chunk status to completed
         if: steps.sfot.outputs.success == 'true'
         run: |
-          curl -X PATCH "$SUPABASE_URL/rest/v1/chunks?id=eq.${{ inputs.chunk_id }}" \
-            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+          curl -X POST "$SUPABASE_URL/rest/v1/rpc/update_chunk_status" \
+            -H "apikey: $SUPABASE_SECRET_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
             -H "Content-Type: application/json" \
-            -H "Prefer: return=minimal" \
-            -d "{
-              \"status\": \"completed\",
-              \"completed_at\": \"$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)\"
-            }"
+            -d '{"p_chunk_id": "${{ inputs.chunk_id }}", "p_status": "completed"}'
 
-      - name: Update chunk status to failed
-        if: steps.sfot.outputs.success == 'false'
+      - name: Reset chunk status to pending
+        if: failure() || steps.sfot.outputs.success == 'false'
         run: |
-          curl -X PATCH "$SUPABASE_URL/rest/v1/chunks?id=eq.${{ inputs.chunk_id }}" \
-            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+          ERROR_MSG="${{ steps.sfot.outputs.error_log || 'Workflow failure' }}"
+          RESPONSE=$(curl -X POST "$SUPABASE_URL/rest/v1/rpc/update_chunk_status" \
+            -H "apikey: $SUPABASE_SECRET_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
             -H "Content-Type: application/json" \
-            -H "Prefer: return=minimal" \
-            -d "{
-              \"status\": \"failed\",
-              \"completed_at\": \"$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)\",
-              \"attempt_count\": \"attempt_count + 1\",
-              \"last_error\": ${{ steps.sfot.outputs.error_log || '\"Unknown error\"' }}
-            }"
+            -d "{\"p_chunk_id\": \"${{ inputs.chunk_id }}\", \"p_status\": \"pending\", \"p_error_message\": \"$ERROR_MSG\"}")
+          echo "Raw Response: $RESPONSE"

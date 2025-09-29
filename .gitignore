@@ -4,3 +4,5 @@ SFOT_IMPLEMENTATION.md
 CLAUDE.md
 .ignore/
 *.pyc
+*.secrets
+seed.sql

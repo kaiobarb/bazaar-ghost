@@ -72,8 +72,8 @@ class SFOTProcessor:
         # Override with environment variables if present
         if os.getenv('SUPABASE_URL'):
             config['supabase']['url'] = os.getenv('SUPABASE_URL')
-        if os.getenv('SUPABASE_SERVICE_ROLE_KEY'):
-            config['supabase']['service_role_key'] = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
+        if os.getenv('SUPABASE_SECRET_KEY'):
+            config['supabase']['secret_key'] = os.getenv('SUPABASE_SECRET_KEY')
             
         return config
     
@@ -97,7 +97,7 @@ class SFOTProcessor:
     
     def _handle_shutdown(self, signum, frame):
         """Handle shutdown signals gracefully"""
-        self.logger.info(f"Received signal {signum}, initiating graceful shutdown")
+        self.logger.info(f"Received signal {signum}, initiating shutdown")
         self.shutdown.set()
     
     def process_vod_chunk(self) -> Dict[str, Any]:
@@ -121,8 +121,14 @@ class SFOTProcessor:
             for thread in threads:
                 thread.join(timeout=self.config['processing']['timeout'])
             
-            # Final status update
-            status = 'completed' if not self.shutdown.is_set() else 'interrupted'
+            # Final status update - check if we completed successfully
+            # If shutdown was set but we processed frames successfully, it's completion
+            if self.frames_processed > 0 and self.shutdown.is_set():
+                status = 'completed'
+            elif not self.shutdown.is_set():
+                status = 'completed'
+            else:
+                status = 'interrupted'
             self.logger.info(f"Processing {status}: {self.frames_processed} frames, {self.matchups_found} matchups")
             
             return {
