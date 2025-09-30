@@ -1,0 +1,151 @@
+name: Process VOD
+
+on:
+  workflow_dispatch:
+    inputs:
+      vod_id:
+        description: "VOD ID to process"
+        required: true
+        type: string
+      chunk_uuids:
+        description: "JSON array of chunk UUIDs to process"
+        required: true
+        type: string
+
+env:
+  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+  SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+
+jobs:
+  # Process all chunks in parallel using matrix strategy
+  process-chunks:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        chunk_id: ${{ fromJson(inputs.chunk_uuids) }}
+      # Allow some chunks to fail without stopping others
+      fail-fast: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build SFOT container with cache
+        uses: docker/build-push-action@v5
+        with:
+          context: ./sfot
+          tags: bazaar-ghost-sfot
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Update chunk status to processing
+        run: |
+          echo "Updating chunk ${{ matrix.chunk_id }} to processing status"
+          curl -X POST "$SUPABASE_URL/rest/v1/rpc/update_chunk_status" \
+            -H "apikey: $SUPABASE_SECRET_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"p_chunk_id": "${{ matrix.chunk_id }}", "p_status": "processing"}'
+
+      - name: Get chunk details
+        id: chunk
+        run: |
+          echo "Fetching chunk with ID: ${{ matrix.chunk_id }}"
+
+          RESPONSE=$(curl -s -X GET "$SUPABASE_URL/rest/v1/chunks?id=eq.${{ matrix.chunk_id }}&select=*,vods(source_id,streamer_id,streamers(login))" \
+            -H "apikey: $SUPABASE_SECRET_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
+            -H "Accept: application/json")
+
+          echo "Raw response: $RESPONSE"
+
+          # Check if we got data
+          if echo "$RESPONSE" | jq -e 'length == 0' > /dev/null 2>&1; then
+            echo "No chunk found with ID ${{ matrix.chunk_id }}"
+            exit 1
+          fi
+
+          # Extract chunk details
+          if echo "$RESPONSE" | jq -e 'type == "array" and length > 0' > /dev/null; then
+            VOD_ID=$(echo "$RESPONSE" | jq -r '.[0].vods.source_id // "not_found"')
+            START_SECONDS=$(echo "$RESPONSE" | jq -r '.[0].start_seconds // "not_found"')
+            END_SECONDS=$(echo "$RESPONSE" | jq -r '.[0].end_seconds // "not_found"')
+            STREAMER=$(echo "$RESPONSE" | jq -r '.[0].vods.streamers.login // "not_found"')
+          else
+            VOD_ID=$(echo "$RESPONSE" | jq -r '.vods.source_id // "not_found"')
+            START_SECONDS=$(echo "$RESPONSE" | jq -r '.start_seconds // "not_found"')
+            END_SECONDS=$(echo "$RESPONSE" | jq -r '.end_seconds // "not_found"')
+            STREAMER=$(echo "$RESPONSE" | jq -r '.vods.streamers.login // "not_found"')
+          fi
+
+          echo "Extracted values for chunk ${{ matrix.chunk_id }}:"
+          echo "  VOD_ID=$VOD_ID"
+          echo "  START_SECONDS=$START_SECONDS"
+          echo "  END_SECONDS=$END_SECONDS"
+          echo "  STREAMER=$STREAMER"
+
+          # Validate we got actual data
+          if [ "$VOD_ID" = "not_found" ] || [ "$VOD_ID" = "null" ] || [ -z "$VOD_ID" ]; then
+            echo "Failed to extract VOD_ID from response"
+            exit 1
+          fi
+
+          echo "vod_id=$VOD_ID" >> $GITHUB_OUTPUT
+          echo "start_seconds=$START_SECONDS" >> $GITHUB_OUTPUT
+          echo "end_seconds=$END_SECONDS" >> $GITHUB_OUTPUT
+          echo "streamer=$STREAMER" >> $GITHUB_OUTPUT
+
+      - name: Process chunk with SFOT
+        id: sfot
+        run: |
+          # Create output directory
+          mkdir -p ./output
+
+          echo "Processing chunk ${{ matrix.chunk_id }} for VOD ${{ inputs.vod_id }}"
+          echo "Running SFOT container with arguments: ${{ steps.chunk.outputs.vod_id }} ${{ steps.chunk.outputs.start_seconds }} ${{ steps.chunk.outputs.end_seconds }} ${{ matrix.chunk_id }}"
+
+          # Run with timeout and live output
+          timeout 2420 docker run --rm \
+            --network="host" \
+            -v "./output:/app/output" \
+            -e SUPABASE_URL="$SUPABASE_URL" \
+            -e SUPABASE_SECRET_KEY="$SUPABASE_SECRET_KEY" \
+            bazaar-ghost-sfot \
+            "${{ steps.chunk.outputs.vod_id }}" \
+            "${{ steps.chunk.outputs.start_seconds }}" \
+            "${{ steps.chunk.outputs.end_seconds }}" \
+            "${{ matrix.chunk_id }}"
+
+          DOCKER_EXIT_CODE=$?
+          echo "Docker run exit code: $DOCKER_EXIT_CODE"
+
+          if [ $DOCKER_EXIT_CODE -eq 0 ]; then
+            echo "success=true" >> $GITHUB_OUTPUT
+            echo "Chunk ${{ matrix.chunk_id }} completed successfully"
+          else
+            echo "success=false" >> $GITHUB_OUTPUT
+            echo "Chunk ${{ matrix.chunk_id }} failed"
+          fi
+
+      - name: Update chunk status to completed
+        if: steps.sfot.outputs.success == 'true'
+        run: |
+          curl -X POST "$SUPABASE_URL/rest/v1/rpc/update_chunk_status" \
+            -H "apikey: $SUPABASE_SECRET_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"p_chunk_id": "${{ matrix.chunk_id }}", "p_status": "completed"}'
+
+      - name: Reset chunk status to pending
+        if: failure() || steps.sfot.outputs.success == 'false'
+        run: |
+          ERROR_MSG="Chunk processing failure in VOD workflow"
+          curl -X POST "$SUPABASE_URL/rest/v1/rpc/update_chunk_status" \
+            -H "apikey: $SUPABASE_SECRET_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"p_chunk_id\": \"${{ matrix.chunk_id }}\", \"p_status\": \"pending\", \"p_error_message\": \"$ERROR_MSG\"}"
