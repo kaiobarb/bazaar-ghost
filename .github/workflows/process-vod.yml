@@ -1,4 +1,5 @@
 name: Process VOD
+run-name: Process VOD ${{ inputs.vod_id }}
 
 on:
   workflow_dispatch:
@@ -140,7 +141,7 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"p_chunk_id": "${{ matrix.chunk_id }}", "p_status": "completed"}'
 
-      - name: Reset chunk status to pending
+      - name: Set chunk status to failed
         if: failure() || steps.sfot.outputs.success == 'false'
         run: |
           ERROR_MSG="Chunk processing failure in VOD workflow"
@@ -148,4 +149,4 @@ jobs:
             -H "apikey: $SUPABASE_SECRET_KEY" \
             -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
             -H "Content-Type: application/json" \
-            -d "{\"p_chunk_id\": \"${{ matrix.chunk_id }}\", \"p_status\": \"pending\", \"p_error_message\": \"$ERROR_MSG\"}"
+            -d "{\"p_chunk_id\": \"${{ matrix.chunk_id }}\", \"p_status\": \"failed\", \"p_error_message\": \"$ERROR_MSG\"}"
