@@ -158,6 +158,18 @@ Deno.serve(async (req) => {
       });
     }
 
+    // Update chunks to 'queued' status before triggering GitHub workflow
+    console.log(`Updating ${chunks.length} chunks to 'queued' status`);
+    const { error: updateError } = await supabase
+      .from('chunks')
+      .update({ status: 'queued' })
+      .in('id', chunkUuids);
+
+    if (updateError) {
+      console.error("Error updating chunks to queued status:", updateError);
+      throw new Error(`Failed to update chunks to queued status: ${updateError.message}`);
+    }
+
     // Trigger GitHub workflow with all chunk UUIDs
     const githubRunUrl = await triggerGithubWorkflow(actualVodId.toString(), chunkUuids);
 

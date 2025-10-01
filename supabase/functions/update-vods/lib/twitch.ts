@@ -142,8 +142,24 @@ export async function batchCheckVodAvailability(
     const batch = vodIds.slice(i, i + batchSize);
 
     try {
-      const { data } = await twitchApiCall("videos", {
-        id: batch.join(","),
+      // Build URL with multiple id parameters (not comma-separated)
+      const token = await getTwitchToken();
+      const url = new URL("https://api.twitch.tv/helix/videos");
+
+      // Add each ID as a separate query parameter
+      for (const id of batch) {
+        url.searchParams.append("id", id);
+      }
+
+      console.log(`Checking ${batch.length} VODs with URL: ${url.toString()}`);
+
+      const response = await fetch(url.toString(), {
+        method: "GET",
+        headers: {
+          "Client-Id": TWITCH_CLIENT_ID,
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json",
+        },
       });
 
       // Mark all requested VODs as unavailable by default
@@ -151,11 +167,27 @@ export async function batchCheckVodAvailability(
         results[vodId] = false;
       }
 
-      // Mark returned VODs as available
-      if (data) {
-        for (const vod of data) {
-          results[vod.id] = true;
+      if (response.ok) {
+        const responseData = await response.json();
+        console.log(`API returned ${responseData.data?.length || 0} available VODs out of ${batch.length} requested`);
+
+        // Mark returned VODs as available
+        if (responseData.data) {
+          for (const vod of responseData.data) {
+            results[vod.id] = true;
+            console.log(`✓ VOD ${vod.id} is available`);
+          }
         }
+
+        // Log which VODs were NOT found
+        const unavailable = batch.filter(id => !results[id]);
+        if (unavailable.length > 0) {
+          console.log(`✗ ${unavailable.length} VODs not found: ${unavailable.join(", ")}`);
+        }
+      } else {
+        const errorText = await response.text();
+        console.error(`API error response: ${errorText}`);
+        // All VODs remain marked as unavailable
       }
 
       console.log(`Checked availability for ${batch.length} VODs`);
