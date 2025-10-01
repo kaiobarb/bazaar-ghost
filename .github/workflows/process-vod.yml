@@ -110,7 +110,7 @@ jobs:
           echo "Running SFOT container with arguments: ${{ steps.chunk.outputs.vod_id }} ${{ steps.chunk.outputs.start_seconds }} ${{ steps.chunk.outputs.end_seconds }} ${{ matrix.chunk_id }}"
 
           # Run with timeout and live output
-          timeout 2420 docker run --rm \
+          timeout 1200 docker run --rm \
             --network="host" \
             -v "./output:/app/output" \
             -e SUPABASE_URL="$SUPABASE_URL" \
