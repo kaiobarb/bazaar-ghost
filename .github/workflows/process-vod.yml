@@ -19,8 +19,9 @@ env:
 
 jobs:
   # Process all chunks in parallel using matrix strategy
-  process-chunks:
+  process-chunk:
     runs-on: ubuntu-latest
+    timeout-minutes: 30 # Overall job timeout
     strategy:
       matrix:
         chunk_id: ${{ fromJson(inputs.chunk_uuids) }}
@@ -33,9 +34,11 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        timeout-minutes: 5
 
       - name: Build SFOT container with cache
         uses: docker/build-push-action@v5
+        timeout-minutes: 10
         with:
           context: ./sfot
           tags: bazaar-ghost-sfot
@@ -44,6 +47,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Update chunk status to processing
+        timeout-minutes: 2
         run: |
           echo "Updating chunk ${{ matrix.chunk_id }} to processing status"
           curl -X POST "$SUPABASE_URL/rest/v1/rpc/update_chunk_status" \
@@ -54,6 +58,7 @@ jobs:
 
       - name: Get chunk details
         id: chunk
+        timeout-minutes: 2
         run: |
           echo "Fetching chunk with ID: ${{ matrix.chunk_id }}"
 
@@ -109,8 +114,8 @@ jobs:
           echo "Processing chunk ${{ matrix.chunk_id }} for VOD ${{ inputs.vod_id }}"
           echo "Running SFOT container with arguments: ${{ steps.chunk.outputs.vod_id }} ${{ steps.chunk.outputs.start_seconds }} ${{ steps.chunk.outputs.end_seconds }} ${{ matrix.chunk_id }}"
 
-          # Run with timeout and live output
-          timeout 1200 docker run --rm \
+          # Run with live output
+          docker run --rm \
             --network="host" \
             -v "./output:/app/output" \
             -e SUPABASE_URL="$SUPABASE_URL" \
@@ -142,9 +147,12 @@ jobs:
             -d '{"p_chunk_id": "${{ matrix.chunk_id }}", "p_status": "completed"}'
 
       - name: Set chunk status to failed
-        if: failure() || steps.sfot.outputs.success == 'false'
+        if: always() && (failure() || cancelled() || steps.sfot.outputs.success == 'false')
         run: |
           ERROR_MSG="Chunk processing failure in VOD workflow"
+          if [ "${{ job.status }}" == "cancelled" ]; then
+            ERROR_MSG="Chunk processing timed out or was cancelled"
+          fi
           curl -X POST "$SUPABASE_URL/rest/v1/rpc/update_chunk_status" \
             -H "apikey: $SUPABASE_SECRET_KEY" \
             -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
