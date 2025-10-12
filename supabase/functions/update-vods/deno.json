@@ -1,3 +1,5 @@
 {
-  "imports": {}
+  "imports": {
+    "../_shared/": "../_shared/"
+  }
 }

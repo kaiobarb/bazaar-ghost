@@ -6,12 +6,12 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { supabase } from "./lib/supabase.ts";
+import { supabase } from "../_shared/supabase.ts";
 import {
   twitchApiCall,
   getBazaarGameId,
   batchCheckVodAvailability,
-} from "./lib/twitch.ts";
+} from "../_shared/twitch.ts";
 
 interface UpdateVodsResult {
   vodsDiscovered: number;
@@ -56,6 +56,7 @@ async function updateVods(): Promise<UpdateVodsResult> {
         game_id: bazaarGameId,
         first: "100",
         type: "archive", // Get only vods
+        sort: "time"
       };
 
       // Add cursor for pagination

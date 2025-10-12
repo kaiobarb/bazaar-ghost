@@ -378,3 +378,25 @@ entrypoint = "./functions/check_vod_availability/index.ts"
 # Specifies static files to be bundled with the function. Supports glob patterns.
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/check_vod_availability/*.html" ]
+
+[functions.get_vods_from_streamer]
+enabled = true
+verify_jwt = true
+import_map = "./functions/get_vods_from_streamer/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/get_vods_from_streamer/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/get_vods_from_streamer/*.html" ]
+
+[functions.generate-seed]
+enabled = false
+verify_jwt = true
+import_map = "./functions/generate-seed/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/generate-seed/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/generate-seed/*.html" ]

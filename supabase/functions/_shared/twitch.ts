@@ -61,7 +61,7 @@ export async function twitchApiCall(
     Authorization: `Bearer ${token}`,
     Accept: "application/json",
     "accept-language": "PURPOSELYBADVALUEBECAUSETWITCHAPIISGARBAGE",
-    "User-Agent": "Bazaar-Ghost-Update-VODs/1.0",
+    "User-Agent": "Bazaar-Ghost/1.0",
   };
 
   const response = await fetch(url.toString(), {
@@ -206,4 +206,43 @@ export async function batchCheckVodAvailability(
   }
 
   return results;
+}
+
+export async function getStreamerIdByLogin(login: string): Promise<string | null> {
+  try {
+    const { data } = await twitchApiCall("users", { login });
+
+    if (data && data.length > 0) {
+      return data[0].id;
+    }
+
+    console.log(`No streamer found with login: ${login}`);
+    return null;
+  } catch (error) {
+    console.error(`Error fetching streamer ID for ${login}:`, error);
+    return null;
+  }
+}
+
+export async function getVodsFromStreamer(
+  streamerId: string,
+  params?: {
+    first?: string;
+    after?: string;
+    before?: string;
+    type?: string;
+    period?: string;
+  }
+) {
+  const queryParams: Record<string, string> = {
+    user_id: streamerId,
+    first: params?.first || "100",
+  };
+
+  if (params?.after) queryParams.after = params.after;
+  if (params?.before) queryParams.before = params.before;
+  if (params?.type) queryParams.type = params.type;
+  if (params?.period) queryParams.period = params.period;
+
+  return twitchApiCall("videos", queryParams);
 }

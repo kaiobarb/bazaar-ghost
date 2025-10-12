@@ -1,52 +1,8 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { supabase } from "../_shared/supabase.ts";
+import { getTwitchToken } from "../_shared/twitch.ts";
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const TWITCH_CLIENT_ID = Deno.env.get("TWITCH_CLIENT_ID")!;
-const TWITCH_CLIENT_SECRET = Deno.env.get("TWITCH_CLIENT_SECRET")!;
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-
-interface TwitchToken {
-  access_token: string;
-  expires_at: number;
-}
-
-let twitchToken: TwitchToken | null = null;
-
-async function getTwitchToken(): Promise<string> {
-  if (twitchToken && twitchToken.expires_at > Date.now()) {
-    return twitchToken.access_token;
-  }
-
-  console.log("Generating new Twitch token...");
-  const response = await fetch("https://id.twitch.tv/oauth2/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: TWITCH_CLIENT_ID,
-      client_secret: TWITCH_CLIENT_SECRET,
-      grant_type: "client_credentials",
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error("Failed to get Twitch token:", errorText);
-    throw new Error(`Failed to get Twitch token: ${response.status}`);
-  }
-
-  const data = await response.json();
-  console.log("Token generated successfully, expires in:", data.expires_in);
-
-  twitchToken = {
-    access_token: data.access_token,
-    expires_at: Date.now() + data.expires_in * 1000 - 60000,
-  };
-
-  return twitchToken.access_token;
-}
 
 async function checkVodBatch(vodIds: string[]): Promise<Record<string, boolean>> {
   const token = await getTwitchToken();
