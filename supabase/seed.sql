@@ -42,3 +42,86 @@ BEGIN
     PERFORM create_chunks_for_segment(vod_record.id, 0, vod_record.duration_seconds);
   END LOOP;
 END $$;
+
+-- Seed test schema (if it exists)
+DO $$
+DECLARE
+  test_vod_id bigint;
+  test_chunk_id uuid;
+BEGIN
+  -- Only seed if test schema exists
+  IF EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = 'test') THEN
+    -- Clear test data first
+    TRUNCATE TABLE test.detections CASCADE;
+    TRUNCATE TABLE test.chunks CASCADE;
+    TRUNCATE TABLE test.vods CASCADE;
+    TRUNCATE TABLE test.streamers CASCADE;
+
+    -- Insert Kripp as test streamer
+    INSERT INTO test.streamers (
+      id, login, display_name, profile_image_url, processing_enabled,
+      first_seen_at, last_seen_streaming_bazaar,
+      total_vods, processed_vods, total_detections,
+      created_at, updated_at
+    ) VALUES (
+      29795919,
+      'nl_kripp',
+      'nl_Kripp',
+      'https://static-cdn.jtvnw.net/jtv_user_pictures/401068e0-820a-4d9f-9e7c-1e5563398458-profile_image-300x300.png',
+      true,
+      '2025-09-23 07:09:54.440199+00',
+      '2025-10-11 02:13:15.813+00',
+      0, 0, 0,
+      '2025-09-23 07:09:54.440199+00',
+      '2025-09-23 07:09:54.440199+00'
+    );
+
+    -- Insert test VOD (duration: 1h47m = 6420 seconds)
+    INSERT INTO test.vods (
+      streamer_id, source, source_id, title, duration_seconds,
+      published_at, availability, last_availability_check,
+      ready_for_processing, created_at, updated_at
+    ) VALUES (
+      29795919,  -- Kripp's ID
+      'twitch',
+      '2549030240',
+      'Test VOD - The Bazaar Multiple Qualities',
+      6420,  -- 1h47m
+      '2025-10-12 00:00:00+00',
+      'available',
+      NOW(),
+      true,
+      NOW(),
+      NOW()
+    );
+
+    -- Get the VOD ID we just inserted
+    SELECT id INTO test_vod_id FROM test.vods WHERE source_id = '2549030240' LIMIT 1;
+
+    -- Create a single chunk for testing (first 30 minutes / 1800 seconds)
+    INSERT INTO test.chunks (
+      id, vod_id, start_seconds, end_seconds, chunk_index,
+      status, source, frames_processed, detections_count,
+      priority, scheduled_for, created_at, updated_at
+    ) VALUES (
+      gen_random_uuid(),
+      test_vod_id,
+      0,
+      1800,  -- First 30-minute chunk
+      0,
+      'pending',
+      'vod',
+      0,
+      0,
+      0,
+      NOW(),
+      NOW(),
+      NOW()
+    );
+
+    -- Update sequences for test schema
+    PERFORM setval('test.vods_id_seq', (SELECT MAX(id) FROM test.vods), true);
+
+    RAISE NOTICE 'Test schema seeded: Kripp streamer, VOD 2549030240, and chunk created';
+  END IF;
+END $$;

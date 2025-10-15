@@ -6,3 +6,4 @@ CLAUDE.md
 *.secrets
 *.input
 seed.sql
+test_data/
