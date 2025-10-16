@@ -15,25 +15,37 @@ class EmblemDetector:
     
     RANKS = ['bronze', 'silver', 'gold', 'diamond', 'legend']
     
-    def __init__(self, templates_dir: str = "/home/kaio/Dev/bazaar-ghost/sfot/templates"):
-        """Initialize with emblem templates"""
+    def __init__(self, templates_dir: str = "/home/kaio/Dev/bazaar-ghost/sfot/templates", resolution: str = "480p"):
+        """Initialize with emblem templates
+
+        Args:
+            templates_dir: Directory containing emblem templates
+            resolution: Resolution to use for templates (360p, 480p, 720p, 1080p)
+        """
         self.templates_dir = Path(templates_dir)
         self.templates = {}
+        self.resolution = resolution
         self.logger = logging.getLogger(__name__)
-        
+
         # Load all rank templates
         self._load_templates()
-    
+
     def _load_templates(self):
         """Load all rank emblem templates"""
         for rank in self.RANKS:
-            template_path = self.templates_dir / f"{rank}_480.png"
+            # Try new naming scheme first (with resolution suffix)
+            template_path = self.templates_dir / f"{rank}_{self.resolution}.png"
+
+            # Fallback to old naming for 480p if new file doesn't exist
+            if not template_path.exists() and self.resolution == "480p":
+                template_path = self.templates_dir / f"_{rank}_480.png"
+
             if template_path.exists():
                 template = cv2.imread(str(template_path))
                 if template is not None:
                     # Keep templates in color for color matching
                     self.templates[rank] = template
-                    self.logger.info(f"Loaded {rank} emblem template (color)")
+                    self.logger.info(f"Loaded {rank} emblem template from {template_path.name}")
                 else:
                     self.logger.warning(f"Failed to load {rank} template")
             else:

@@ -15,14 +15,20 @@ from emblem_detector import EmblemDetector
 class FrameProcessor:
     """Process frames for matchup detection and OCR"""
     
-    def __init__(self, config: Dict[str, Any]):
-        """Initialize frame processor with configuration"""
+    def __init__(self, config: Dict[str, Any], quality: str = "480p"):
+        """Initialize frame processor with configuration
+
+        Args:
+            config: Configuration dictionary
+            quality: Video quality being processed (360p, 480p, 720p, 1080p)
+        """
         self.config = config
+        self.quality = quality
         self.logger = logging.getLogger('sfot.frame_processor')
-        
+
         # Load detection parameters
         self.threshold = config['detection']['threshold']
-        
+
         # Load matchup template if specified
         self.matchup_template = None
         if 'template_path' in config['detection']:
@@ -31,16 +37,25 @@ class FrameProcessor:
                 self.logger.info(f"Loaded matchup template: {config['detection']['template_path']}")
             except Exception as e:
                 self.logger.warning(f"Could not load matchup template: {e}")
-        
+
         # Initialize emblem detector
         self.emblem_detector = None
         if config.get('emblem_detection', {}).get('enabled', False):
             try:
                 templates_dir = config['emblem_detection'].get('templates_dir', 'templates/')
-                self.emblem_detector = EmblemDetector(templates_dir)
+                # Map quality to resolution for emblem templates
+                resolution_map = {
+                    '360p': '360p',
+                    '480p': '480p',
+                    '720p': '720p',
+                    '1080p': '1080p',
+                    '1080p60': '1080p'  # Use 1080p templates for 1080p60 too
+                }
+                emblem_resolution = resolution_map.get(quality, '480p')
+                self.emblem_detector = EmblemDetector(templates_dir, resolution=emblem_resolution)
                 self.emblem_threshold = config['emblem_detection'].get('threshold', 0.25)
                 self.emblem_expand = config['emblem_detection'].get('expand_pixels', 10)
-                self.logger.info(f"Initialized emblem detector")
+                self.logger.info(f"Initialized emblem detector with {emblem_resolution} templates")
             except Exception as e:
                 self.logger.warning(f"Could not initialize emblem detector: {e}")
         

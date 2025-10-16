@@ -6,7 +6,12 @@ processing:
 
 detection:
   threshold: 0.78
-  crop_region: [271, 54, 503, 352] # nameplate region on a 480p matchup frame w, h, x, y Includes rank emblem
+  # Resolution-agnostic crop region as percentages of frame dimensions
+  # Format: [x, y, width, height] where each value is 0.0-1.0
+  # Converted from 480p pixel values: x=503/854, y=352/480, w=271/854, h=54/480
+  crop_region_percent: [0.5889, 0.7333, 0.3173, 0.1125]  # Nameplate region including rank emblem
+  # DEPRECATED - use crop_region_percent instead
+  # crop_region: [271, 54, 503, 352] # nameplate region on a 480p matchup frame w, h, x, y
   template_path: "templates/matchup_template.png"
 
 # Emblem detection and removal configuration
@@ -60,3 +65,8 @@ logging:
   format: "json"
   max_file_size_mb: 50
   backup_count: 3
+
+test_mode:
+  enabled: false  # Override with TEST_MODE env var
+  data_directory: "test_data"
+  default_qualities: ["480p", "360p", "1080p60"]
