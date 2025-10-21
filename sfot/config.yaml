@@ -9,16 +9,20 @@ detection:
   # Resolution-agnostic crop region as percentages of frame dimensions
   # Format: [x, y, width, height] where each value is 0.0-1.0
   # Converted from 480p pixel values: x=503/854, y=352/480, w=271/854, h=54/480
-  crop_region_percent: [0.5889, 0.7333, 0.3173, 0.1125]  # Nameplate region including rank emblem
-  # DEPRECATED - use crop_region_percent instead
-  # crop_region: [271, 54, 503, 352] # nameplate region on a 480p matchup frame w, h, x, y
+  crop_region_percent: [0.5889, 0.7333, 0.3173, 0.1125] # Nameplate region including rank emblem
   template_path: "templates/matchup_template.png"
 
 # Emblem detection and removal configuration
 emblem_detection:
   enabled: true
-  threshold: 0.25
+  threshold: 0.30 # Using AKAZE feature matching - real emblems >0.52, false positives <0.03
   expand_pixels: 10
+  templates_dir: "templates/"
+
+# Right edge detection for partial occlusion handling
+right_edge_detection:
+  enabled: true
+  threshold: 0.5
   templates_dir: "templates/"
 
 # OCR preprocessing based on tuned parameters
@@ -67,6 +71,6 @@ logging:
   backup_count: 3
 
 test_mode:
-  enabled: false  # Override with TEST_MODE env var
+  enabled: false # Override with TEST_MODE env var
   data_directory: "test_data"
   default_qualities: ["480p", "360p", "1080p60"]
