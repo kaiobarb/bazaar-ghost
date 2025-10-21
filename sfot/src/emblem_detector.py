@@ -1,37 +1,46 @@
 #!/usr/bin/env python3
 """
 Emblem detection and removal for improved OCR accuracy
-Detects rank emblems in nameplate frames and masks them out
+Uses AKAZE feature matching for robust emblem detection
 """
 
 import cv2
 import numpy as np
 from pathlib import Path
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, List
 import logging
 
 class EmblemDetector:
-    """Detect and remove rank emblems from nameplate frames"""
-    
+    """Detect and remove rank emblems from nameplate frames using AKAZE feature matching"""
+
     RANKS = ['bronze', 'silver', 'gold', 'diamond', 'legend']
-    
+
     def __init__(self, templates_dir: str = "/home/kaio/Dev/bazaar-ghost/sfot/templates", resolution: str = "480p"):
-        """Initialize with emblem templates
+        """Initialize with emblem templates and AKAZE detector
 
         Args:
             templates_dir: Directory containing emblem templates
             resolution: Resolution to use for templates (360p, 480p, 720p, 1080p)
         """
         self.templates_dir = Path(templates_dir)
-        self.templates = {}
         self.resolution = resolution
         self.logger = logging.getLogger(__name__)
 
-        # Load all rank templates
+        # Initialize AKAZE detector and matcher
+        self.detector = cv2.AKAZE_create()
+        self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+
+        # Storage for pre-computed template features
+        self.template_keypoints = {}
+        self.template_descriptors = {}
+        self.template_shapes = {}  # Store template dimensions for bbox calculation
+        self.templates = {}  # Keep for visualization/debugging
+
+        # Load all rank templates and pre-compute descriptors
         self._load_templates()
 
     def _load_templates(self):
-        """Load all rank emblem templates"""
+        """Load all rank emblem templates and pre-compute AKAZE features"""
         for rank in self.RANKS:
             # Try new naming scheme first (with resolution suffix)
             template_path = self.templates_dir / f"{rank}_{self.resolution}.png"
@@ -41,65 +50,142 @@ class EmblemDetector:
                 template_path = self.templates_dir / f"_{rank}_480.png"
 
             if template_path.exists():
-                template = cv2.imread(str(template_path))
-                if template is not None:
-                    # Keep templates in color for color matching
+                # Load template WITH alpha channel for transparency support
+                template_bgra = cv2.imread(str(template_path), cv2.IMREAD_UNCHANGED)
+                if template_bgra is not None:
+                    # Extract BGR channels (ignore alpha for AKAZE)
+                    if len(template_bgra.shape) == 3 and template_bgra.shape[2] == 4:
+                        template = template_bgra[:,:,:3]  # BGR channels only
+                    else:
+                        template = template_bgra
+
+                    # Store template for later use (removal, visualization)
                     self.templates[rank] = template
-                    self.logger.info(f"Loaded {rank} emblem template from {template_path.name}")
+                    self.template_shapes[rank] = template.shape[:2]  # (height, width)
+
+                    # Pre-compute AKAZE keypoints and descriptors
+                    kp, des = self.detector.detectAndCompute(template, None)
+
+                    if des is not None and len(des) > 0:
+                        self.template_keypoints[rank] = kp
+                        self.template_descriptors[rank] = des
+                        self.logger.info(f"Loaded {rank} emblem: {len(kp)} keypoints from {template_path.name}")
+                    else:
+                        self.logger.warning(f"No keypoints found in {rank} template")
                 else:
                     self.logger.warning(f"Failed to load {rank} template")
             else:
                 self.logger.warning(f"Template not found: {template_path}")
     
-    def detect_emblem(self, frame: np.ndarray, threshold: float = 0.7) -> Tuple[Optional[str], Optional[Tuple[int, int, int, int]], float]:
+    def detect_emblem(self, frame: np.ndarray, threshold: float = 0.30) -> Tuple[Optional[str], Optional[Tuple[int, int, int, int]], float]:
         """
-        Detect which emblem is present in the frame
-        
+        Detect which emblem is present in the frame using AKAZE feature matching
+
         Args:
-            frame: Input frame (can be color or grayscale)
-            threshold: Matching threshold (0-1)
-            
+            frame: Input frame (color BGR)
+            threshold: Matching confidence threshold (0-1), default 0.30 for AKAZE
+
         Returns:
             (rank_name, (x, y, w, h), confidence) or (None, None, 0.0) if no match
         """
-        # if len(frame.shape) == 3:
-        #     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        # else:
-        #     gray = frame
-        
-        best_match = None
-        best_confidence = 0
-        best_location = None
+        # Extract frame keypoints and descriptors
+        frame_kp, frame_des = self.detector.detectAndCompute(frame, None)
+
+        if frame_des is None or len(frame_des) == 0:
+            self.logger.debug("No keypoints found in frame")
+            return None, None, 0.0
+
         best_rank = None
-        
-        # Try each template
-        for rank, template in self.templates.items():
-            # Ensure template fits in frame
-            if template.shape[0] > frame.shape[0] or template.shape[1] > frame.shape[1]:
+        best_bbox = None
+        best_confidence = 0.0
+
+        # Try matching against each rank template
+        for rank in self.RANKS:
+            if rank not in self.template_descriptors:
                 continue
-            
-            # Perform template matching
-            result = cv2.matchTemplate(frame, template, cv2.TM_CCOEFF_NORMED)
-            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-            
+
+            template_des = self.template_descriptors[rank]
+            template_kp = self.template_keypoints[rank]
+
+            # Match descriptors
+            matches = self.matcher.knnMatch(template_des, frame_des, k=2)
+
+            # Apply Lowe's ratio test
+            good_matches = []
+            for match_pair in matches:
+                if len(match_pair) == 2:
+                    m, n = match_pair
+                    if m.distance < 0.75 * n.distance:  # Lowe's ratio
+                        good_matches.append(m)
+
+            if len(good_matches) == 0:
+                continue
+
+            # Calculate confidence score
+            match_ratio = len(good_matches) / min(len(template_kp), len(frame_kp))
+            avg_distance = np.mean([m.distance for m in good_matches])
+            # Hamming distance normalization for AKAZE
+            distance_score = max(0, 1.0 - avg_distance / 64.0)
+            confidence = match_ratio * 0.5 + distance_score * 0.5
+
+            # Try to find homography for better bbox and confidence
+            if len(good_matches) >= 4:
+                src_pts = np.float32([template_kp[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                dst_pts = np.float32([frame_kp[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+
+                homography, inliers = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+
+                if homography is not None and inliers is not None:
+                    # Update confidence with inlier ratio
+                    inlier_ratio = np.sum(inliers) / len(good_matches)
+                    confidence = confidence * 0.7 + inlier_ratio * 0.3
+
+                    # Calculate bounding box using homography
+                    h, w = self.template_shapes[rank]
+                    pts = np.float32([[0, 0], [0, h-1], [w-1, h-1], [w-1, 0]]).reshape(-1, 1, 2)
+                    dst = cv2.perspectiveTransform(pts, homography)
+
+                    # Get bounding rectangle
+                    x, y, w, h = cv2.boundingRect(dst)
+                    bbox = (x, y, w, h)
+                else:
+                    # No valid homography, estimate bbox from matches
+                    dst_points = [frame_kp[m.trainIdx].pt for m in good_matches]
+                    if dst_points:
+                        xs = [p[0] for p in dst_points]
+                        ys = [p[1] for p in dst_points]
+                        x, y = int(min(xs)), int(min(ys))
+                        w, h = self.template_shapes[rank]
+                        bbox = (x, y, w, h)
+                    else:
+                        bbox = None
+            else:
+                # Not enough matches for homography, estimate bbox
+                dst_points = [frame_kp[m.trainIdx].pt for m in good_matches]
+                if dst_points:
+                    xs = [p[0] for p in dst_points]
+                    ys = [p[1] for p in dst_points]
+                    x, y = int(min(xs)), int(min(ys))
+                    w, h = self.template_shapes[rank]
+                    bbox = (x, y, w, h)
+                else:
+                    bbox = None
+
             # Check if this is the best match so far
-            if max_val > best_confidence and max_val >= threshold:
-                best_confidence = max_val
-                best_location = max_loc
+            if confidence > best_confidence and confidence >= threshold:
+                best_confidence = confidence
                 best_rank = rank
-                # Get template dimensions - note: shape is (height, width, channels) for color
-                h, w = template.shape[:2]
-                best_match = (best_location[0], best_location[1], w, h)
-                self.logger.debug(f"Match found: {rank} at ({max_loc[0]}, {max_loc[1]}), size=({w}x{h}), conf={max_val:.3f}")
-        
-        if best_match:
+                best_bbox = bbox
+                self.logger.debug(f"Match found: {rank} with {len(good_matches)} matches, conf={confidence:.3f}")
+
+        if best_rank:
             self.logger.debug(f"Detected {best_rank} emblem with confidence {best_confidence:.3f}")
-            return best_rank, best_match, best_confidence
-        
+            return best_rank, best_bbox, best_confidence
+
         return None, None, 0.0
     
-    def remove_emblem(self, frame: np.ndarray, 
-                     threshold: float = 0.7,
+    def remove_emblem(self, frame: np.ndarray,
+                     threshold: float = 0.30,
                      expand_pixels: int = 2,
                      fill_value: int = 0) -> Tuple[np.ndarray, Optional[str]]:
         """

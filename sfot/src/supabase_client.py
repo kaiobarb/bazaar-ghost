@@ -159,9 +159,9 @@ class SupabaseClient:
                         except Exception as e:
                             self.logger.error(f"Failed to find VOD with source_id {source_id}: {e}")
                             continue
-                    
+
                     actual_vod_id = vod_id_cache[source_id]
-                    
+
                     # Create detection record if username was extracted
                     if matchup.get('username'):
                         # Generate storage path for the detection image
@@ -178,26 +178,42 @@ class SupabaseClient:
                             'rank': matchup.get('detected_rank'),
                             'chunk_id': matchup.get('chunk_id'),
                             'storage_path': storage_path,
+                            'no_right_edge': matchup.get('no_right_edge', False),
                         }
                         batch_data.append(record)
-                    
-                    # Queue image upload if present
-                    if 'frame_base64' in matchup:
-                        image_uploads.append({
-                            'vod_id': matchup['vod_id'],
-                            'timestamp': matchup['timestamp'],
-                            'data': matchup['frame_base64'],
-                            'type': 'detection'
-                        })
-                    
-                    # Queue OCR debug frame upload if present
-                    if 'ocr_debug_frame' in matchup:
-                        image_uploads.append({
-                            'vod_id': matchup['vod_id'],
-                            'timestamp': matchup['timestamp'],
-                            'data': matchup['ocr_debug_frame'],
-                            'type': 'ocr_debug'
-                        })
+
+                        # Queue image uploads ONLY if we have a valid detection record
+                        # This prevents storing frames for false positives with empty usernames
+
+                        # Upload detection frame
+                        if 'frame_base64' in matchup:
+                            image_uploads.append({
+                                'vod_id': matchup['vod_id'],
+                                'timestamp': matchup['timestamp'],
+                                'data': matchup['frame_base64'],
+                                'type': 'detection'
+                            })
+
+                        # Upload OCR debug frame
+                        if 'ocr_debug_frame' in matchup:
+                            image_uploads.append({
+                                'vod_id': matchup['vod_id'],
+                                'timestamp': matchup['timestamp'],
+                                'data': matchup['ocr_debug_frame'],
+                                'type': 'ocr_debug'
+                            })
+
+                        # Upload emblem bounding box frame (test mode only)
+                        if 'emblem_boxes_frame' in matchup:
+                            image_uploads.append({
+                                'vod_id': matchup['vod_id'],
+                                'timestamp': matchup['timestamp'],
+                                'data': matchup['emblem_boxes_frame'],
+                                'type': 'emblem_boxes'
+                            })
+                    else:
+                        # No valid username - skip this match entirely
+                        self.logger.debug(f"Skipping matchup at {matchup['timestamp']}: no valid username extracted")
                 
                 # Insert detection records
                 if batch_data:
@@ -224,15 +240,21 @@ class SupabaseClient:
             if self.test_mode:
                 if image_type == 'detection':
                     filename = f"test/{self.quality}/{vod_id}/{timestamp}.jpg"
+                elif image_type == 'ocr_debug':
+                    # OCR preprocessed frames go in ocr_debug folder
+                    filename = f"test/{self.quality}/{vod_id}/ocr_debug/preprocessed_{timestamp}.jpg"
+                elif image_type == 'emblem_boxes':
+                    # Emblem bounding box frames go in ocr_debug folder (test mode only)
+                    filename = f"test/{self.quality}/{vod_id}/ocr_debug/boxes_{timestamp}.jpg"
                 else:
-                    # For OCR debug frames - structure: test/ocr_debug/{quality}/{vod_id}/{timestamp}.jpg
-                    filename = f"test/{image_type}/{self.quality}/{vod_id}/{timestamp}.jpg"
+                    # Fallback for any other debug type
+                    filename = f"test/{self.quality}/{vod_id}/ocr_debug/{image_type}_{timestamp}.jpg"
             else:
                 if image_type == 'detection':
                     filename = f"{vod_id}/{timestamp}.jpg"
                 else:
-                    # For OCR debug frames
-                    filename = f"{vod_id}/{image_type}/{timestamp}.jpg"
+                    # For OCR debug frames in production (keep existing behavior)
+                    filename = f"{vod_id}/{image_type}_{timestamp}.jpg"
             
             # Decode base64
             import base64

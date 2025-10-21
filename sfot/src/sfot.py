@@ -77,8 +77,8 @@ class SFOTProcessor:
         self.last_update_time = time.time()
         self.frames_at_last_update = 0
 
-        # Initialize frame processor with quality information
-        self.frame_processor = FrameProcessor(self.config, quality=self.quality)
+        # Initialize frame processor with quality information and test mode
+        self.frame_processor = FrameProcessor(self.config, quality=self.quality, test_mode=self.test_mode)
 
         # Setup logging
         self._setup_logging()
@@ -564,9 +564,9 @@ class SFOTProcessor:
                 self.supabase.upload_batch(batch)
 
     def progress_monitor_worker(self):
-        """Worker to log progress updates every 5 seconds"""
+        """Worker to log progress updates every 10 seconds"""
         self.logger.info("Progress monitor starting...")
-        update_interval = 5.0  # seconds
+        update_interval = 10.0  # seconds
 
         try:
             while not self.shutdown.is_set():
