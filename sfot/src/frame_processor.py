@@ -63,23 +63,37 @@ class FrameProcessor:
         self.emblem_detector = None
         if config.get('emblem_detection', {}).get('enabled', False):
             try:
-                templates_dir = config['emblem_detection'].get('templates_dir', 'templates/')
-                self.emblem_detector = EmblemDetector(templates_dir, resolution=template_resolution)
-                self.emblem_threshold = config['emblem_detection'].get('threshold', 0.25)
-                self.emblem_expand = config['emblem_detection'].get('expand_pixels', 10)
-                self.logger.info(f"Initialized emblem detector with {template_resolution} templates")
+                emblem_config = config['emblem_detection']
+                templates_dir = emblem_config.get('templates_dir', 'templates/')
+                method = emblem_config.get('method', 'akaze')
+
+                # Initialize detector with method
+                self.emblem_detector = EmblemDetector(templates_dir, resolution=template_resolution, method=method)
+
+                # Set threshold based on method
+                if method == 'akaze':
+                    self.emblem_threshold = emblem_config.get('akaze_threshold', 0.30)
+                elif method == 'template':
+                    self.emblem_threshold = emblem_config.get('template_threshold', 0.80)
+                else:
+                    self.emblem_threshold = 0.30  # fallback
+
+                self.logger.info(f"Initialized emblem detector with {template_resolution} templates using {method} method (threshold={self.emblem_threshold})")
             except Exception as e:
                 self.logger.warning(f"Could not initialize emblem detector: {e}")
 
         # Initialize right edge detector
         self.right_edge_detector = None
+        self.right_edge_crop_margin = 0.0
         if config.get('right_edge_detection', {}).get('enabled', True):
             try:
                 templates_dir = config.get('right_edge_detection', {}).get('templates_dir',
                                           config.get('emblem_detection', {}).get('templates_dir', 'templates/'))
                 self.right_edge_detector = RightEdgeDetector(templates_dir, resolution=template_resolution)
                 self.right_edge_threshold = config.get('right_edge_detection', {}).get('threshold', 0.7)
-                self.logger.info(f"Initialized right edge detector with {template_resolution} template")
+                # Crop margin: crop this % more to avoid edge artifacts (e.g., 10% = crop at x=90 if edge at x=100)
+                self.right_edge_crop_margin = config.get('right_edge_detection', {}).get('crop_margin_percent', 10) / 100.0
+                self.logger.info(f"Initialized right edge detector with {template_resolution} template (crop margin: {self.right_edge_crop_margin*100:.0f}%)")
             except Exception as e:
                 self.logger.warning(f"Could not initialize right edge detector: {e}")
         
@@ -124,19 +138,41 @@ class FrameProcessor:
                 # No emblem found, no matchup
                 return None
 
+            # Reject if bbox is None (detection without valid bounding box)
+            if emblem_bbox is None:
+                self.logger.info(f"Rejecting detection at {timestamp}s: emblem detected but bbox is None")
+                return None
+
             # Validate emblem bounding box position and size
             if emblem_bbox:
                 x, y, w, h = emblem_bbox
                 frame_h, frame_w = frame.shape[:2]
 
-                # Check 1: Emblem top must be within 5% of frame height from top
-                max_top_offset = frame_h * 0.05
-                if y > max_top_offset:
-                    self.logger.info(f"Rejecting detection at {timestamp}s: emblem too far from top (y={y:.1f}, max={max_top_offset:.1f})")
+                # Check 0: Bounding box dimensions must be positive
+                if w <= 0 or h <= 0:
+                    self.logger.info(f"Rejecting detection at {timestamp}s: invalid bbox dimensions (w={w}, h={h})")
                     return None
 
-                # Check 2: Emblem height must be at least 90% of frame height
-                min_height = frame_h * 0.90
+                # Calculate centroid (allow bbox to extend slightly off-frame)
+                centroid_x = x + w / 2
+                centroid_y = y + h / 2
+
+                # Check 1: Centroid must be within frame boundaries
+                if centroid_x < 0 or centroid_x >= frame_w or centroid_y < 0 or centroid_y >= frame_h:
+                    self.logger.info(f"Rejecting detection at {timestamp}s: centroid outside frame (centroid={centroid_x:.1f},{centroid_y:.1f}, frame={frame_w}x{frame_h})")
+                    return None
+
+                # Check 2: Centroid must be vertically centered (within middle 60% of frame height)
+                # This allows for slight vertical offset but rejects wildly misplaced detections
+                min_y = frame_h * 0.20  # Top 20% margin
+                max_y = frame_h * 0.80  # Bottom 20% margin
+                if centroid_y < min_y or centroid_y > max_y:
+                    self.logger.info(f"Rejecting detection at {timestamp}s: centroid not vertically centered (y={centroid_y:.1f}, valid range={min_y:.1f}-{max_y:.1f})")
+                    return None
+
+                # Check 3: Emblem height must be reasonable (at least 80% of frame height)
+                # Reduced from 90% to allow for some variation in template size
+                min_height = frame_h * 0.80
                 if h < min_height:
                     self.logger.info(f"Rejecting detection at {timestamp}s: emblem too short (h={h:.1f}, min={min_height:.1f})")
                     return None
@@ -147,7 +183,7 @@ class FrameProcessor:
 
             self.last_matchup_time = timestamp
 
-            # PHASE 2: Right edge detection (only if emblem was found)
+            # Right edge detection (only if emblem was found)
             right_edge_x = None
             no_right_edge = False
 
@@ -161,13 +197,13 @@ class FrameProcessor:
 
             # Remove emblem from frame for better OCR
             processed_frame = frame.copy()
-            if self.emblem_detector and emblem_bbox:
-                processed_frame, _ = self.emblem_detector.remove_emblem(
-                    frame,
-                    threshold=self.emblem_threshold,
-                    expand_pixels=0,  # Use exact bounding box without expansion
-                    fill_value=255
-                )
+            # Commenting out for now, no need to remove if it will be cropped anyway
+            # if self.emblem_detector and emblem_bbox:
+            #     processed_frame, _ = self.emblem_detector.remove_emblem(
+            #         frame,
+            #         threshold=self.emblem_threshold,
+            #         fill_value=255
+            #     )
 
             # Calculate emblem right boundary for cropping
             emblem_right_x = None
@@ -175,14 +211,20 @@ class FrameProcessor:
                 x, y, w, h = emblem_bbox
                 emblem_right_x = min(frame.shape[1], x + w)  # Use exact bbox width
 
+            # Validate right edge position - reject if right edge is to the left of emblem
+            if right_edge_x is not None and emblem_right_x is not None:
+                if right_edge_x < emblem_right_x:
+                    self.logger.info(f"Rejecting detection at {timestamp}s: right edge ({right_edge_x}) is left of emblem right ({emblem_right_x})")
+                    return None
+
             # PHASE 3: Intelligent cropping based on emblem and right edge
             cropped_frame = self._intelligent_crop_v2(processed_frame, emblem_right_x, right_edge_x)
             
             # Advanced OCR preprocessing
             processed = self._advanced_preprocess_for_ocr(cropped_frame)
-            
-            # Extract username via OCR using preprocessed frame
-            username = self._extract_usernames(processed)
+
+            # Extract username via OCR using preprocessed frame (returns username and confidence)
+            username, ocr_confidence = self._extract_usernames(processed)
             
             # Encode the original frame (already cropped by FFmpeg)
             success, encoded = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -196,12 +238,48 @@ class FrameProcessor:
             boxes_jpeg = None
             if self.test_mode and self.emblem_detector:
                 try:
-                    # Create visualization with bounding boxes on original frame
+                    # Create visualization with emblem bounding box on original frame
                     boxes_vis = self.emblem_detector.create_debug_visualization(
                         frame,
-                        threshold=self.emblem_threshold,
-                        expand_pixels=self.emblem_expand
+                        threshold=self.emblem_threshold
                     )
+
+                    # Add right edge visualization if detected
+                    if self.right_edge_detector and right_edge_x is not None:
+                        # Calculate actual crop position with margin
+                        margin_pixels = int(right_edge_x * self.right_edge_crop_margin)
+                        crop_position = right_edge_x - margin_pixels
+
+                        # Draw vertical line at actual crop position (cyan)
+                        cv2.line(boxes_vis, (crop_position, 0), (crop_position, boxes_vis.shape[0]),
+                                (255, 255, 0), 2)  # Cyan color - shows where crop will happen
+
+                        # Draw right edge bounding box if we can find the match location
+                        if self.right_edge_detector.template is not None:
+                            # Re-run detection to get match location (cached by template matching)
+                            template = self.right_edge_detector.template
+                            mask = self.right_edge_detector.mask
+
+                            if mask is not None:
+                                result = cv2.matchTemplate(frame, template, cv2.TM_SQDIFF, mask=mask)
+                            else:
+                                result = cv2.matchTemplate(frame, template, cv2.TM_SQDIFF)
+                            _, _, min_loc, _ = cv2.minMaxLoc(result)
+
+                            template_h, template_w = template.shape[:2]
+                            template_x = right_edge_x - template_w
+
+                            # Draw bounding box around detected template (cyan)
+                            cv2.rectangle(boxes_vis,
+                                        (template_x, min_loc[1]),
+                                        (right_edge_x, min_loc[1] + template_h),
+                                        (255, 255, 0), 2)  # Cyan color
+
+                            # Add text label showing detected position and crop position
+                            label = f"Right Edge: {right_edge_x} -> crop at {crop_position}"
+                            cv2.putText(boxes_vis, label, (template_x, min_loc[1] - 5),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+
                     success_boxes, encoded_boxes = cv2.imencode('.jpg', boxes_vis, [cv2.IMWRITE_JPEG_QUALITY, 90])
                     boxes_jpeg = encoded_boxes.tobytes() if success_boxes else None
                     self.logger.debug(f"Created bounding box visualization for timestamp {timestamp}")
@@ -213,7 +291,7 @@ class FrameProcessor:
                 'vod_id': vod_id,
                 'timestamp': timestamp,
                 'is_matchup': True,
-                'confidence': emblem_confidence,
+                'confidence': ocr_confidence,  # OCR confidence (0-1), not emblem confidence
                 'username': username,
                 'detected_rank': detected_rank,
                 'chunk_id': chunk_id,
@@ -327,22 +405,21 @@ class FrameProcessor:
     def _detect_and_remove_emblem(self, frame: np.ndarray) -> Tuple[np.ndarray, Optional[int], Optional[str]]:
         """
         Detect emblem and remove it, returning the right boundary x coordinate
-        
+
         Args:
             frame: Input frame
-            
+
         Returns:
             (processed_frame, emblem_right_x, detected_rank)
         """
         try:
             # Remove emblem with white fill (255)
             processed_frame, detected_rank = self.emblem_detector.remove_emblem(
-                frame, 
-                threshold=self.emblem_threshold, 
-                expand_pixels=self.emblem_expand, 
+                frame,
+                threshold=self.emblem_threshold,
                 fill_value=255  # White fill
             )
-            
+
             # Get emblem coordinates for right boundary calculation
             emblem_right_x = None
             if detected_rank:
@@ -350,12 +427,12 @@ class FrameProcessor:
                 rank, bbox, confidence = self.emblem_detector.detect_emblem(frame, self.emblem_threshold)
                 if bbox:
                     x, y, w, h = bbox
-                    # Calculate right boundary after expansion
-                    emblem_right_x = min(frame.shape[1], x + w + self.emblem_expand)
+                    # Calculate right boundary using exact bbox
+                    emblem_right_x = min(frame.shape[1], x + w)
                     self.logger.debug(f"Detected {rank} emblem, right boundary at x={emblem_right_x}")
-            
+
             return processed_frame, emblem_right_x, detected_rank
-            
+
         except Exception as e:
             self.logger.error(f"Emblem detection/removal error: {e}")
             return frame, None, None
@@ -388,15 +465,19 @@ class FrameProcessor:
                 # Both boundaries detected - ideal case
                 # Username is between emblem and right edge
                 left_bound = emblem_right_x
-                right_bound = right_edge_x
+
+                # Apply crop margin to right edge to avoid edge artifacts
+                # E.g., if right_edge_x=100 and margin=10%, crop at 90
+                margin_pixels = int(right_edge_x * self.right_edge_crop_margin)
+                right_bound = max(emblem_right_x + 20, right_edge_x - margin_pixels)  # Ensure at least 20px width
 
                 # Validate coordinates are reasonable
                 if left_bound >= 0 and right_bound <= w and right_bound > left_bound + 20:
                     x1 = max(0, left_bound)
                     x2 = min(w, right_bound)
-                    self.logger.debug(f"Ideal crop with both boundaries: x={x1}-{x2}, y={y1}-{y2}")
+                    self.logger.debug(f"Ideal crop with both boundaries: x={x1}-{x2}, y={y1}-{y2} (right_edge={right_edge_x}, margin={margin_pixels}px)")
                 else:
-                    self.logger.warning(f"Invalid boundaries: emblem_right={emblem_right_x}, right_edge={right_edge_x}")
+                    self.logger.warning(f"Invalid boundaries: emblem_right={emblem_right_x}, right_edge={right_edge_x}, adjusted_right={right_bound}")
                     x1 = 0
                     x2 = w
             elif emblem_right_x is not None and right_edge_x is None:
@@ -544,32 +625,58 @@ class FrameProcessor:
             # Fallback to basic preprocessing
             return self._preprocess_for_ocr(frame)
     
-    def _extract_usernames(self, frame: np.ndarray) -> Optional[str]:
+    def _extract_usernames(self, frame: np.ndarray) -> Tuple[Optional[str], float]:
         """
         Extract username from preprocessed nameplate frame using OCR
-        
+
         Args:
             frame: Already preprocessed frame (grayscale, scaled, binary, denoised)
-        
+
         Returns:
-            Extracted username or None
+            Tuple of (username, confidence) where confidence is 0-1 scale
         """
         try:
-            # Run OCR on preprocessed frame
-            text = pytesseract.image_to_string(
+            # Run OCR with detailed output to get confidence scores
+            data = pytesseract.image_to_data(
                 frame,
                 lang=self.tesseract_lang,
-                config=self.tesseract_config
-            ).strip()
-            
+                config=self.tesseract_config,
+                output_type=pytesseract.Output.DICT
+            )
+
+            # Extract text and confidence from OCR results
+            # Filter out entries with no confidence (-1) and empty strings
+            valid_words = []
+            confidences = []
+
+            for i, conf in enumerate(data['conf']):
+                text = data['text'][i].strip()
+                if conf != -1 and text:  # -1 means no confidence available
+                    valid_words.append(text)
+                    confidences.append(float(conf))
+
+            if not valid_words:
+                return None, 0.0
+
+            # Join words into full text
+            text = ' '.join(valid_words)
+
+            # Calculate average confidence (normalized to 0-1 range)
+            avg_confidence = np.mean(confidences) / 100.0 if confidences else 0.0
+
+            # Log low confidence OCR results for debugging
+            if avg_confidence < 0.5:
+                self.logger.warning(f"Low OCR confidence: text='{text}', confidences={confidences}, avg={avg_confidence:.3f}")
+
             # Clean up text
             cleaned = self._clean_username(text)
-            return cleaned
-                    
+
+            return cleaned, avg_confidence
+
         except Exception as e:
             self.logger.error(f"Username extraction error: {e}")
-        
-        return None
+
+        return None, 0.0
     
     def _preprocess_for_ocr(self, roi: np.ndarray) -> np.ndarray:
         """Preprocess image region for better OCR accuracy"""
@@ -599,14 +706,15 @@ class FrameProcessor:
         """Clean and validate extracted username"""
         if not text:
             return None
-        
-        # Remove non-alphanumeric characters except underscore
+
+        # Remove non-alphanumeric characters except underscore, dash, and dot
+        # These are allowed in usernames and whitelisted in Tesseract config
         import re
-        cleaned = re.sub(r'[^a-zA-Z0-9_]', '', text)
-        
+        cleaned = re.sub(r'[^a-zA-Z0-9_\-.]', '', text)
+
         # Validate length (Twitch usernames are 4-25 characters)
         if 4 <= len(cleaned) <= 25:
             return cleaned
-        
+
         return None
     

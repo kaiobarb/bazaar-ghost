@@ -41,7 +41,7 @@ class OCRTuningLab:
         self.selection_end = None
         
         # Tesseract whitelist for Twitch usernames
-        self.whitelist = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_"
+        self.whitelist = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
         
         # Initialize emblem detector
         self.emblem_detector = EmblemDetector()
@@ -70,7 +70,6 @@ class OCRTuningLab:
         # Emblem removal trackbars
         cv2.createTrackbar("Remove Emblem", "Controls", 1, 1, nothing)
         cv2.createTrackbar("Emblem Thresh x100", "Controls", 70, 100, nothing)  # 0.0-1.0
-        cv2.createTrackbar("Emblem Expand", "Controls", 2, 10, nothing)
         cv2.createTrackbar("Show Emblem Debug", "Controls", 0, 1, nothing)
         
         # Frame cropping trackbars
@@ -123,19 +122,18 @@ class OCRTuningLab:
         # Step 1: Emblem removal (before anything else)
         if cv2.getTrackbarPos("Remove Emblem", "Controls") == 1:
             threshold = cv2.getTrackbarPos("Emblem Thresh x100", "Controls") / 100.0
-            expand = cv2.getTrackbarPos("Emblem Expand", "Controls")
-            
+
             # Determine fill value based on invert setting
             fill_value = 255 if cv2.getTrackbarPos("Invert", "Controls") == 0 else 1
-            
+
             result, self.detected_rank = self.emblem_detector.remove_emblem(
-                result, threshold=threshold, expand_pixels=expand, fill_value=fill_value
+                result, threshold=threshold, fill_value=fill_value
             )
             
             # Show debug visualization if enabled
             if cv2.getTrackbarPos("Show Emblem Debug", "Controls") == 1:
                 debug_vis = self.emblem_detector.create_debug_visualization(
-                    img, threshold=threshold, expand_pixels=expand
+                    img, threshold=threshold
                 )
                 cv2.imshow("Emblem Detection Debug", debug_vis)
             else:
@@ -337,7 +335,6 @@ class OCRTuningLab:
             "emblem_removal": {
                 "enabled": cv2.getTrackbarPos("Remove Emblem", "Controls"),
                 "threshold": cv2.getTrackbarPos("Emblem Thresh x100", "Controls") / 100.0,
-                "expand": cv2.getTrackbarPos("Emblem Expand", "Controls"),
             },
             "frame_crop": {
                 "top": cv2.getTrackbarPos("Crop Top", "Controls"),
@@ -398,7 +395,6 @@ class OCRTuningLab:
             if "emblem_removal" in preset:
                 cv2.setTrackbarPos("Remove Emblem", "Controls", preset["emblem_removal"]["enabled"])
                 cv2.setTrackbarPos("Emblem Thresh x100", "Controls", int(preset["emblem_removal"]["threshold"] * 100))
-                cv2.setTrackbarPos("Emblem Expand", "Controls", preset["emblem_removal"]["expand"])
             
             if "frame_crop" in preset:
                 cv2.setTrackbarPos("Crop Top", "Controls", preset["frame_crop"]["top"])

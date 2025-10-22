@@ -138,8 +138,8 @@ class RightEdgeDetector:
         right_edge_x, confidence = self.detect_right_edge(frame, threshold)
 
         if right_edge_x is not None and self.template is not None:
-            # Draw vertical line at right edge
-            cv2.line(vis, (right_edge_x, 0), (right_edge_x, vis.shape[0]), (0, 255, 255), 2)
+            # # Draw vertical line at right edge
+            # cv2.line(vis, (right_edge_x, 0), (right_edge_x, vis.shape[0]), (0, 255, 255), 2)
 
             # Draw template bounding box
             template_h, template_w = self.template.shape[:2]

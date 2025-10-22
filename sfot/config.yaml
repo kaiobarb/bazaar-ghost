@@ -15,8 +15,9 @@ detection:
 # Emblem detection and removal configuration
 emblem_detection:
   enabled: true
-  threshold: 0.30 # Using AKAZE feature matching - real emblems >0.52, false positives <0.03
-  expand_pixels: 10
+  method: "akaze" # Detection method: 'akaze' or 'template'
+  akaze_threshold: 0.45 # AKAZE: real emblems >0.52, false positives <0.03
+  template_threshold: 0.80 # Template matching: real emblems ~0.93, false positives ~0.70
   templates_dir: "templates/"
 
 # Right edge detection for partial occlusion handling
@@ -24,6 +25,7 @@ right_edge_detection:
   enabled: true
   threshold: 0.5
   templates_dir: "templates/"
+  crop_margin_percent: 5
 
 # OCR preprocessing based on tuned parameters
 ocr_preprocessing:
@@ -52,10 +54,10 @@ ffmpeg:
 
 tesseract:
   lang: "eng"
-  config: "-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-. -c load_system_dawg=0 -c load_freq_dawg=0"
-  psm: 7 # Single text line
+  config: "-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ_-.abcdefghijklmnopqrstuvwxyz0123456789 -c load_system_dawg=0 -c load_freq_dawg=0"
+  psm: 8
   oem: 1 # LSTM OCR Engine mode
-  dpi: 480 # Higher DPI for better accuracy
+  dpi: 300
   timeout: 5
 
 supabase:
