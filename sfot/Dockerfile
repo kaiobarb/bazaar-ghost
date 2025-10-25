@@ -4,7 +4,8 @@ FROM python:3.11-slim-bookworm
 # Keep apt quiet & lean; keep pip quick and cached
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    TESSDATA_PREFIX=/usr/share/tessdata
 
 # OS deps (cache apt metadata; no dev pkgs)
 RUN --mount=type=cache,target=/var/cache/apt \
@@ -12,7 +13,6 @@ RUN --mount=type=cache,target=/var/cache/apt \
     apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         tesseract-ocr \
-        tesseract-ocr-eng \
         libgl1 \
         libglib2.0-0 \
         libsm6 \
@@ -32,6 +32,13 @@ COPY requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install --upgrade pip \
  && python -m pip install --prefer-binary -r requirements.txt
+
+# Download Legacy-compatible Tesseract traineddata
+# The tessdata repo contains combined Legacy+LSTM models
+RUN mkdir -p /usr/share/tessdata \
+    && wget -q https://github.com/tesseract-ocr/tessdata/raw/main/eng.traineddata \
+    -O /usr/share/tessdata/eng.traineddata \
+    && chmod 644 /usr/share/tessdata/eng.traineddata
 
 # Copy the rest (use --chown to avoid a later chown layer)
 COPY --chown=1000:1000 config.yaml .

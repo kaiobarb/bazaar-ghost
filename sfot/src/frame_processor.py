@@ -67,8 +67,16 @@ class FrameProcessor:
                 templates_dir = emblem_config.get('templates_dir', 'templates/')
                 method = emblem_config.get('method', 'akaze')
 
-                # Initialize detector with method
-                self.emblem_detector = EmblemDetector(templates_dir, resolution=template_resolution, method=method)
+                # Get feature resolution for AKAZE (optional)
+                feature_resolution = emblem_config.get('akaze_feature_resolution') if method == 'akaze' else None
+
+                # Initialize detector with method and optional feature resolution
+                self.emblem_detector = EmblemDetector(
+                    templates_dir,
+                    resolution=template_resolution,
+                    method=method,
+                    feature_resolution=feature_resolution
+                )
 
                 # Set threshold based on method
                 if method == 'akaze':
@@ -223,16 +231,26 @@ class FrameProcessor:
             # Advanced OCR preprocessing
             processed = self._advanced_preprocess_for_ocr(cropped_frame)
 
-            # Extract username via OCR using preprocessed frame (returns username and confidence)
-            username, ocr_confidence = self._extract_usernames(processed)
-            
+            # Extract username via OCR using preprocessed frame (returns username, confidence, and ocr_data)
+            username, ocr_confidence, ocr_data = self._extract_usernames(processed)
+
             # Encode the original frame (already cropped by FFmpeg)
             success, encoded = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
             frame_jpeg = encoded.tobytes() if success else None
-            
+
             # Encode the preprocessed frame for debug
             success_debug, encoded_debug = cv2.imencode('.jpg', processed, [cv2.IMWRITE_JPEG_QUALITY, 90])
             debug_jpeg = encoded_debug.tobytes() if success_debug else None
+
+            # Create OCR debug outputs if in test mode
+            ocr_viz_jpeg = None
+            ocr_log_text = None
+            if self.test_mode and ocr_data is not None:
+                # Generate OCR visualization with bounding boxes
+                ocr_viz_jpeg = self._create_ocr_visualization(processed, ocr_data)
+
+                # Generate OCR log
+                ocr_log_text = self._generate_ocr_log(ocr_data, timestamp, username, ocr_confidence)
 
             # Create bounding box visualization if in test mode and emblem detector is available
             boxes_jpeg = None
@@ -305,7 +323,13 @@ class FrameProcessor:
             # Add bounding box frame if created (test mode only)
             if boxes_jpeg:
                 result['emblem_boxes_frame'] = base64.b64encode(boxes_jpeg).decode('utf-8')
-            
+
+            # Add OCR debug data if created (test mode only)
+            if ocr_viz_jpeg:
+                result['ocr_viz_frame'] = base64.b64encode(ocr_viz_jpeg).decode('utf-8')
+            if ocr_log_text:
+                result['ocr_log_text'] = ocr_log_text
+
             self.logger.debug(f"Detected matchup at {timestamp}s: {username}")
             return result
             
@@ -452,9 +476,9 @@ class FrameProcessor:
         try:
             h, w = frame.shape[:2]
 
-            # Crop top and bottom proportionally (22% of height works well across resolutions)
-            # For 480p (54px): ~12px, for 1080p (121px): ~27px
-            crop_ratio = 0.22
+            # Crop top and bottom proportionally (24% of height works well across resolutions)
+            # For 480p (54px): ~13px, for 1080p (121px): ~29px
+            crop_ratio = 0.24
             top_crop = int(h * crop_ratio)
             bottom_crop = int(h * crop_ratio)
             y1 = max(0, top_crop)
@@ -625,7 +649,7 @@ class FrameProcessor:
             # Fallback to basic preprocessing
             return self._preprocess_for_ocr(frame)
     
-    def _extract_usernames(self, frame: np.ndarray) -> Tuple[Optional[str], float]:
+    def _extract_usernames(self, frame: np.ndarray) -> Tuple[Optional[str], float, Optional[dict]]:
         """
         Extract username from preprocessed nameplate frame using OCR
 
@@ -633,7 +657,8 @@ class FrameProcessor:
             frame: Already preprocessed frame (grayscale, scaled, binary, denoised)
 
         Returns:
-            Tuple of (username, confidence) where confidence is 0-1 scale
+            Tuple of (username, confidence, ocr_data) where confidence is 0-1 scale
+            ocr_data is the full Tesseract output dict for debugging
         """
         try:
             # Run OCR with detailed output to get confidence scores
@@ -656,7 +681,7 @@ class FrameProcessor:
                     confidences.append(float(conf))
 
             if not valid_words:
-                return None, 0.0
+                return None, 0.0, data
 
             # Join words into full text
             text = ' '.join(valid_words)
@@ -671,13 +696,131 @@ class FrameProcessor:
             # Clean up text
             cleaned = self._clean_username(text)
 
-            return cleaned, avg_confidence
+            return cleaned, avg_confidence, data
 
         except Exception as e:
             self.logger.error(f"Username extraction error: {e}")
 
-        return None, 0.0
-    
+        return None, 0.0, None
+
+    def _create_ocr_visualization(self, preprocessed_frame: np.ndarray, ocr_data: dict) -> Optional[bytes]:
+        """
+        Create visualization showing Tesseract bounding boxes on preprocessed frame
+
+        Args:
+            preprocessed_frame: The preprocessed binary image that was fed to Tesseract
+            ocr_data: Full Tesseract output dict from image_to_data()
+
+        Returns:
+            JPEG bytes of visualization, or None on error
+        """
+        try:
+            # Convert grayscale to color for visualization
+            if len(preprocessed_frame.shape) == 2:
+                vis = cv2.cvtColor(preprocessed_frame, cv2.COLOR_GRAY2BGR)
+            else:
+                vis = preprocessed_frame.copy()
+
+            # Draw bounding boxes for each detected text element
+            n_boxes = len(ocr_data['text'])
+            for i in range(n_boxes):
+                text = ocr_data['text'][i].strip()
+                conf = ocr_data['conf'][i]
+
+                # Skip empty text or invalid confidence
+                if not text or conf == -1:
+                    continue
+
+                # Get bounding box coordinates
+                x = ocr_data['left'][i]
+                y = ocr_data['top'][i]
+                w = ocr_data['width'][i]
+                h = ocr_data['height'][i]
+
+                # Color-code by confidence: green (>70%), yellow (30-70%), red (<30%)
+                if conf > 70:
+                    color = (0, 255, 0)  # Green
+                elif conf > 30:
+                    color = (0, 255, 255)  # Yellow (BGR)
+                else:
+                    color = (0, 0, 255)  # Red
+
+                # Draw bounding box
+                cv2.rectangle(vis, (x, y), (x + w, y + h), color, 2)
+
+                # Add text label with confidence
+                label = f"{text} ({conf:.0f}%)"
+                cv2.putText(vis, label, (x, y - 5),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+            # Encode as JPEG
+            success, encoded = cv2.imencode('.jpg', vis, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            if success:
+                return encoded.tobytes()
+            return None
+
+        except Exception as e:
+            self.logger.error(f"OCR visualization error: {e}")
+            return None
+
+    def _generate_ocr_log(self, ocr_data: dict, timestamp: int, username: Optional[str], confidence: float) -> str:
+        """
+        Generate human-readable OCR debug log
+
+        Args:
+            ocr_data: Full Tesseract output dict
+            timestamp: Frame timestamp
+            username: Detected/cleaned username
+            confidence: Average OCR confidence (0-1)
+
+        Returns:
+            Plain text log as string
+        """
+        try:
+            lines = []
+            lines.append("=" * 60)
+            lines.append("OCR Debug Log")
+            lines.append("=" * 60)
+            lines.append(f"Timestamp: {timestamp}s")
+            lines.append(f"Detected Username: {username if username else '(none)'}")
+            lines.append(f"Average Confidence: {confidence:.3f}")
+            lines.append("")
+
+            # Extract detected words
+            lines.append("Detected Text Elements:")
+            lines.append("-" * 60)
+            lines.append(f"{'Text':<20} {'Conf':<8} {'BBox (x,y,w,h)':<30}")
+            lines.append("-" * 60)
+
+            n_boxes = len(ocr_data['text'])
+            for i in range(n_boxes):
+                text = ocr_data['text'][i].strip()
+                conf = ocr_data['conf'][i]
+
+                # Skip empty text or invalid confidence
+                if not text or conf == -1:
+                    continue
+
+                x = ocr_data['left'][i]
+                y = ocr_data['top'][i]
+                w = ocr_data['width'][i]
+                h = ocr_data['height'][i]
+
+                lines.append(f"{text:<20} {conf:<8.1f} ({x},{y},{w},{h})")
+
+            lines.append("")
+            lines.append("Tesseract Configuration:")
+            lines.append("-" * 60)
+            lines.append(f"Config: {self.tesseract_config}")
+            lines.append(f"Language: {self.tesseract_lang}")
+            lines.append("")
+
+            return "\n".join(lines)
+
+        except Exception as e:
+            self.logger.error(f"OCR log generation error: {e}")
+            return f"Error generating OCR log: {e}"
+
     def _preprocess_for_ocr(self, roi: np.ndarray) -> np.ndarray:
         """Preprocess image region for better OCR accuracy"""
         try:

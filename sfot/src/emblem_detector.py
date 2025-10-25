@@ -15,18 +15,27 @@ class EmblemDetector:
 
     RANKS = ['bronze', 'silver', 'gold', 'diamond', 'legend']
 
-    def __init__(self, templates_dir: str = "/home/kaio/Dev/bazaar-ghost/sfot/templates", resolution: str = "480p", method: str = "akaze"):
+    def __init__(self, templates_dir: str = "/home/kaio/Dev/bazaar-ghost/sfot/templates", resolution: str = "480p", method: str = "akaze", feature_resolution: Optional[str] = None):
         """Initialize with emblem templates and detection method
 
         Args:
             templates_dir: Directory containing emblem templates
             resolution: Resolution to use for templates (360p, 480p, 720p, 1080p)
             method: Detection method - 'akaze' or 'template' (default: 'akaze')
+            feature_resolution: Resolution to use for AKAZE feature extraction (e.g., '1080p' for better keypoints).
+                               If None or method != 'akaze', uses resolution for everything.
         """
         self.templates_dir = Path(templates_dir)
         self.resolution = resolution
         self.method = method.lower()
         self.logger = logging.getLogger(__name__)
+
+        # For AKAZE: optionally use higher resolution templates for feature extraction
+        if self.method == 'akaze' and feature_resolution and feature_resolution != resolution:
+            self.feature_resolution = feature_resolution
+            self.logger.info(f"Using {feature_resolution} templates for AKAZE features, {resolution} for bbox dimensions")
+        else:
+            self.feature_resolution = resolution
 
         # Initialize AKAZE detector and matcher (only if using AKAZE method)
         if self.method == 'akaze':
@@ -43,7 +52,8 @@ class EmblemDetector:
         # Storage for pre-computed template features
         self.template_keypoints = {}
         self.template_descriptors = {}
-        self.template_shapes = {}  # Store template dimensions for bbox calculation
+        self.template_shapes = {}  # Store template dimensions for bbox calculation (at resolution)
+        self.feature_template_shapes = {}  # Store feature template dimensions (at feature_resolution)
         self.template_masks = {}  # Alpha masks for template matching
         self.templates = {}  # Keep for visualization/debugging
 
@@ -53,7 +63,7 @@ class EmblemDetector:
     def _load_templates(self):
         """Load all rank emblem templates and pre-compute AKAZE features"""
         for rank in self.RANKS:
-            # Try new naming scheme first (with resolution suffix)
+            # Load template at processing resolution (for bbox dimensions and template matching)
             template_path = self.templates_dir / f"{rank}_{self.resolution}.png"
 
             # Fallback to old naming for 480p if new file doesn't exist
@@ -78,8 +88,47 @@ class EmblemDetector:
                     self.templates[rank] = template
                     self.template_shapes[rank] = template.shape[:2]  # (height, width)
 
-                    # Pre-compute AKAZE keypoints and descriptors (only if using AKAZE)
-                    if self.method == 'akaze':
+                    # For AKAZE: load feature template if using different resolution
+                    if self.method == 'akaze' and self.feature_resolution != self.resolution:
+                        feature_template_path = self.templates_dir / f"{rank}_{self.feature_resolution}.png"
+
+                        if feature_template_path.exists():
+                            feature_template_bgra = cv2.imread(str(feature_template_path), cv2.IMREAD_UNCHANGED)
+                            if feature_template_bgra is not None:
+                                # Extract BGR channels only
+                                if len(feature_template_bgra.shape) == 3 and feature_template_bgra.shape[2] == 4:
+                                    feature_template = feature_template_bgra[:,:,:3]
+                                else:
+                                    feature_template = feature_template_bgra
+
+                                # Store feature template dimensions
+                                self.feature_template_shapes[rank] = feature_template.shape[:2]
+
+                                # Compute AKAZE features from high-res template
+                                kp, des = self.detector.detectAndCompute(feature_template, None)
+
+                                if des is not None and len(des) > 0:
+                                    self.template_keypoints[rank] = kp
+                                    self.template_descriptors[rank] = des
+                                    self.logger.info(f"Loaded {rank} emblem: {len(kp)} keypoints from {feature_template_path.name} (bbox dims from {template_path.name})")
+                                else:
+                                    self.logger.warning(f"No keypoints found in {rank} feature template at {self.feature_resolution}")
+                            else:
+                                self.logger.warning(f"Failed to load {rank} feature template at {self.feature_resolution}")
+                        else:
+                            self.logger.warning(f"Feature template not found: {feature_template_path}, falling back to {self.resolution}")
+                            # Fallback: use processing resolution template for features
+                            self.feature_template_shapes[rank] = template.shape[:2]
+                            kp, des = self.detector.detectAndCompute(template, None)
+                            if des is not None and len(des) > 0:
+                                self.template_keypoints[rank] = kp
+                                self.template_descriptors[rank] = des
+                                self.logger.info(f"Loaded {rank} emblem: {len(kp)} keypoints from {template_path.name} (fallback)")
+                            else:
+                                self.logger.warning(f"No keypoints found in {rank} template")
+                    elif self.method == 'akaze':
+                        # AKAZE without multi-resolution: use same template for everything
+                        self.feature_template_shapes[rank] = template.shape[:2]
                         kp, des = self.detector.detectAndCompute(template, None)
 
                         if des is not None and len(des) > 0:
@@ -163,8 +212,9 @@ class EmblemDetector:
                     confidence = confidence * 0.7 + inlier_ratio * 0.3
 
                     # Calculate homography bbox for validation (catches false positives)
-                    template_h, template_w = self.template_shapes[rank]
-                    pts = np.float32([[0, 0], [0, template_h-1], [template_w-1, template_h-1], [template_w-1, 0]]).reshape(-1, 1, 2)
+                    # Use feature template dimensions for homography validation
+                    feature_h, feature_w = self.feature_template_shapes[rank]
+                    pts = np.float32([[0, 0], [0, feature_h-1], [feature_w-1, feature_h-1], [feature_w-1, 0]]).reshape(-1, 1, 2)
                     dst = cv2.perspectiveTransform(pts, homography)
 
                     # Get homography bounding rectangle
@@ -172,9 +222,9 @@ class EmblemDetector:
 
                     # Validate homography bbox geometry (filters false positives)
                     # Check: reasonable size (not too small/distorted)
-                    area_ratio = (hom_w * hom_h) / (template_w * template_h)
+                    area_ratio = (hom_w * hom_h) / (feature_w * feature_h)
                     aspect_ratio = hom_w / hom_h if hom_h > 0 else 0
-                    template_aspect = template_w / template_h
+                    template_aspect = feature_w / feature_h
 
                     # Accept if: area is 50-200% of template, aspect ratio similar
                     if (0.5 <= area_ratio <= 2.0 and
@@ -185,7 +235,7 @@ class EmblemDetector:
 
             # Only return bbox if homography validation passed (or not enough matches for homography)
             if homography_valid or len(good_matches) < 4:
-                # Calculate bbox using template dimensions at keypoint centroid
+                # Calculate bbox using actual template dimensions at keypoint centroid
                 # This is the bbox we actually use for processing
                 dst_points = [frame_kp[m.trainIdx].pt for m in good_matches]
                 if dst_points:
@@ -195,11 +245,12 @@ class EmblemDetector:
                     center_x = np.median(xs)
                     center_y = np.median(ys)
 
-                    # Place template-sized bbox centered on keypoint cluster
-                    template_h, template_w = self.template_shapes[rank]
-                    x = int(center_x - template_w / 2)
-                    y = int(center_y - template_h / 2)
-                    bbox = (x, y, template_w, template_h)
+                    # Place bbox using actual template dimensions (not feature template dimensions)
+                    # This ensures bbox matches the processing resolution
+                    actual_h, actual_w = self.template_shapes[rank]
+                    x = int(center_x - actual_w / 2)
+                    y = int(center_y - actual_h / 2)
+                    bbox = (x, y, actual_w, actual_h)
                 else:
                     bbox = None
             else:

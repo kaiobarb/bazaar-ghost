@@ -145,7 +145,8 @@ class SupabaseClient:
                 # Prepare batch data
                 batch_data = []
                 image_uploads = []
-                
+                text_logs = []
+
                 # Cache for VOD ID lookups
                 vod_id_cache = {}
                 
@@ -211,18 +212,38 @@ class SupabaseClient:
                                 'data': matchup['emblem_boxes_frame'],
                                 'type': 'emblem_boxes'
                             })
+
+                        # Upload OCR visualization frame (test mode only)
+                        if 'ocr_viz_frame' in matchup:
+                            image_uploads.append({
+                                'vod_id': matchup['vod_id'],
+                                'timestamp': matchup['timestamp'],
+                                'data': matchup['ocr_viz_frame'],
+                                'type': 'ocr_viz'
+                            })
+
+                        # Upload OCR text log (test mode only)
+                        if 'ocr_log_text' in matchup:
+                            text_logs.append({
+                                'timestamp': matchup['timestamp'],
+                                'data': matchup['ocr_log_text']
+                            })
                     else:
                         # No valid username - skip this match entirely
                         self.logger.debug(f"Skipping matchup at {matchup['timestamp']}: no valid username extracted")
-                
+
                 # Insert detection records
                 if batch_data:
                     response = self.client.table('detections').insert(batch_data).execute()
                     self.logger.info(f"Uploaded {len(batch_data)} detections to {self.schema} schema")
-                
+
                 # Upload images to storage
                 for img in image_uploads:
                     self._upload_image(img['vod_id'], img['timestamp'], img['data'], img.get('type', 'detection'))
+
+                # Upload text logs to logs bucket
+                for log in text_logs:
+                    self._upload_text_log(log['timestamp'], log['data'])
                 
                 return True
                 
@@ -246,6 +267,9 @@ class SupabaseClient:
                 elif image_type == 'emblem_boxes':
                     # Emblem bounding box frames go in ocr_debug folder (test mode only)
                     filename = f"test/{self.quality}/{vod_id}/ocr_debug/boxes_{timestamp}.jpg"
+                elif image_type == 'ocr_viz':
+                    # OCR visualization with bounding boxes go in ocr_debug folder (test mode only)
+                    filename = f"test/{self.quality}/{vod_id}/ocr_debug/ocr_{timestamp}.jpg"
                 else:
                     # Fallback for any other debug type
                     filename = f"test/{self.quality}/{vod_id}/ocr_debug/{image_type}_{timestamp}.jpg"
@@ -269,11 +293,34 @@ class SupabaseClient:
             
             self.logger.debug(f"Uploaded image: {filename}")
             return response
-            
+
         except Exception as e:
             self.logger.error(f"Image upload failed: {e}")
             return None
-    
+
+    def _upload_text_log(self, timestamp: int, text_data: str):
+        """Upload text log to logs bucket"""
+        try:
+            # Generate filename for logs bucket
+            filename = f"ocr_data/{timestamp}.txt"
+
+            # Convert text to bytes
+            text_bytes = text_data.encode('utf-8')
+
+            # Upload to logs bucket
+            response = self.client.storage.from_('logs').upload(
+                path=filename,
+                file=text_bytes,
+                file_options={"content-type": "text/plain; charset=utf-8"}
+            )
+
+            self.logger.debug(f"Uploaded text log: {filename}")
+            return response
+
+        except Exception as e:
+            self.logger.error(f"Text log upload failed: {e}")
+            return None
+
     def get_pending_chunks(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Get pending chunks for processing"""
         try:
