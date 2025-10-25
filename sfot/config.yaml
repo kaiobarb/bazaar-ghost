@@ -9,21 +9,22 @@ detection:
   # Resolution-agnostic crop region as percentages of frame dimensions
   # Format: [x, y, width, height] where each value is 0.0-1.0
   # Converted from 480p pixel values: x=503/854, y=352/480, w=271/854, h=54/480
-  crop_region_percent: [0.5889, 0.7333, 0.3173, 0.1125] # Nameplate region including rank emblem
+  crop_region_percent: [0.5726, 0.7333, 0.3500, 0.1125]
   template_path: "templates/matchup_template.png"
 
 # Emblem detection and removal configuration
 emblem_detection:
   enabled: true
-  method: "akaze" # Detection method: 'akaze' or 'template'
+  method: "template" # Detection method: 'akaze' or 'template'
   akaze_threshold: 0.45 # AKAZE: real emblems >0.52, false positives <0.03
-  template_threshold: 0.80 # Template matching: real emblems ~0.93, false positives ~0.70
+  template_threshold: 0.70 # Template matching: real emblems ~0.93, false positives ~0.70
   templates_dir: "templates/"
+  akaze_feature_resolution: "1080p" # Resolution to use for AKAZE feature extraction (only used when method='akaze')
 
 # Right edge detection for partial occlusion handling
 right_edge_detection:
   enabled: true
-  threshold: 0.5
+  threshold: 0.7
   templates_dir: "templates/"
   crop_margin_percent: 5
 
@@ -55,8 +56,8 @@ ffmpeg:
 tesseract:
   lang: "eng"
   config: "-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ_-.abcdefghijklmnopqrstuvwxyz0123456789 -c load_system_dawg=0 -c load_freq_dawg=0"
-  psm: 8
-  oem: 1 # LSTM OCR Engine mode
+  psm: 8 # Single Word
+  oem: 0 # Legacy performs waay better on the pre-processed frames
   dpi: 300
   timeout: 5
 
