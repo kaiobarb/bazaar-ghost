@@ -76,7 +76,7 @@ if __name__ == "__main__":
     logger.info("Starting VOD processing",
                 vod_id="123456",
                 streamer="kripp",
-                duration_seconds=1800)
+                duration_seconds=3200)
 
     logger.info("Matchup detected",
                 timestamp=1234.56,

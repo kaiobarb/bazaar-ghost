@@ -2,6 +2,18 @@
 -- Building on first iteration, adding control plane features
 
 -- ============================================
+-- TEST SCHEMA
+-- ============================================
+-- Create test schema for isolated testing
+CREATE SCHEMA IF NOT EXISTS test;
+
+-- Grant permissions on test schema
+GRANT USAGE ON SCHEMA test TO postgres, anon, authenticated, service_role;
+GRANT ALL ON ALL TABLES IN SCHEMA test TO postgres, anon, authenticated, service_role;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA test TO postgres, anon, authenticated, service_role;
+GRANT ALL ON ALL FUNCTIONS IN SCHEMA test TO postgres, anon, authenticated, service_role;
+
+-- ============================================
 -- ENUMS
 -- ============================================
 
@@ -204,7 +216,7 @@ CREATE TABLE sfot_profiles (
   -- Resource limits
   memory_mb INT DEFAULT 2048,
   cpu_millicores INT DEFAULT 1000,
-  timeout_seconds INT DEFAULT 1800,
+  timeout_seconds INT DEFAULT 3200,
   
   -- Feature flags
   enable_gpu BOOLEAN DEFAULT FALSE,
@@ -225,7 +237,7 @@ CREATE OR REPLACE FUNCTION create_chunks_for_segment(
   p_vod_id BIGINT,
   p_start_seconds INT,
   p_end_seconds INT,
-  p_chunk_duration_seconds INT DEFAULT 1800
+  p_chunk_duration_seconds INT DEFAULT 3200
 ) RETURNS INT AS $$
 DECLARE
   v_chunk_count INT := 0;

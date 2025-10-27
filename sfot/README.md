@@ -25,7 +25,7 @@ python src/sfot.py <vod_id> <start_time> <end_time>
 # Or use environment variables
 export VOD_ID=123456789
 export START_TIME=0
-export END_TIME=1800
+export END_TIME=3200
 python src/sfot.py
 ```
 
@@ -44,7 +44,7 @@ docker run --rm \
   -e SUPABASE_SERVICE_ROLE_KEY="your-key" \
   -e VOD_ID="123456789" \
   -e START_TIME="0" \
-  -e END_TIME="1800" \
+  -e END_TIME="3200" \
   ghcr.io/bazaar-ghost/sfot:latest
 ```
 

@@ -45,8 +45,8 @@ pip install -r requirements.txt
 ```bash
 python src/sfot.py <vod_id> [start_time] [end_time]
 
-# Example: Process first 30 minutes of VOD 123456789
-python src/sfot.py 123456789 0 1800
+# Example: Process first hour of VOD 123456789
+python src/sfot.py 123456789 0 3200
 ```
 
 ### Run with Docker
@@ -64,7 +64,7 @@ Edit `sfot/config.yaml`:
 processing:
   frame_rate: 0.2 # Frames per second to extract
   queue_size: 10
-  timeout: 1800
+  timeout: 3200
   batch_update_interval: 20
 
 detection:

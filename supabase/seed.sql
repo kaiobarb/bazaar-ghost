@@ -8,14 +8,14 @@ TRUNCATE TABLE public.vods CASCADE;
 TRUNCATE TABLE public.streamers CASCADE;
 
 -- Streamers
-INSERT INTO public.streamers (id, login, display_name, profile_image_url, processing_enabled, first_seen_at, last_seen_streaming_bazaar, total_vods, processed_vods, total_detections, created_at, updated_at) VALUES
-(1364977185, 'melodystarsky', 'MelodyStarSky', 'https://static-cdn.jtvnw.net/jtv_user_pictures/2ffeae73-f7d4-4532-b92f-680c22093890-profile_image-300x300.jpeg', true, '2025-10-12T07:07:30.066Z', '2025-10-12T07:07:30.066Z', 0, 0, 0, '2025-10-12T07:07:30.066Z', '2025-10-12T07:07:30.066Z'),
-(63559337, 'ragelf', 'Ragelf', 'https://static-cdn.jtvnw.net/jtv_user_pictures/ragelf-profile_image-3b48e9bc5b24d8d0-300x300.jpeg', true, '2025-10-12T07:07:30.066Z', '2025-10-12T07:07:30.066Z', 0, 0, 0, '2025-10-12T07:07:30.066Z', '2025-10-12T07:07:30.066Z'),
-(19198298, 'mikevalentine', 'mikevalentine', 'https://static-cdn.jtvnw.net/jtv_user_pictures/d4555d6089c1817f-profile_image-300x300.png', true, '2025-10-12T07:07:30.066Z', '2025-10-12T07:07:30.066Z', 0, 0, 0, '2025-10-12T07:07:30.066Z', '2025-10-12T07:07:30.066Z'),
-(52486901, 'patman737', 'Patman737', 'https://static-cdn.jtvnw.net/jtv_user_pictures/a9933275-2ac0-4a2b-92fa-6985ad6a2fc8-profile_image-300x300.png', true, '2025-10-12T07:07:30.066Z', '2025-10-12T07:07:30.066Z', 0, 0, 0, '2025-10-12T07:07:30.066Z', '2025-10-12T07:07:30.066Z'),
-(51479482, 'patchdoll', 'Patchdoll', 'https://static-cdn.jtvnw.net/jtv_user_pictures/edfa57b0-1628-4685-9e25-2e16f3fc9b7c-profile_image-300x300.png', true, '2025-10-12T07:07:30.066Z', '2025-10-12T07:07:30.066Z', 0, 0, 0, '2025-10-12T07:07:30.066Z', '2025-10-12T07:07:30.066Z'),
-(1251663536, '2sixten', '2Sixten', 'https://static-cdn.jtvnw.net/jtv_user_pictures/ab28d4e2-c5ec-4eb4-9dbc-021d5d9f1731-profile_image-300x300.png', true, '2025-10-12T07:07:30.066Z', '2025-10-12T07:07:30.066Z', 0, 0, 0, '2025-10-12T07:07:30.066Z', '2025-10-12T07:07:30.066Z'),
-(1030629434, 'destinydecktarot', 'destinydecktarot', 'https://static-cdn.jtvnw.net/jtv_user_pictures/2cdbe4ac-819a-40b5-92e5-f0be2d5071db-profile_image-300x300.jpeg', true, '2025-10-12T07:07:30.066Z', '2025-10-12T07:07:30.066Z', 0, 0, 0, '2025-10-12T07:07:30.066Z', '2025-10-12T07:07:30.066Z');
+INSERT INTO public.streamers (id, login, display_name, profile_image_url, processing_enabled, has_vods, oldest_vod, num_vods, num_bazaar_vods, created_at, updated_at) VALUES
+(1364977185, 'melodystarsky', 'MelodyStarSky', 'https://static-cdn.jtvnw.net/jtv_user_pictures/2ffeae73-f7d4-4532-b92f-680c22093890-profile_image-300x300.jpeg', true, true, NULL, 0, 0, '2025-10-12T07:07:30.066Z', '2025-10-12T07:07:30.066Z'),
+(63559337, 'ragelf', 'Ragelf', 'https://static-cdn.jtvnw.net/jtv_user_pictures/ragelf-profile_image-3b48e9bc5b24d8d0-300x300.jpeg', true, true, NULL, 0, 0, '2025-10-12T07:07:30.066Z', '2025-10-12T07:07:30.066Z'),
+(19198298, 'mikevalentine', 'mikevalentine', 'https://static-cdn.jtvnw.net/jtv_user_pictures/d4555d6089c1817f-profile_image-300x300.png', true, true, NULL, 0, 0, '2025-10-12T07:07:30.066Z', '2025-10-12T07:07:30.066Z'),
+(52486901, 'patman737', 'Patman737', 'https://static-cdn.jtvnw.net/jtv_user_pictures/a9933275-2ac0-4a2b-92fa-6985ad6a2fc8-profile_image-300x300.png', true, true, NULL, 0, 0, '2025-10-12T07:07:30.066Z', '2025-10-12T07:07:30.066Z'),
+(51479482, 'patchdoll', 'Patchdoll', 'https://static-cdn.jtvnw.net/jtv_user_pictures/edfa57b0-1628-4685-9e25-2e16f3fc9b7c-profile_image-300x300.png', true, true, NULL, 0, 0, '2025-10-12T07:07:30.066Z', '2025-10-12T07:07:30.066Z'),
+(1251663536, '2sixten', '2Sixten', 'https://static-cdn.jtvnw.net/jtv_user_pictures/ab28d4e2-c5ec-4eb4-9dbc-021d5d9f1731-profile_image-300x300.png', true, true, NULL, 0, 0, '2025-10-12T07:07:30.066Z', '2025-10-12T07:07:30.066Z'),
+(1030629434, 'destinydecktarot', 'destinydecktarot', 'https://static-cdn.jtvnw.net/jtv_user_pictures/2cdbe4ac-819a-40b5-92e5-f0be2d5071db-profile_image-300x300.jpeg', true, true, NULL, 0, 0, '2025-10-12T07:07:30.066Z', '2025-10-12T07:07:30.066Z');
 
 -- VODs
 INSERT INTO public.vods (streamer_id, source, source_id, title, duration_seconds, published_at, availability, last_availability_check, ready_for_processing, created_at, updated_at) VALUES
@@ -33,15 +33,8 @@ INSERT INTO public.vods (streamer_id, source, source_id, title, duration_seconds
 -- Update sequences
 SELECT setval('public.vods_id_seq', (SELECT MAX(id) FROM public.vods), true);
 
--- Generate chunks for all VODs
-DO $$
-DECLARE
-  vod_record RECORD;
-BEGIN
-  FOR vod_record IN SELECT id, duration_seconds FROM public.vods LOOP
-    PERFORM create_chunks_for_segment(vod_record.id, 0, vod_record.duration_seconds);
-  END LOOP;
-END $$;
+-- Note: Chunks are automatically created by the trigger_auto_create_chunks trigger
+-- when VODs are inserted with ready_for_processing=true and streamer has processing_enabled=true
 
 -- Seed test schema (if it exists)
 DO $$
@@ -60,8 +53,7 @@ BEGIN
     -- Insert Kripp as test streamer
     INSERT INTO test.streamers (
       id, login, display_name, profile_image_url, processing_enabled,
-      first_seen_at, last_seen_streaming_bazaar,
-      total_vods, processed_vods, total_detections,
+      has_vods, oldest_vod, num_vods, num_bazaar_vods,
       created_at, updated_at
     ) VALUES (
       29795919,
@@ -69,9 +61,7 @@ BEGIN
       'nl_Kripp',
       'https://static-cdn.jtvnw.net/jtv_user_pictures/401068e0-820a-4d9f-9e7c-1e5563398458-profile_image-300x300.png',
       true,
-      '2025-09-23 07:09:54.440199+00',
-      '2025-10-11 02:13:15.813+00',
-      0, 0, 0,
+      true, NULL, 0, 0,
       '2025-09-23 07:09:54.440199+00',
       '2025-09-23 07:09:54.440199+00'
     );
@@ -98,7 +88,7 @@ BEGIN
     -- Get the VOD ID we just inserted
     SELECT id INTO test_vod_id FROM test.vods WHERE source_id = '2549030240' LIMIT 1;
 
-    -- Create a single chunk for testing (first 30 minutes / 1800 seconds)
+    -- Create a single chunk for testing (first hour / 3200 seconds)
     INSERT INTO test.chunks (
       id, vod_id, start_seconds, end_seconds, chunk_index,
       status, source, frames_processed, detections_count,
@@ -107,7 +97,7 @@ BEGIN
       gen_random_uuid(),
       test_vod_id,
       0,
-      1800,  -- First 30-minute chunk
+      3200,  -- First one hour chunk
       0,
       'pending',
       'vod',

@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   sfot:
@@ -9,7 +9,7 @@ services:
       - SUPABASE_SECRET_KEY=${SUPABASE_SECRET_KEY}
       - VOD_ID=${VOD_ID}
       - START_TIME=${START_TIME:-0}
-      - END_TIME=${END_TIME:-1800}
+      - END_TIME=${END_TIME:-3200}
       - PYTHONUNBUFFERED=1
     volumes:
       - ./templates:/app/templates:ro
