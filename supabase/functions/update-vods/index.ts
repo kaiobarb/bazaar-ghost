@@ -1,169 +1,198 @@
-// Follow this setup guide to integrate the Deno language server with your editor:
-// https://deno.land/manual/getting_started/setup_your_environment
-// This enables autocomplete, go to definition, etc.
-
 // Setup type definitions for built-in Supabase Runtime APIs
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { supabase } from "../_shared/supabase.ts";
 import {
-  twitchApiCall,
   getBazaarGameId,
-  batchCheckVodAvailability,
+  getStreamerIdByLogin,
+  getStreamerVodsWithChapters,
+  getVodsFromStreamer,
 } from "../_shared/twitch.ts";
 
-interface UpdateVodsResult {
-  vodsDiscovered: number;
-  vodsUpdated: number;
-  streamersDiscovered: number;
-  availabilityChecks: number;
-  vodsMarkedUnavailable: number;
+interface UpdateVodsRequest {
+  streamer_id: number;
 }
 
-async function updateVods(): Promise<UpdateVodsResult> {
-  const runId = crypto.randomUUID();
+interface UpdateVodsResult {
+  streamerLogin: string;
+  totalVodsFetched: number;
+  vodsWithBazaar: number;
+  vodsInserted: number;
+  totalBazaarSegments: number;
+}
 
-  // Start cataloger run
-  await supabase.from("cataloger_runs").insert({
-    id: runId,
-    run_type: "refresh",
-    started_at: new Date().toISOString(),
-  });
+/**
+ * Extract Bazaar chapter time ranges from VOD chapters
+ * Returns array in format: [start1_sec, end1_sec, start2_sec, end2_sec, ...]
+ */
+function extractBazaarChapters(
+  chapters: any[],
+  videoLengthSeconds: number,
+  bazaarGameId: string
+): number[] {
+  const bazaarSegments: number[] = [];
 
-  let vodsDiscovered = 0;
-  let vodsUpdated = 0;
-  let streamersDiscovered = 0;
-  let availabilityChecks = 0;
-  let vodsMarkedUnavailable = 0;
+  // Sort chapters by position
+  const sortedChapters = [...chapters].sort(
+    (a, b) => a.positionMilliseconds - b.positionMilliseconds
+  );
 
-  const streamersSet = new Set<string>(); // Track unique streamers
+  for (let i = 0; i < sortedChapters.length; i++) {
+    const chapter = sortedChapters[i];
+
+    // Check if this chapter is for The Bazaar
+    const isBazaar = chapter.game?.id === bazaarGameId ||
+      chapter.game?.name?.toLowerCase().includes("bazaar");
+
+    if (isBazaar) {
+      // Chapter start time in seconds
+      const startSeconds = Math.floor(chapter.positionMilliseconds / 1000);
+
+      // Chapter end time: either next chapter start or video end
+      let endSeconds: number;
+      if (i + 1 < sortedChapters.length) {
+        endSeconds = Math.floor(sortedChapters[i + 1].positionMilliseconds / 1000);
+      } else {
+        endSeconds = videoLengthSeconds;
+      }
+
+      // Add to segments array
+      bazaarSegments.push(startSeconds, endSeconds);
+
+      console.log(
+        `  Found Bazaar segment: ${startSeconds}s - ${endSeconds}s (${endSeconds - startSeconds}s duration)`
+      );
+    }
+  }
+
+  return bazaarSegments;
+}
+
+/**
+ * Update VODs for a specific streamer using GraphQL API
+ * Fetches VODs with chapter data and stores only those with Bazaar gameplay
+ */
+async function updateVods(streamerId: number): Promise<UpdateVodsResult> {
+  let totalVodsFetched = 0;
+  let vodsWithBazaar = 0;
+  let vodsInserted = 0;
+  let totalBazaarSegments = 0;
 
   try {
-    // Get The Bazaar game ID first
+    // Get streamer info from database
+    const { data: streamer, error: streamerError } = await supabase
+      .from("streamers")
+      .select("id, login, display_name")
+      .eq("id", streamerId)
+      .single();
+
+    if (streamerError || !streamer) {
+      throw new Error(`Streamer with ID ${streamerId} not found in database`);
+    }
+
+    console.log(`Fetching VODs for streamer: ${streamer.login} (${streamerId})`);
+
+    // Get The Bazaar game ID
     const bazaarGameId = await getBazaarGameId();
+    console.log(`The Bazaar game ID: ${bazaarGameId}`);
 
-    console.log("Fetching recent Bazaar VODs...");
+    // Quick check: Get streamer's Twitch ID and check if they have more than 1 VOD
+    // This avoids expensive GraphQL chapter fetching for streamers who don't save VODs
+    console.log("Checking VOD count before fetching chapter data...");
+    const twitchUserId = await getStreamerIdByLogin(streamer.login);
 
-    let cursor: string | undefined;
-    let pageCount = 0;
-    const maxPages = 5; // Limit to 5 pages (500 VODs) for daily updates
-    let allVods: any[] = [];
+    if (!twitchUserId) {
+      throw new Error(`Could not find Twitch user ID for ${streamer.login}`);
+    }
 
-    // Fetch VODs with pagination
-    do {
-      const params: Record<string, string> = {
-        game_id: bazaarGameId,
-        first: "100",
-        type: "archive", // Get only vods
-        sort: "time"
+    // Fetch only first 2 VODs to check count (lightweight Helix API call)
+    const quickCheck = await getVodsFromStreamer(twitchUserId, { first: "2" });
+    const vodCount = quickCheck.data?.length || 0;
+    console.log(`Streamer has ${vodCount} VOD(s)`);
+
+    // If streamer has 1 or fewer VODs, skip chapter processing
+    if (vodCount <= 1) {
+      console.log(`Streamer has ${vodCount} VOD(s), skipping chapter fetch and marking has_vods=false`);
+
+      await supabase
+        .from("streamers")
+        .update({
+          has_vods: false,
+          num_vods: vodCount,
+          num_bazaar_vods: 0,
+          oldest_vod: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", streamerId);
+
+      return {
+        streamerLogin: streamer.login,
+        totalVodsFetched: vodCount,
+        vodsWithBazaar: 0,
+        vodsInserted: 0,
+        totalBazaarSegments: 0,
       };
+    }
 
-      // Add cursor for pagination
-      if (cursor) {
-        params.after = cursor;
-      }
+    console.log(`Streamer has multiple VODs, proceeding with chapter fetch...`);
 
-      console.log(`Fetching VODs for The Bazaar (page ${pageCount + 1})...`);
-      const { data: vods, pagination } = await twitchApiCall("videos", params);
+    // Fetch all VODs with chapter data via GraphQL
+    const vodsWithChapters = await getStreamerVodsWithChapters(
+      streamer.login,
+      bazaarGameId
+    );
 
-      console.log(`Got ${vods?.length || 0} VODs on page ${pageCount + 1}`);
+    totalVodsFetched = vodsWithChapters.length;
+    console.log(`Fetched ${totalVodsFetched} total VODs for ${streamer.login}`);
 
-      // Add VODs to our collection
-      if (vods) {
-        allVods = allVods.concat(vods);
-      }
+    // Process each VOD
+    for (const vod of vodsWithChapters) {
+      console.log(`Processing VOD ${vod.id}: ${vod.title}`);
 
-      cursor = pagination?.cursor;
-      pageCount++;
-    } while (cursor && pageCount < maxPages);
-
-    console.log(`Got ${allVods.length} total recent VODs`);
-
-    // Process all VODs
-    for (const vod of allVods) {
-      // Parse duration (format: "1h2m3s")
-      const durationMatch = vod.duration.match(
-        /(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?/
+      // Extract Bazaar chapter time ranges
+      let bazaarChapters = extractBazaarChapters(
+        vod.chapters,
+        vod.lengthSeconds,
+        bazaarGameId
       );
-      const hours = parseInt(durationMatch?.[1] || "0");
-      const minutes = parseInt(durationMatch?.[2] || "0");
-      const seconds = parseInt(durationMatch?.[3] || "0");
-      const durationSeconds = hours * 3600 + minutes * 60 + seconds;
 
-      // Skip VODs shorter than 10 minutes (600 seconds)
-      if (durationSeconds < 600) {
-        console.log(
-          `Skipping short VOD ${vod.id}: ${vod.duration} (${durationSeconds}s)`
-        );
-        continue;
-      }
+      // Fallback: If no chapters found but VOD's main game is The Bazaar,
+      // treat the entire VOD as a Bazaar segment
+      if (bazaarChapters.length === 0) {
+        const isBazaarGame = vod.game?.id === bazaarGameId ||
+          vod.game?.name?.toLowerCase().includes("bazaar");
 
-      // Handle streamers - check if we need to get user details
-      if (!streamersSet.has(vod.user_id)) {
-        streamersSet.add(vod.user_id);
-
-        // Check if streamer exists
-        const { data: existingStreamer } = await supabase
-          .from("streamers")
-          .select("id")
-          .eq("id", parseInt(vod.user_id))
-          .single();
-
-        if (!existingStreamer) {
-          // Get full user details including profile image
-          const { data: users } = await twitchApiCall("users", {
-            id: vod.user_id,
-          });
-
-          if (users && users.length > 0) {
-            const user = users[0];
-
-            // Upsert the streamer with full profile data
-            const { error: streamerError } = await supabase
-              .from("streamers")
-              .upsert(
-                {
-                  id: parseInt(user.id),
-                  login: user.login,
-                  display_name: user.display_name,
-                  profile_image_url: user.profile_image_url,
-                  last_seen_streaming_bazaar: new Date().toISOString(),
-                },
-                {
-                  onConflict: "id",
-                  ignoreDuplicates: false,
-                }
-              );
-
-            if (!streamerError) {
-              streamersDiscovered++;
-              console.log(`Created new streamer: ${user.login}`);
-            }
-          }
+        if (isBazaarGame) {
+          console.log(`  No chapters, but VOD game is The Bazaar - treating entire VOD as Bazaar segment`);
+          bazaarChapters = [0, vod.lengthSeconds];
         } else {
-          // Update last seen timestamp for existing streamer
-          await supabase
-            .from("streamers")
-            .update({
-              last_seen_streaming_bazaar: new Date().toISOString(),
-            })
-            .eq("id", parseInt(vod.user_id));
+          console.log(`  No Bazaar gameplay found in VOD ${vod.id}, skipping`);
+          continue;
         }
       }
 
-      // Upsert VOD - this handles both new and existing records
+      vodsWithBazaar++;
+      totalBazaarSegments += bazaarChapters.length / 2; // Each segment = 2 numbers
+
+      console.log(
+        `  VOD ${vod.id} has ${bazaarChapters.length / 2} Bazaar segment(s)`
+      );
+
+      // Upsert VOD to database
       const { error: vodError } = await supabase.from("vods").upsert(
         {
-          streamer_id: parseInt(vod.user_id),
+          streamer_id: streamerId,
           source: "twitch",
           source_id: vod.id,
           title: vod.title,
-          duration_seconds: durationSeconds,
-          published_at: vod.published_at,
-          availability: "available", // Fresh from API, so it's available
+          duration_seconds: vod.lengthSeconds,
+          published_at: vod.publishedAt,
+          bazaar_chapters: bazaarChapters,
+          availability: "available",
           last_availability_check: new Date().toISOString(),
           ready_for_processing: false, // Require manual approval
+          updated_at: new Date().toISOString(),
         },
         {
           onConflict: "source,source_id",
@@ -171,109 +200,54 @@ async function updateVods(): Promise<UpdateVodsResult> {
         }
       );
 
-      if (!vodError) {
-        vodsDiscovered++;
-      } else {
+      if (vodError) {
         console.error(`Error upserting VOD ${vod.id}:`, vodError);
+      } else {
+        vodsInserted++;
+        console.log(`✓ Upserted VOD ${vod.id} with Bazaar chapters`);
       }
     }
 
-    // Now check availability of existing VODs that haven't been checked recently
-    console.log("Checking availability of existing VODs...");
-
-    const { data: existingVods } = await supabase
-      .from("vods")
-      .select("source_id, id")
-      .eq("source", "twitch")
-      .eq("availability", "available")
-      .or(
-        "last_availability_check.is.null,last_availability_check.lt." +
-          new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
-      ) // Older than 24 hours
-      .limit(1000); // Limit to avoid overwhelming the API
-
-    if (existingVods && existingVods.length > 0) {
-      const vodIds = existingVods.map((vod) => vod.source_id);
-      console.log(
-        `Checking availability for ${vodIds.length} existing VODs...`
-      );
-
-      const availabilityResults = await batchCheckVodAvailability(vodIds);
-      availabilityChecks = vodIds.length;
-
-      // Update VOD availability status
-      for (const vod of existingVods) {
-        const isAvailable = availabilityResults[vod.source_id];
-
-        if (!isAvailable) {
-          // Mark as unavailable
-          await supabase
-            .from("vods")
-            .update({
-              availability: "unavailable",
-              unavailable_since: new Date().toISOString(),
-              last_availability_check: new Date().toISOString(),
-            })
-            .eq("id", vod.id);
-
-          vodsMarkedUnavailable++;
-          console.log(`Marked VOD ${vod.source_id} as unavailable`);
-        } else {
-          // Update last check timestamp
-          await supabase
-            .from("vods")
-            .update({
-              last_availability_check: new Date().toISOString(),
-            })
-            .eq("id", vod.id);
-        }
-      }
+    // Calculate oldest VOD timestamp from all VODs
+    let oldestVod: string | null = null;
+    if (vodsWithChapters.length > 0) {
+      oldestVod = vodsWithChapters.reduce((oldest, vod) => {
+        return !oldest || vod.publishedAt < oldest ? vod.publishedAt : oldest;
+      }, null as string | null);
     }
 
-    console.log(
-      `Update complete: ${vodsDiscovered} VODs discovered, ${streamersDiscovered} streamers created, ${availabilityChecks} availability checks, ${vodsMarkedUnavailable} VODs marked unavailable`
-    );
-
-    // Update cataloger run with success
+    // Update streamer statistics
     await supabase
-      .from("cataloger_runs")
+      .from("streamers")
       .update({
-        completed_at: new Date().toISOString(),
-        vods_discovered: vodsDiscovered,
-        streamers_discovered: streamersDiscovered,
-        status: "completed",
-        metadata: {
-          vodsUpdated,
-          availabilityChecks,
-          vodsMarkedUnavailable,
-        },
+        has_vods: true,
+        num_vods: totalVodsFetched,
+        num_bazaar_vods: vodsWithBazaar,
+        oldest_vod: oldestVod,
+        updated_at: new Date().toISOString(),
       })
-      .eq("id", runId);
+      .eq("id", streamerId);
+
+    console.log(`
+Summary for ${streamer.login}:
+  Total VODs fetched: ${totalVodsFetched}
+  VODs with Bazaar gameplay: ${vodsWithBazaar}
+  VODs inserted/updated: ${vodsInserted}
+  Total Bazaar segments: ${totalBazaarSegments}
+  Oldest VOD: ${oldestVod || 'N/A'}
+    `);
+
+    return {
+      streamerLogin: streamer.login,
+      totalVodsFetched,
+      vodsWithBazaar,
+      vodsInserted,
+      totalBazaarSegments,
+    };
   } catch (error: any) {
     console.error("Update VODs error:", error);
-
-    // Log error to cataloger run
-    await supabase
-      .from("cataloger_runs")
-      .update({
-        completed_at: new Date().toISOString(),
-        status: "failed",
-        errors: [
-          { message: error.message, timestamp: new Date().toISOString() },
-        ],
-      })
-      .eq("id", runId);
-
     throw error;
   }
-
-  return {
-    vodsDiscovered,
-    vodsUpdated,
-    streamersDiscovered,
-    availabilityChecks,
-    vodsMarkedUnavailable,
-  };
 }
 
 serve(async (req) => {
@@ -282,13 +256,28 @@ serve(async (req) => {
       return new Response("Method not allowed", { status: 405 });
     }
 
-    const result = await updateVods();
+    // Parse request body
+    const body = await req.json() as UpdateVodsRequest;
+
+    if (!body.streamer_id || typeof body.streamer_id !== "number") {
+      return new Response(
+        JSON.stringify({
+          error: "Missing or invalid required parameter: streamer_id (number)",
+        }),
+        {
+          headers: { "Content-Type": "application/json" },
+          status: 400,
+        }
+      );
+    }
+
+    const result = await updateVods(body.streamer_id);
 
     return new Response(JSON.stringify(result), {
       headers: { "Content-Type": "application/json" },
       status: 200,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Update VODs function error:", error);
     return new Response(JSON.stringify({ error: error.message }), {
       headers: { "Content-Type": "application/json" },
@@ -300,11 +289,13 @@ serve(async (req) => {
 /* To invoke locally:
 
   1. Run `supabase start` (see: https://supabase.com/docs/reference/cli/supabase-start)
-  2. Make an HTTP request:
+  2. Make an HTTP request with a streamer_id:
 
   curl -i --location --request POST 'http://127.0.0.1:54321/functions/v1/update-vods' \
     --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0' \
     --header 'Content-Type: application/json' \
-    --data '{}'
+    --data '{"streamer_id": 29795919}'
+
+  Note: Replace 29795919 with the actual streamer ID from your database
 
 */

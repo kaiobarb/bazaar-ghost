@@ -43,7 +43,7 @@ export async function getTwitchToken(): Promise<string> {
 
 export async function twitchApiCall(
   endpoint: string,
-  params?: Record<string, string>
+  params?: Record<string, string>,
 ) {
   const token = await getTwitchToken();
   const url = new URL(`https://api.twitch.tv/helix/${endpoint}`);
@@ -74,7 +74,7 @@ export async function twitchApiCall(
     const errorText = await response.text();
     console.log(`Error response: ${errorText}`);
     throw new Error(
-      `Twitch API error: ${response.status} ${response.statusText}`
+      `Twitch API error: ${response.status} ${response.statusText}`,
     );
   }
 
@@ -100,13 +100,13 @@ export async function getBazaarGameId(): Promise<string> {
 
   // Find exact match for "The Bazaar"
   const bazaarGame = data?.find(
-    (game: any) => game.name.toLowerCase() === "the bazaar"
+    (game: any) => game.name.toLowerCase() === "the bazaar",
   );
 
   if (!bazaarGame) {
     console.log(
       "Available games found:",
-      data?.map((g: any) => g.name)
+      data?.map((g: any) => g.name),
     );
     throw new Error("The Bazaar game not found on Twitch");
   }
@@ -131,7 +131,7 @@ export async function checkVodAvailability(vodId: string): Promise<boolean> {
 }
 
 export async function batchCheckVodAvailability(
-  vodIds: string[]
+  vodIds: string[],
 ): Promise<Record<string, boolean>> {
   const results: Record<string, boolean> = {};
 
@@ -169,7 +169,11 @@ export async function batchCheckVodAvailability(
 
       if (response.ok) {
         const responseData = await response.json();
-        console.log(`API returned ${responseData.data?.length || 0} available VODs out of ${batch.length} requested`);
+        console.log(
+          `API returned ${
+            responseData.data?.length || 0
+          } available VODs out of ${batch.length} requested`,
+        );
 
         // Mark returned VODs as available
         if (responseData.data) {
@@ -180,9 +184,11 @@ export async function batchCheckVodAvailability(
         }
 
         // Log which VODs were NOT found
-        const unavailable = batch.filter(id => !results[id]);
+        const unavailable = batch.filter((id) => !results[id]);
         if (unavailable.length > 0) {
-          console.log(`✗ ${unavailable.length} VODs not found: ${unavailable.join(", ")}`);
+          console.log(
+            `✗ ${unavailable.length} VODs not found: ${unavailable.join(", ")}`,
+          );
         }
       } else {
         const errorText = await response.text();
@@ -208,7 +214,9 @@ export async function batchCheckVodAvailability(
   return results;
 }
 
-export async function getStreamerIdByLogin(login: string): Promise<string | null> {
+export async function getStreamerIdByLogin(
+  login: string,
+): Promise<string | null> {
   try {
     const { data } = await twitchApiCall("users", { login });
 
@@ -232,7 +240,7 @@ export async function getVodsFromStreamer(
     before?: string;
     type?: string;
     period?: string;
-  }
+  },
 ) {
   const queryParams: Record<string, string> = {
     user_id: streamerId,
@@ -245,4 +253,218 @@ export async function getVodsFromStreamer(
   if (params?.period) queryParams.period = params.period;
 
   return twitchApiCall("videos", queryParams);
+}
+
+// GraphQL API constants and functions
+const TWITCH_GQL_URL = "https://gql.twitch.tv/gql";
+const TWITCH_GQL_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"; // Public Twitch web client ID
+
+interface GraphQLResponse<T = any> {
+  data?: T;
+  errors?: Array<{ message: string; locations?: any[]; extensions?: any }>;
+}
+
+/**
+ * Make a GraphQL API call to Twitch's unofficial GQL endpoint
+ * Used for fetching data not available in Helix API (e.g., VOD chapters)
+ */
+export async function twitchGraphQLCall<T = any>(
+  query: string,
+  variables?: Record<string, any>,
+  operationName?: string,
+): Promise<GraphQLResponse<T>> {
+  const body: any = { query };
+
+  if (variables) {
+    body.variables = variables;
+  }
+
+  if (operationName) {
+    body.operationName = operationName;
+  }
+
+  console.log(`Twitch GraphQL call: ${operationName || "query"}`);
+
+  const response = await fetch(TWITCH_GQL_URL, {
+    method: "POST",
+    headers: {
+      "Client-ID": TWITCH_GQL_CLIENT_ID,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error(`GraphQL HTTP error: ${response.status} - ${errorText}`);
+    throw new Error(`GraphQL HTTP error: ${response.status}`);
+  }
+
+  const result = await response.json();
+
+  if (result.errors && result.errors.length > 0) {
+    console.error("GraphQL errors:", JSON.stringify(result.errors, null, 2));
+    throw new Error(`GraphQL error: ${result.errors[0].message}`);
+  }
+
+  return result;
+}
+
+interface VideoChapter {
+  positionMilliseconds: number;
+  type: string;
+  description: string;
+  game?: {
+    id: string;
+    name: string;
+    displayName: string;
+  };
+}
+
+interface VODWithChapters {
+  id: string;
+  title: string;
+  lengthSeconds: number;
+  publishedAt: string;
+  game?: {
+    id: string;
+    name: string;
+  };
+  chapters: VideoChapter[];
+}
+
+/**
+ * Fetch all VODs for a streamer with chapter data using GraphQL
+ * Returns only VODs that have chapters available
+ */
+export async function getStreamerVodsWithChapters(
+  streamerLogin: string,
+  bazaarGameId: string,
+): Promise<VODWithChapters[]> {
+  const query = `
+    query GetUserVideos($login: String!, $first: Int!, $after: Cursor) {
+      user(login: $login) {
+        id
+        displayName
+        login
+        videos(first: $first, type: ARCHIVE, after: $after) {
+          edges {
+            node {
+              id
+              title
+              lengthSeconds
+              publishedAt
+              game {
+                id
+                name
+                displayName
+              }
+              moments(first: 25, momentRequestType: VIDEO_CHAPTER_MARKERS) {
+                edges {
+                  node {
+                    positionMilliseconds
+                    type
+                    description
+                    details {
+                      ... on GameChangeMomentDetails {
+                        game {
+                          id
+                          name
+                          displayName
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            cursor
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+        }
+      }
+    }
+  `;
+
+  const allVods: VODWithChapters[] = [];
+  let cursor: string | undefined;
+  let pageCount = 0;
+  const maxPages = 50; // Reasonable limit for per-streamer VODs
+
+  do {
+    const variables: { login: string; first: number; after?: string } = {
+      login: streamerLogin,
+      first: 100,
+    };
+
+    if (cursor) {
+      variables.after = cursor;
+    }
+
+    console.log(
+      `Fetching VODs for ${streamerLogin} (page ${pageCount + 1})...`,
+    );
+
+    const response = await twitchGraphQLCall(query, variables, "GetUserVideos");
+
+    if (!response.data?.user) {
+      console.log(`User ${streamerLogin} not found or has no videos`);
+      break;
+    }
+
+    const videos = response.data.user.videos.edges || [];
+    console.log(`Got ${videos.length} VODs on page ${pageCount + 1}`);
+
+    for (const edge of videos) {
+      const video = edge.node;
+
+      // Parse chapter data
+      const chapters: VideoChapter[] = [];
+      if (video.moments?.edges) {
+        for (const momentEdge of video.moments.edges) {
+          const moment = momentEdge.node;
+
+          // Extract game info from details
+          const game = moment.details?.game;
+
+          chapters.push({
+            positionMilliseconds: moment.positionMilliseconds,
+            type: moment.type,
+            description: moment.description,
+            game: game
+              ? {
+                id: game.id,
+                name: game.name,
+                displayName: game.displayName,
+              }
+              : undefined,
+          });
+        }
+      }
+
+      allVods.push({
+        id: video.id,
+        title: video.title,
+        lengthSeconds: video.lengthSeconds,
+        publishedAt: video.publishedAt,
+        game: video.game
+          ? {
+            id: video.game.id,
+            name: video.game.name,
+          }
+          : undefined,
+        chapters,
+      });
+    }
+
+    const pageInfo = response.data.user.videos.pageInfo;
+    cursor = pageInfo.hasNextPage ? pageInfo.endCursor : undefined;
+    pageCount++;
+  } while (cursor && pageCount < maxPages);
+
+  console.log(`Total VODs fetched for ${streamerLogin}: ${allVods.length}`);
+  return allVods;
 }
