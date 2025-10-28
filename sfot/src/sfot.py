@@ -261,10 +261,10 @@ class SFOTProcessor:
             duration = self.end_time - self.start_time
 
             # Build streamlink command with quality preference
-            quality_stream = self.quality if self.quality in ['360p', '480p', '720p', '1080p', '1080p60', 'worst', 'best'] else '480p'
+            quality_stream = self.quality if self.quality in ['360p', '480p', '720p60', '1080p', '1080p60', 'worst', 'best'] else '480p'
             cmd = [
                 'streamlink',
-                '--default-stream', quality_stream,
+                '--default-stream', quality_stream + ',720p60,1080p60',
                 f'https://twitch.tv/videos/{self.vod_id}',
                 '--hls-start-offset', str(timedelta(seconds=self.start_time)),
                 '--hls-duration', str(duration),
