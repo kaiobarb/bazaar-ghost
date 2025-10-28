@@ -235,11 +235,11 @@ class SFOTProcessor:
 
         except Exception as e:
             self.logger.error(f"Processing failed: {e}", exc_info=True)
-            # Update chunk status to pending with error message
+            # Update chunk status to failed with error message
             try:
                 self.supabase.update_chunk(
                     self.chunk_id,
-                    'pending',
+                    'failed',
                     error=f"Processing failed: {str(e)}",
                     quality=self.quality
                 )
