@@ -139,8 +139,7 @@ async function updateVods(streamerId: number): Promise<UpdateVodsResult> {
 
     // Fetch all VODs with chapter data via GraphQL
     const vodsWithChapters = await getStreamerVodsWithChapters(
-      streamer.login,
-      bazaarGameId
+      streamer.login
     );
 
     totalVodsFetched = vodsWithChapters.length;

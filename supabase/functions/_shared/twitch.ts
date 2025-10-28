@@ -302,9 +302,20 @@ export async function twitchGraphQLCall<T = any>(
 
   const result = await response.json();
 
+  // Handle partial errors - Twitch often returns data with field-level errors
   if (result.errors && result.errors.length > 0) {
-    console.error("GraphQL errors:", JSON.stringify(result.errors, null, 2));
-    throw new Error(`GraphQL error: ${result.errors[0].message}`);
+    console.warn(
+      "GraphQL errors (may have partial data):",
+      JSON.stringify(result.errors, null, 2),
+    );
+
+    if (!result.data) {
+      throw new Error(
+        `GraphQL error with no data: ${result.errors[0].message}`,
+      );
+    }
+
+    console.log("Proceeding with partial data despite errors");
   }
 
   return result;
@@ -339,7 +350,6 @@ interface VODWithChapters {
  */
 export async function getStreamerVodsWithChapters(
   streamerLogin: string,
-  bazaarGameId: string,
 ): Promise<VODWithChapters[]> {
   const query = `
     query GetUserVideos($login: String!, $first: Int!, $after: Cursor) {
