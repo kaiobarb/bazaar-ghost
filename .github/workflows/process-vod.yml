@@ -43,7 +43,8 @@ jobs:
 
           # Check if VOD is available
           if echo "$STREAMS_JSON" | grep -q '"error"'; then
-            echo "VOD ${{ inputs.vod_id }} is not available!"
+            echo "VOD ${{ inputs.vod_id }} is not available"
+            echo "$STREAMS_JSON"
             echo "available=false" >> $GITHUB_OUTPUT
             exit 1
           fi
@@ -66,11 +67,9 @@ jobs:
             QUALITY="1080p"
           elif echo "$STREAMS_JSON" | jq -e '.streams["1080p60"]' > /dev/null 2>&1; then
             QUALITY="1080p"
-          elif echo "$STREAMS_JSON" | jq -e '.streams["360p"]' > /dev/null 2>&1; then
-            QUALITY="360p"
           else
-            # Fallback to best available
-            QUALITY="best"
+            QUALITY="1080p"
+
           fi
 
           echo "Selected quality: $QUALITY"
