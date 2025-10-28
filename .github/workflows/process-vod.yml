@@ -76,6 +76,21 @@ jobs:
           echo "quality=$QUALITY" >> $GITHUB_OUTPUT
           echo "available=true" >> $GITHUB_OUTPUT
 
+      - name: Update VOD status to failed if not available
+        if: failure()
+        run: |
+          echo "Updating VOD ${{ inputs.vod_id }} status to 'failed' - VOD not available"
+
+          # Update VOD status to failed and availability to unavailable
+          curl -X PATCH "$SUPABASE_URL/rest/v1/vods?source_id=eq.${{ inputs.vod_id }}" \
+            -H "apikey: $SUPABASE_SECRET_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d '{"status": "failed", "availability": "unavailable", "last_error": "VOD not available on Twitch"}'
+
+          echo "VOD marked as failed and unavailable"
+
   # Process all chunks in parallel using matrix strategy
   process-chunk:
     needs: check-vod
@@ -135,3 +150,18 @@ jobs:
             echo "Chunk ${{ matrix.chunk_id }} failed with exit code: $DOCKER_EXIT_CODE"
             exit $DOCKER_EXIT_CODE
           fi
+
+      - name: Update VOD status to failed
+        if: failure()
+        run: |
+          echo "Updating VOD ${{ inputs.vod_id }} status to 'failed' due to chunk processing failure"
+
+          # Update VOD status to failed using Supabase API
+          curl -X PATCH "$SUPABASE_URL/rest/v1/vods?source_id=eq.${{ inputs.vod_id }}" \
+            -H "apikey: $SUPABASE_SECRET_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d '{"status": "failed", "last_error": "Chunk processing failed in GitHub Actions"}'
+
+          echo "VOD status updated to failed"
