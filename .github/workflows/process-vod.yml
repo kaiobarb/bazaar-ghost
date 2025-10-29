@@ -81,13 +81,14 @@ jobs:
         run: |
           echo "Updating VOD ${{ inputs.vod_id }} status to 'failed' - VOD not available"
 
-          # Update VOD status to failed and availability to unavailable
+          # Update VOD status to failed and availability to unavailable with timestamp
+          CURRENT_TIME=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ")
           curl -X PATCH "$SUPABASE_URL/rest/v1/vods?source_id=eq.${{ inputs.vod_id }}" \
             -H "apikey: $SUPABASE_SECRET_KEY" \
             -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
             -H "Content-Type: application/json" \
             -H "Prefer: return=minimal" \
-            -d '{"status": "failed", "availability": "unavailable", "last_error": "VOD not available on Twitch"}'
+            -d "{\"status\": \"failed\", \"availability\": \"unavailable\", \"unavailable_since\": \"$CURRENT_TIME\", \"last_availability_check\": \"$CURRENT_TIME\"}"
 
           echo "VOD marked as failed and unavailable"
 
