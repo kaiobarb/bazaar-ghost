@@ -8,9 +8,9 @@ const GITHUB_OWNER = "kaiobarb";
 const GITHUB_REPO = "bazaar-ghost";
 
 interface ProcessVodRequest {
-  vod_id?: number | string;  // Can be bigint (internal) or string
-  source_id?: string;         // Twitch VOD ID
-  dry_run?: boolean;          // If true, only return what would be processed
+  vod_id?: number | string; // Can be bigint (internal) or string
+  source_id?: string; // Twitch VOD ID
+  dry_run?: boolean; // If true, only return what would be processed
 }
 
 interface ProcessVodResponse {
@@ -24,10 +24,16 @@ interface ProcessVodResponse {
   error?: string;
 }
 
-async function triggerGithubWorkflow(vodId: string, chunkUuids: string[]): Promise<string | null> {
-  const workflowDispatchUrl = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/process-vod.yml/dispatches`;
+async function triggerGithubWorkflow(
+  vodId: string,
+  chunkUuids: string[],
+): Promise<string | null> {
+  const workflowDispatchUrl =
+    `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/process-vod.yml/dispatches`;
 
-  console.log(`Triggering workflow for VOD ${vodId} with ${chunkUuids.length} chunks`);
+  console.log(
+    `Triggering workflow for VOD ${vodId} with ${chunkUuids.length} chunks`,
+  );
 
   const response = await fetch(workflowDispatchUrl, {
     method: "POST",
@@ -50,22 +56,26 @@ async function triggerGithubWorkflow(vodId: string, chunkUuids: string[]): Promi
     const errorText = await response.text();
     console.error(
       `GitHub workflow dispatch failed: ${response.status} ${response.statusText}`,
-      errorText
+      errorText,
     );
     throw new Error(
-      `GitHub API error: ${response.status} ${response.statusText} - ${errorText}`
+      `GitHub API error: ${response.status} ${response.statusText} - ${errorText}`,
     );
   }
 
   // GitHub API returns 204 No Content on success
   // Construct the Actions page URL for the workflow
-  const actionsUrl = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/process-vod.yml`;
+  const actionsUrl =
+    `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/process-vod.yml`;
   return actionsUrl;
 }
 
-async function getPendingChunksForVod(vodId?: number | string, sourceId?: string) {
+async function getPendingChunksForVod(
+  vodId?: number | string,
+  sourceId?: string,
+) {
   // Use the SQL function we created
-  const { data, error } = await supabase.rpc('get_pending_chunks_for_vod', {
+  const { data, error } = await supabase.rpc("get_pending_chunks_for_vod", {
     p_vod_id: vodId ? Number(vodId) : null,
     p_source_id: sourceId || null,
   });
@@ -87,7 +97,8 @@ Deno.serve(async (req) => {
         headers: {
           "Access-Control-Allow-Origin": "*",
           "Access-Control-Allow-Methods": "POST, OPTIONS",
-          "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+          "Access-Control-Allow-Headers":
+            "authorization, x-client-info, apikey, content-type",
         },
       });
     }
@@ -99,7 +110,7 @@ Deno.serve(async (req) => {
         {
           headers: { "Content-Type": "application/json" },
           status: 401,
-        }
+        },
       );
     }
 
@@ -110,7 +121,9 @@ Deno.serve(async (req) => {
     const requestBody: ProcessVodRequest = await req.json().catch(() => ({}));
     const { vod_id, source_id, dry_run = false } = requestBody;
 
-    console.log(`Process VOD request - vod_id: ${vod_id}, source_id: ${source_id}, dry_run: ${dry_run}`);
+    console.log(
+      `Process VOD request - vod_id: ${vod_id}, source_id: ${source_id}, dry_run: ${dry_run}`,
+    );
 
     // Validate input
     if (!vod_id && !source_id) {
@@ -147,7 +160,9 @@ Deno.serve(async (req) => {
     const actualVodId = chunks[0].vod_id;
     const actualSourceId = chunks[0].source_id;
 
-    console.log(`Found ${chunks.length} pending chunks for VOD ${actualVodId} (${actualSourceId})`);
+    console.log(
+      `Found ${chunks.length} pending chunks for VOD ${actualVodId} (${actualSourceId})`,
+    );
 
     // If dry run, just return what would be processed
     if (dry_run) {
@@ -168,19 +183,26 @@ Deno.serve(async (req) => {
     // Update chunks to 'queued' status before triggering GitHub workflow
     console.log(`Updating ${chunks.length} chunks to 'queued' status`);
     const { error: updateError } = await supabase
-      .from('chunks')
-      .update({ status: 'queued' })
-      .in('id', chunkUuids);
+      .from("chunks")
+      .update({ status: "queued" })
+      .in("id", chunkUuids);
 
     if (updateError) {
       console.error("Error updating chunks to queued status:", updateError);
-      throw new Error(`Failed to update chunks to queued status: ${updateError.message}`);
+      throw new Error(
+        `Failed to update chunks to queued status: ${updateError.message}`,
+      );
     }
 
     // Trigger GitHub workflow with all chunk UUIDs
-    const githubRunUrl = await triggerGithubWorkflow(actualVodId.toString(), chunkUuids);
+    const githubRunUrl = await triggerGithubWorkflow(
+      actualSourceId,
+      chunkUuids,
+    );
 
-    console.log(`Successfully triggered GitHub workflow for VOD ${actualVodId} with ${chunks.length} chunks`);
+    console.log(
+      `Successfully triggered GitHub workflow for VOD ${actualVodId} with ${chunks.length} chunks`,
+    );
 
     const response: ProcessVodResponse = {
       success: true,
