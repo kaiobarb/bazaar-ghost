@@ -163,6 +163,6 @@ jobs:
             -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
             -H "Content-Type: application/json" \
             -H "Prefer: return=minimal" \
-            -d '{"status": "failed", "last_error": "Chunk processing failed in GitHub Actions"}'
+            -d '{"status": "failed"}'
 
           echo "VOD status updated to failed"
