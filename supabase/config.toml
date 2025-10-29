@@ -314,8 +314,8 @@ inspector_port = 8083
 # The Deno major version to use.
 deno_version = 2
 
-# [edge_runtime.secrets]
-# secret_key = "env(SECRET_VALUE)"
+[edge_runtime.secrets]
+SUPABASE_SECRET_KEY = "env(SUPABASE_SECRET_KEY)"
 
 [analytics]
 enabled = true
@@ -337,7 +337,7 @@ s3_access_key = "env(S3_ACCESS_KEY)"
 s3_secret_key = "env(S3_SECRET_KEY)"
 [functions.update-vods]
 enabled = true
-verify_jwt = true
+verify_jwt = false
 import_map = "./functions/update-vods/deno.json"
 # Uncomment to specify a custom file path to the entrypoint.
 # Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
@@ -359,7 +359,7 @@ entrypoint = "./functions/trigger-github-processing/index.ts"
 
 [functions.process-vod]
 enabled = true
-verify_jwt = true
+verify_jwt = false
 import_map = "./functions/process-vod/deno.json"
 # Uncomment to specify a custom file path to the entrypoint.
 # Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
@@ -370,7 +370,7 @@ entrypoint = "./functions/process-vod/index.ts"
 
 [functions.check_vod_availability]
 enabled = true
-verify_jwt = true
+verify_jwt = false
 import_map = "./functions/check_vod_availability/deno.json"
 # Uncomment to specify a custom file path to the entrypoint.
 # Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
@@ -403,7 +403,7 @@ entrypoint = "./functions/generate-seed/index.ts"
 
 [functions.insert-new-streamers]
 enabled = true
-verify_jwt = true
+verify_jwt = false
 import_map = "./functions/insert-new-streamers/deno.json"
 # Uncomment to specify a custom file path to the entrypoint.
 # Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx

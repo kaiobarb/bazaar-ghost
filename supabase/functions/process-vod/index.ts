@@ -1,15 +1,11 @@
 // Process VOD - Find and trigger processing for all pending chunks of a VOD
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { supabase, verifySecretKey } from "../_shared/supabase.ts";
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const GITHUB_TOKEN = Deno.env.get("GITHUB_TOKEN")!;
-const GITHUB_OWNER = "kaiobarb"; 
+const GITHUB_OWNER = "kaiobarb";
 const GITHUB_REPO = "bazaar-ghost";
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 interface ProcessVodRequest {
   vod_id?: number | string;  // Can be bigint (internal) or string
@@ -94,6 +90,17 @@ Deno.serve(async (req) => {
           "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
         },
       });
+    }
+
+    // Verify secret key authentication (after CORS to allow preflight)
+    if (!verifySecretKey(req)) {
+      return new Response(
+        JSON.stringify({ error: "Unauthorized" }),
+        {
+          headers: { "Content-Type": "application/json" },
+          status: 401,
+        }
+      );
     }
 
     if (req.method !== "POST") {

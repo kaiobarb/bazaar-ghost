@@ -2,7 +2,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { supabase } from "../_shared/supabase.ts";
+import { supabase, verifySecretKey } from "../_shared/supabase.ts";
 import { getBazaarGameId, twitchApiCall } from "../_shared/twitch.ts";
 
 interface InsertNewStreamersResult {
@@ -145,6 +145,17 @@ Summary:
 
 serve(async (req) => {
   try {
+    // Verify secret key authentication
+    if (!verifySecretKey(req)) {
+      return new Response(
+        JSON.stringify({ error: "Unauthorized" }),
+        {
+          headers: { "Content-Type": "application/json" },
+          status: 401,
+        }
+      );
+    }
+
     if (req.method !== "POST") {
       return new Response("Method not allowed", { status: 405 });
     }
