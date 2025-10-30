@@ -261,7 +261,7 @@ class SFOTProcessor:
             duration = self.end_time - self.start_time
 
             # Build streamlink command with quality preference
-            quality_stream = self.quality if self.quality in ['360p', '360p60', '480p', '480p60, '720p', '720p60', '1080p', '1080p60', 'worst', 'best'] else '480p'
+            quality_stream = self.quality if self.quality in ['360p', '360p60', '480p', '480p60', '720p', '720p60', '1080p', '1080p60', 'worst', 'best'] else '480p'
             cmd = [
                 'streamlink',
                 '--default-stream', quality_stream + ',360p60,480p60,720p60,1080p60',
