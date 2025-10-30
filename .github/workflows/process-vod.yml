@@ -70,8 +70,14 @@ jobs:
           elif echo "$STREAMS_JSON" | jq -e '.streams["1080p60"]' > /dev/null 2>&1; then
             QUALITY="1080p"
           else
-            QUALITY="1080p"
-
+            # No supported qualities available
+            echo "No Supported qualities available, marking vod as failed"
+            curl -fsSL -X PATCH "$SUPABASE_URL/rest/v1/vods?source_id=eq.${{ inputs.vod_id }}" \
+            -H "apikey: $SUPABASE_SECRET_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d "{\"status\": \"failed\"}"
           fi
 
           echo "Selected quality: $QUALITY"
@@ -85,7 +91,7 @@ jobs:
 
           # Update VOD status to failed and availability to unavailable with timestamp
           CURRENT_TIME=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ")
-          curl -X PATCH "$SUPABASE_URL/rest/v1/vods?source_id=eq.${{ inputs.vod_id }}" \
+          curl -fsSL -X PATCH "$SUPABASE_URL/rest/v1/vods?source_id=eq.${{ inputs.vod_id }}" \
             -H "apikey: $SUPABASE_SECRET_KEY" \
             -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
             -H "Content-Type: application/json" \
@@ -160,7 +166,7 @@ jobs:
           echo "Updating VOD ${{ inputs.vod_id }} status to 'failed' due to chunk processing failure"
 
           # Update VOD status to failed using Supabase API
-          curl -X PATCH "$SUPABASE_URL/rest/v1/vods?source_id=eq.${{ inputs.vod_id }}" \
+          curl -fsSL -X PATCH "$SUPABASE_URL/rest/v1/vods?source_id=eq.${{ inputs.vod_id }}" \
             -H "apikey: $SUPABASE_SECRET_KEY" \
             -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
             -H "Content-Type: application/json" \
