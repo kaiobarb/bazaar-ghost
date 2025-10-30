@@ -59,6 +59,8 @@ jobs:
           # Check for preferred qualities in order
           if echo "$STREAMS_JSON" | jq -e '.streams["480p"]' > /dev/null 2>&1; then
             QUALITY="480p"
+          elif echo "$STREAMS_JSON" | jq -e '.streams["480p60"]' > /dev/null 2>&1; then
+            QUALITY="480p"
           elif echo "$STREAMS_JSON" | jq -e '.streams["720p"]' > /dev/null 2>&1; then
             QUALITY="720p"
           elif echo "$STREAMS_JSON" | jq -e '.streams["720p60"]' > /dev/null 2>&1; then
