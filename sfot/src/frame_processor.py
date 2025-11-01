@@ -12,12 +12,6 @@ from PIL import Image
 import io
 from emblem_detector import EmblemDetector
 from right_edge_detector import RightEdgeDetector
-# Use async logger for non-blocking performance
-try:
-    from async_logger import FireAndForgetLogger as SupabaseLogger
-except ImportError:
-    from custom_logger import SupabaseLogger
-
 class FrameProcessor:
     """Process frames for matchup detection and OCR"""
     
@@ -35,9 +29,6 @@ class FrameProcessor:
         self.test_mode = test_mode
         self.old_templates = old_templates
         self.logger = logging.getLogger('sfot.frame_processor')
-
-        # Initialize Supabase logger for centralized logging
-        self.supabase_logger = SupabaseLogger(source_name="sfot_logs")
 
         # Load detection parameters
         self.threshold = config['detection']['threshold']
@@ -371,11 +362,6 @@ class FrameProcessor:
 
             if rank is not None:
                 self.logger.info(f"Matchup detected via {rank} emblem at {bbox}, confidence={confidence:.3f}")
-                # Log to Supabase
-                self.supabase_logger.info("Matchup detected",
-                                          rank=rank,
-                                          confidence=confidence,
-                                          quality=self.quality)
                 return rank, bbox, confidence
 
             return None, None, 0.0
