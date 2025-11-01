@@ -158,7 +158,7 @@ class FrameProcessor:
                 return None
 
             # Validate emblem bounding box position and size
-            if emblem_bbox:
+            if emblem_bbox and method != 'template':
                 x, y, w, h = emblem_bbox
                 frame_h, frame_w = frame.shape[:2]
 
@@ -211,13 +211,6 @@ class FrameProcessor:
 
             # Remove emblem from frame for better OCR
             processed_frame = frame.copy()
-            # Commenting out for now, no need to remove if it will be cropped anyway
-            # if self.emblem_detector and emblem_bbox:
-            #     processed_frame, _ = self.emblem_detector.remove_emblem(
-            #         frame,
-            #         threshold=self.emblem_threshold,
-            #         fill_value=255
-            #     )
 
             # Calculate emblem right boundary for cropping
             emblem_right_x = None
@@ -231,7 +224,7 @@ class FrameProcessor:
                     self.logger.info(f"Rejecting detection at {timestamp}s: right edge ({right_edge_x}) is left of emblem right ({emblem_right_x})")
                     return None
 
-            # PHASE 3: Intelligent cropping based on emblem and right edge
+            # cropping based on emblem and right edge
             cropped_frame = self._intelligent_crop_v2(processed_frame, emblem_right_x, right_edge_x)
             
             # Advanced OCR preprocessing
