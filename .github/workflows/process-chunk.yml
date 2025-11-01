@@ -15,6 +15,10 @@ on:
         description: "Chunk ID to process"
         required: true
         type: string
+      old_templates:
+        description: "Use old templates (underscore prefix, for VODs before Aug 13 2025 when emblems were smaller)"
+        default: false
+        type: boolean
 
 env:
   SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -40,7 +44,7 @@ jobs:
           mkdir -p ./output
 
           echo "Processing chunk ${{ inputs.chunk_id }} with test mode: ${{ inputs.test }}"
-
+          echo "Using old templates: ${{ inputs.old_templates }}"
 
           # Run SFOT container to process the chunk
           # Container will fetch chunk details and update status internally
@@ -53,6 +57,7 @@ jobs:
             -e CHUNK_ID="${{ inputs.chunk_id }}" \
             -e TEST_MODE="${{ inputs.test }}" \
             -e QUALITY="${{ inputs.quality }}" \
+            -e OLD_TEMPLATES="${{ inputs.old_templates }}" \
             bazaar-ghost-sfot
 
           DOCKER_EXIT_CODE=$?

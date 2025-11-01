@@ -12,6 +12,11 @@ on:
         description: "JSON array of chunk UUIDs to process"
         required: true
         type: string
+      old_templates:
+        description: "Use old templates (requires 480p quality)"
+        required: false
+        type: boolean
+        default: false
 
 env:
   SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -53,31 +58,62 @@ jobs:
           echo "Available streams JSON:"
           echo "$STREAMS_JSON" | jq '.streams | keys'
 
-          # Determine best quality (preference: 480p -> 720p -> 1080p -> 360p -> best)
+          # Determine best quality based on old_templates flag
           QUALITY=""
+          OLD_TEMPLATES="${{ inputs.old_templates }}"
 
-          # Check for preferred qualities in order
-          if echo "$STREAMS_JSON" | jq -e '.streams["480p"]' > /dev/null 2>&1; then
-            QUALITY="480p"
-          elif echo "$STREAMS_JSON" | jq -e '.streams["480p60"]' > /dev/null 2>&1; then
-            QUALITY="480p"
-          elif echo "$STREAMS_JSON" | jq -e '.streams["720p"]' > /dev/null 2>&1; then
-            QUALITY="720p"
-          elif echo "$STREAMS_JSON" | jq -e '.streams["720p60"]' > /dev/null 2>&1; then
-            QUALITY="720p"
-          elif echo "$STREAMS_JSON" | jq -e '.streams["1080p"]' > /dev/null 2>&1; then
-            QUALITY="1080p"
-          elif echo "$STREAMS_JSON" | jq -e '.streams["1080p60"]' > /dev/null 2>&1; then
-            QUALITY="1080p"
+          if [ "$OLD_TEMPLATES" = "true" ]; then
+            echo "Older vod, using smaller templates - checking for 480p quality only"
+
+            # Check for 480p or 480p60
+            if echo "$STREAMS_JSON" | jq -e '.streams["480p"]' > /dev/null 2>&1; then
+              QUALITY="480p"
+            elif echo "$STREAMS_JSON" | jq -e '.streams["480p60"]' > /dev/null 2>&1; then
+              QUALITY="480p60"
+            else
+              echo "ERROR: Small templates are 480p only, 480p stream not found"
+              echo "Available qualities:"
+              echo "$STREAMS_JSON" | jq '.streams | keys'
+
+              # Mark VOD as failed since required quality not available
+              echo "No 480p quality available for old templates, marking vod as failed"
+              curl -fsSL -X PATCH "$SUPABASE_URL/rest/v1/vods?source_id=eq.${{ inputs.vod_id }}" \
+                -H "apikey: $SUPABASE_SECRET_KEY" \
+                -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
+                -H "Content-Type: application/json" \
+                -H "Prefer: return=minimal" \
+                -d "{\"status\": \"failed\"}"
+
+              echo "available=false" >> $GITHUB_OUTPUT
+              exit 1
+            fi
           else
-            # No supported qualities available
-            echo "No Supported qualities available, marking vod as failed"
-            curl -fsSL -X PATCH "$SUPABASE_URL/rest/v1/vods?source_id=eq.${{ inputs.vod_id }}" \
-            -H "apikey: $SUPABASE_SECRET_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
-            -H "Content-Type: application/json" \
-            -H "Prefer: return=minimal" \
-            -d "{\"status\": \"failed\"}"
+            # Normal quality selection (preference: 480p -> 720p -> 1080p)
+            if echo "$STREAMS_JSON" | jq -e '.streams["480p"]' > /dev/null 2>&1; then
+              QUALITY="480p"
+            elif echo "$STREAMS_JSON" | jq -e '.streams["480p60"]' > /dev/null 2>&1; then
+              QUALITY="480p"
+            elif echo "$STREAMS_JSON" | jq -e '.streams["720p"]' > /dev/null 2>&1; then
+              QUALITY="720p"
+            elif echo "$STREAMS_JSON" | jq -e '.streams["720p60"]' > /dev/null 2>&1; then
+              QUALITY="720p"
+            elif echo "$STREAMS_JSON" | jq -e '.streams["1080p"]' > /dev/null 2>&1; then
+              QUALITY="1080p"
+            elif echo "$STREAMS_JSON" | jq -e '.streams["1080p60"]' > /dev/null 2>&1; then
+              QUALITY="1080p"
+            else
+              # No supported qualities available
+              echo "No supported qualities available, marking vod as failed"
+              curl -fsSL -X PATCH "$SUPABASE_URL/rest/v1/vods?source_id=eq.${{ inputs.vod_id }}" \
+                -H "apikey: $SUPABASE_SECRET_KEY" \
+                -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
+                -H "Content-Type: application/json" \
+                -H "Prefer: return=minimal" \
+                -d "{\"status\": \"failed\"}"
+
+              echo "available=false" >> $GITHUB_OUTPUT
+              exit 1
+            fi
           fi
 
           echo "Selected quality: $QUALITY"
@@ -138,6 +174,7 @@ jobs:
 
           echo "Processing chunk ${{ matrix.chunk_id }} for VOD ${{ inputs.vod_id }}"
           echo "Using quality: ${{ needs.check-vod.outputs.quality }}"
+          echo "Small templates mode: ${{ inputs.old_templates }}"
 
           # Run SFOT container - it will handle all chunk details and status updates internally
           docker run --rm \
@@ -148,6 +185,7 @@ jobs:
             -e CHUNK_ID="${{ matrix.chunk_id }}" \
             -e TEST_MODE="false" \
             -e QUALITY="${{ needs.check-vod.outputs.quality }}" \
+            -e OLD_TEMPLATES="${{ inputs.old_templates }}" \
             bazaar-ghost-sfot
 
           DOCKER_EXIT_CODE=$?

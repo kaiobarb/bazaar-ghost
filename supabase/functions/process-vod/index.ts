@@ -27,12 +27,13 @@ interface ProcessVodResponse {
 async function triggerGithubWorkflow(
   vodId: string,
   chunkUuids: string[],
+  oldTemplates: boolean,
 ): Promise<string | null> {
   const workflowDispatchUrl =
     `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/process-vod.yml/dispatches`;
 
   console.log(
-    `Triggering workflow for VOD ${vodId} with ${chunkUuids.length} chunks`,
+    `Triggering workflow for VOD ${vodId} with ${chunkUuids.length} chunks (old_templates: ${oldTemplates})`,
   );
 
   const response = await fetch(workflowDispatchUrl, {
@@ -48,6 +49,7 @@ async function triggerGithubWorkflow(
       inputs: {
         vod_id: vodId,
         chunk_uuids: JSON.stringify(chunkUuids), // Pass as JSON string
+        old_templates: oldTemplates.toString(), // Pass as string
       },
     }),
   });
@@ -164,11 +166,33 @@ Deno.serve(async (req) => {
       `Found ${chunks.length} pending chunks for VOD ${actualVodId} (${actualSourceId})`,
     );
 
+    // Fetch VOD's published_at date to determine if old templates should be used
+    const { data: vodData, error: vodError } = await supabase
+      .from("vods")
+      .select("published_at")
+      .eq("id", actualVodId)
+      .single();
+
+    if (vodError) {
+      console.error("Error fetching VOD data:", vodError);
+      throw new Error(`Failed to fetch VOD data: ${vodError.message}`);
+    }
+
+    // Check if VOD was published on or before August 12, 2025
+    const cutoffDate = new Date("2025-08-12T00:00:00Z");
+    const vodPublishedAt = new Date(vodData.published_at);
+    const useOldTemplates = vodPublishedAt <= cutoffDate;
+
+    console.log(
+      `VOD published at: ${vodData.published_at}, cutoff: ${cutoffDate.toISOString()}, use old templates: ${useOldTemplates}`,
+    );
+
     // If dry run, just return what would be processed
     if (dry_run) {
       const response: ProcessVodResponse = {
         success: true,
-        message: `Dry run: Would process ${chunks.length} chunks`,
+        message:
+          `Dry run: Would process ${chunks.length} chunks (old_templates: ${useOldTemplates})`,
         vod_id: actualVodId,
         source_id: actualSourceId,
         chunks_found: chunks.length,
@@ -198,6 +222,7 @@ Deno.serve(async (req) => {
     const githubRunUrl = await triggerGithubWorkflow(
       actualSourceId,
       chunkUuids,
+      useOldTemplates,
     );
 
     console.log(
@@ -206,7 +231,8 @@ Deno.serve(async (req) => {
 
     const response: ProcessVodResponse = {
       success: true,
-      message: `Successfully triggered processing for ${chunks.length} chunks`,
+      message:
+        `Successfully triggered processing for ${chunks.length} chunks (old_templates: ${useOldTemplates})`,
       vod_id: actualVodId,
       source_id: actualSourceId,
       chunks_found: chunks.length,

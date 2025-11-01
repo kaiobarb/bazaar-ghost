@@ -45,6 +45,7 @@ class SFOTProcessor:
         self.chunk_id = config['chunk_id']
         self.test_mode = config.get('test_mode', False)
         self.quality = config.get('quality', '480p')
+        self.old_templates = config.get('old_templates', False)
 
         # Load configuration
         self.config = self._load_config()
@@ -77,8 +78,8 @@ class SFOTProcessor:
         self.last_update_time = time.time()
         self.frames_at_last_update = 0
 
-        # Initialize frame processor with quality information and test mode
-        self.frame_processor = FrameProcessor(self.config, quality=self.quality, test_mode=self.test_mode)
+        # Initialize frame processor with quality information, test mode, and template selection
+        self.frame_processor = FrameProcessor(self.config, quality=self.quality, test_mode=self.test_mode, old_templates=self.old_templates)
 
         # Setup logging
         self._setup_logging()
@@ -161,14 +162,18 @@ class SFOTProcessor:
     def process_vod_chunk(self) -> Dict[str, Any]:
         """Main processing entry point"""
         self.logger.info(f"Starting VOD processing: {self.vod_id} [{self.start_time}-{self.end_time}]")
+        if self.old_templates:
+            self.logger.info("Using small templates (underscore-prefixed) for older VOD processing")
 
         try:
-            # Check if chunk was previously completed and clean up if needed
-            if self.initial_status == 'completed':
-                self.logger.info(f"Chunk {self.chunk_id} was previously completed, cleaning up existing detections...")
-                deleted_count = self.supabase.delete_chunk_detections(self.chunk_id)
-                if deleted_count > 0:
-                    self.logger.info(f"Deleted {deleted_count} existing detections for idempotent reprocessing")
+            # Always clean up existing detections and images when rerunning a chunk
+            # This ensures clean slate whether chunk was completed, failed, or partially processed
+            self.logger.info(f"Cleaning up any existing detections for chunk {self.chunk_id} (status: {self.initial_status})...")
+            deleted_count = self.supabase.delete_chunk_detections(self.chunk_id)
+            if deleted_count > 0:
+                self.logger.info(f"Deleted {deleted_count} existing detections and their images for clean reprocessing")
+            else:
+                self.logger.info(f"No existing detections found for chunk {self.chunk_id}")
 
             # Update chunk status to processing with quality info
             self.supabase.update_chunk(
@@ -507,7 +512,7 @@ class SFOTProcessor:
                     self.frames_processed += 1
 
                     # Log every frame processed
-                    self.logger.debug(f"Processed frame {self.frames_processed} at {timestamp}s")
+                    # self.logger.debug(f"Processed frame {self.frames_processed} at {timestamp}s")
 
                     # If matchup detected, add to result queue
                     if result and result.get('is_matchup'):
@@ -672,12 +677,13 @@ def main():
         'chunk_id': os.getenv('CHUNK_ID', sys.argv[1] if len(sys.argv) > 1 else None),
         'test_mode': os.getenv('TEST_MODE', 'false').lower() == 'true',
         'quality': os.getenv('QUALITY', '480p'),  # Can be single or comma-separated list
+        'old_templates': os.getenv('OLD_TEMPLATES', 'false').lower() == 'true',
     }
 
     if not config['chunk_id']:
         print("Usage: sfot.py <chunk_id>")
         print("Or set CHUNK_ID environment variable")
-        print("Optional: TEST_MODE=true/false, QUALITY=480p (or 480p,360p,1080p60)")
+        print("Optional: TEST_MODE=true/false, QUALITY=480p (or 480p,360p,1080p60), OLD_TEMPLATES=true/false")
         sys.exit(1)
 
     # Create and run processor

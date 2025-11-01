@@ -16,8 +16,9 @@ detection:
 emblem_detection:
   enabled: true
   method: "template" # Detection method: 'akaze' or 'template'
+  template_method: "TM_CCOEFF_NORMED"
   akaze_threshold: 0.45 # AKAZE: real emblems >0.52, false positives <0.03
-  template_threshold: 0.70 # Template matching: real emblems ~0.93, false positives ~0.70
+  template_threshold: 0.60 # Template matching: threshold for TM_CCOEFF_NORMED (was 0.70 for TM_SQDIFF_NORMED)
   templates_dir: "templates/"
   akaze_feature_resolution: "1080p" # Resolution to use for AKAZE feature extraction (only used when method='akaze')
 
@@ -68,7 +69,7 @@ supabase:
   retry_attempts: 3
 
 logging:
-  level: "INFO"
+  level: "DEBUG"
   format: "json"
   max_file_size_mb: 50
   backup_count: 3

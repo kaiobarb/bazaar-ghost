@@ -21,17 +21,19 @@ except ImportError:
 class FrameProcessor:
     """Process frames for matchup detection and OCR"""
     
-    def __init__(self, config: Dict[str, Any], quality: str = "480p", test_mode: bool = False):
+    def __init__(self, config: Dict[str, Any], quality: str = "480p", test_mode: bool = False, old_templates: bool = False):
         """Initialize frame processor with configuration
 
         Args:
             config: Configuration dictionary
             quality: Video quality being processed (360p, 480p, 720p, 1080p)
             test_mode: Whether running in test mode
+            old_templates: Whether to use underscore-prefixed templates for older VODs
         """
         self.config = config
         self.quality = quality
         self.test_mode = test_mode
+        self.old_templates = old_templates
         self.logger = logging.getLogger('sfot.frame_processor')
 
         # Initialize Supabase logger for centralized logging
@@ -71,11 +73,15 @@ class FrameProcessor:
                 feature_resolution = emblem_config.get('akaze_feature_resolution') if method == 'akaze' else None
 
                 # Initialize detector with method and optional feature resolution
+                # Use TM_CCOEFF_NORMED for better discrimination against gameplay UI
+                template_method = emblem_config.get('template_method', 'TM_CCOEFF_NORMED')
                 self.emblem_detector = EmblemDetector(
                     templates_dir,
                     resolution=template_resolution,
                     method=method,
-                    feature_resolution=feature_resolution
+                    feature_resolution=feature_resolution,
+                    old_templates=self.old_templates,
+                    template_method=template_method
                 )
 
                 # Set threshold based on method

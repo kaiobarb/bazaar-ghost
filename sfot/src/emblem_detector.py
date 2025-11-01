@@ -15,7 +15,7 @@ class EmblemDetector:
 
     RANKS = ['bronze', 'silver', 'gold', 'diamond', 'legend']
 
-    def __init__(self, templates_dir: str = "/home/kaio/Dev/bazaar-ghost/sfot/templates", resolution: str = "480p", method: str = "akaze", feature_resolution: Optional[str] = None):
+    def __init__(self, templates_dir: str = "/home/kaio/Dev/bazaar-ghost/sfot/templates", resolution: str = "480p", method: str = "akaze", feature_resolution: Optional[str] = None, old_templates: bool = False, template_method: str = 'TM_CCOEFF_NORMED'):
         """Initialize with emblem templates and detection method
 
         Args:
@@ -24,11 +24,29 @@ class EmblemDetector:
             method: Detection method - 'akaze' or 'template' (default: 'akaze')
             feature_resolution: Resolution to use for AKAZE feature extraction (e.g., '1080p' for better keypoints).
                                If None or method != 'akaze', uses resolution for everything.
+            old_templates: Use underscore-prefixed templates for older VODs (default: False)
+            template_method: OpenCV template matching method ('TM_SQDIFF_NORMED', 'TM_CCOEFF_NORMED', 'TM_CCORR_NORMED')
         """
         self.templates_dir = Path(templates_dir)
         self.resolution = resolution
         self.method = method.lower()
+        self.old_templates = old_templates
+        self.template_method = template_method
         self.logger = logging.getLogger(__name__)
+
+        # Configure template matching method
+        if template_method == 'TM_CCOEFF_NORMED':
+            self.cv_method = cv2.TM_CCOEFF_NORMED
+            self.lower_better = False
+            self.template_threshold_default = 0.60
+        elif template_method == 'TM_SQDIFF_NORMED':
+            self.cv_method = cv2.TM_SQDIFF_NORMED
+            self.lower_better = True
+            self.template_threshold_default = 0.85
+        else:  # TM_CCORR_NORMED
+            self.cv_method = cv2.TM_CCORR_NORMED
+            self.lower_better = False
+            self.template_threshold_default = 0.95
 
         # For AKAZE: optionally use higher resolution templates for feature extraction
         if self.method == 'akaze' and feature_resolution and feature_resolution != resolution:
@@ -36,6 +54,9 @@ class EmblemDetector:
             self.logger.info(f"Using {feature_resolution} templates for AKAZE features, {resolution} for bbox dimensions")
         else:
             self.feature_resolution = resolution
+
+        if self.old_templates:
+            self.logger.info(f"Using small templates (underscore-prefixed) for {resolution} resolution")
 
         # Initialize AKAZE detector and matcher (only if using AKAZE method)
         if self.method == 'akaze':
@@ -64,11 +85,12 @@ class EmblemDetector:
         """Load all rank emblem templates and pre-compute AKAZE features"""
         for rank in self.RANKS:
             # Load template at processing resolution (for bbox dimensions and template matching)
-            template_path = self.templates_dir / f"{rank}_{self.resolution}.png"
-
-            # Fallback to old naming for 480p if new file doesn't exist
-            if not template_path.exists() and self.resolution == "480p":
-                template_path = self.templates_dir / f"_{rank}_480.png"
+            if self.old_templates:
+                # Use underscore-prefixed templates for older VODs
+                template_path = self.templates_dir / f"_{rank}_{self.resolution}.png"
+            else:
+                # Use normal templates
+                template_path = self.templates_dir / f"{rank}_{self.resolution}.png"
 
             if template_path.exists():
                 # Load template WITH alpha channel for transparency support
@@ -90,7 +112,10 @@ class EmblemDetector:
 
                     # For AKAZE: load feature template if using different resolution
                     if self.method == 'akaze' and self.feature_resolution != self.resolution:
-                        feature_template_path = self.templates_dir / f"{rank}_{self.feature_resolution}.png"
+                        if self.old_templates:
+                            feature_template_path = self.templates_dir / f"_{rank}_{self.feature_resolution}.png"
+                        else:
+                            feature_template_path = self.templates_dir / f"{rank}_{self.feature_resolution}.png"
 
                         if feature_template_path.exists():
                             feature_template_bgra = cv2.imread(str(feature_template_path), cv2.IMREAD_UNCHANGED)
@@ -272,19 +297,23 @@ class EmblemDetector:
 
         return None, None, 0.0
 
-    def _detect_emblem_template(self, frame: np.ndarray, threshold: float = 0.85) -> Tuple[Optional[str], Optional[Tuple[int, int, int, int]], float]:
+    def _detect_emblem_template(self, frame: np.ndarray, threshold: float = None) -> Tuple[Optional[str], Optional[Tuple[int, int, int, int]], float]:
         """
-        Detect which emblem is present using template matching with TM_SQDIFF_NORMED
+        Detect which emblem is present using configurable template matching
 
         Args:
             frame: Input frame (color BGR)
-            threshold: Matching confidence threshold (0-1)
+            threshold: Matching confidence threshold (0-1), uses default if None
 
         Returns:
             (rank_name, (x, y, w, h), confidence) or (None, None, 0.0) if no match
         """
+        if threshold is None:
+            threshold = self.template_threshold_default
+
         best_rank = None
         best_bbox = None
+        best_score = -999 if not self.lower_better else 999
         best_confidence = 0.0
 
         # Try matching against each rank template
@@ -303,20 +332,34 @@ class EmblemDetector:
             # Perform template matching
             try:
                 if mask is not None:
-                    result = cv2.matchTemplate(frame, template, cv2.TM_SQDIFF_NORMED, mask=mask)
+                    result = cv2.matchTemplate(frame, template, self.cv_method, mask=mask)
                 else:
-                    result = cv2.matchTemplate(frame, template, cv2.TM_SQDIFF_NORMED)
+                    result = cv2.matchTemplate(frame, template, self.cv_method)
 
                 min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-                confidence = 1.0 - min_val  # TM_SQDIFF_NORMED: lower is better
 
-                if confidence > best_confidence and confidence >= threshold:
+                # Calculate score and confidence based on method
+                if self.lower_better:
+                    score = min_val
+                    loc = min_loc
+                    confidence = 1.0 - min_val  # Convert to 0-1 confidence
+                else:
+                    score = max_val
+                    loc = max_loc
+                    confidence = max_val  # Already 0-1 confidence
+
+                # Check if this is the best match so far
+                is_better = (not self.lower_better and score > best_score) or \
+                           (self.lower_better and score < best_score)
+
+                if is_better and confidence >= threshold:
+                    best_score = score
                     best_confidence = confidence
                     best_rank = rank
                     # Bbox at match location with template dimensions
                     h, w = template.shape[:2]
-                    best_bbox = (min_loc[0], min_loc[1], w, h)
-                    self.logger.debug(f"Template match found: {rank} at {min_loc}, conf={confidence:.3f}")
+                    best_bbox = (loc[0], loc[1], w, h)
+                    self.logger.debug(f"Template match found: {rank} at {loc}, conf={confidence:.3f}")
 
             except Exception as e:
                 self.logger.error(f"Template matching error for {rank}: {e}")

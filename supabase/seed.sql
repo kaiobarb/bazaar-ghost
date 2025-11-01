@@ -109,9 +109,52 @@ BEGIN
       NOW()
     );
 
+    -- Insert second test VOD (duration: 4h23m57s = 15837 seconds)
+    INSERT INTO test.vods (
+      streamer_id, source, source_id, title, duration_seconds,
+      published_at, availability, last_availability_check,
+      ready_for_processing, created_at, updated_at
+    ) VALUES (
+      29795919,  -- Kripp's ID
+      'twitch',
+      '2538527387',
+      'Test VOD - The Bazaar 2538527387',
+      15837,  -- 4h23m57s
+      '2025-10-12 00:00:00+00',
+      'available',
+      NOW(),
+      true,
+      NOW(),
+      NOW()
+    );
+
+    -- Get the second VOD ID
+    SELECT id INTO test_vod_id FROM test.vods WHERE source_id = '2538527387' LIMIT 1;
+
+    -- Create a single chunk covering all Bazaar gameplay (0-3h20m = 12000 seconds)
+    INSERT INTO test.chunks (
+      id, vod_id, start_seconds, end_seconds, chunk_index,
+      status, source, frames_processed, detections_count,
+      priority, scheduled_for, created_at, updated_at
+    ) VALUES (
+      gen_random_uuid(),
+      test_vod_id,
+      0,
+      12000,  -- Covers all Bazaar gameplay (3h20m)
+      0,
+      'pending',
+      'vod',
+      0,
+      0,
+      0,
+      NOW(),
+      NOW(),
+      NOW()
+    );
+
     -- Update sequences for test schema
     PERFORM setval('test.vods_id_seq', (SELECT MAX(id) FROM test.vods), true);
 
-    RAISE NOTICE 'Test schema seeded: Kripp streamer, VOD 2549030240, and chunk created';
+    RAISE NOTICE 'Test schema seeded: Kripp streamer, VODs 2549030240 & 2538527387, and 2 chunks created';
   END IF;
 END $$;
