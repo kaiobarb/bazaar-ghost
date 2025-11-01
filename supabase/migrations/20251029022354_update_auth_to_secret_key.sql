@@ -1,10 +1,5 @@
 -- Store the secret key in vault (replace with your actual secret key for testing)
 -- NOTE: In production, this should be done via the Supabase dashboard, not in a migration
-INSERT INTO vault.secrets (name, secret)
-VALUES ('secret_key', 'your_secret_key_here')
-ON CONFLICT (name) DO UPDATE
-SET secret = EXCLUDED.secret,
-    updated_at = now();
 
 -- Create wrapper functions for Edge Functions that use the new secret key
 
