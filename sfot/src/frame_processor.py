@@ -15,7 +15,7 @@ from right_edge_detector import RightEdgeDetector
 class FrameProcessor:
     """Process frames for matchup detection and OCR"""
     
-    def __init__(self, config: Dict[str, Any], quality: str = "480p", test_mode: bool = False, old_templates: bool = False):
+    def __init__(self, config: Dict[str, Any], quality: str = "480p", test_mode: bool = False, old_templates: bool = False, method: str = 'template'):
         """Initialize frame processor with configuration
 
         Args:
@@ -29,6 +29,7 @@ class FrameProcessor:
         self.test_mode = test_mode
         self.old_templates = old_templates
         self.logger = logging.getLogger('sfot.frame_processor')
+        self.method = method
 
         # Load detection parameters
         self.threshold = config['detection']['threshold']
@@ -58,7 +59,6 @@ class FrameProcessor:
             try:
                 emblem_config = config['emblem_detection']
                 templates_dir = emblem_config.get('templates_dir', 'templates/')
-                method = emblem_config.get('method', 'akaze')
 
                 # Get feature resolution for AKAZE (optional)
                 feature_resolution = emblem_config.get('akaze_feature_resolution') if method == 'akaze' else None
@@ -149,7 +149,7 @@ class FrameProcessor:
                 return None
 
             # Validate emblem bounding box position and size
-            if emblem_bbox and method != 'template':
+            if emblem_bbox and self.method != 'template':
                 x, y, w, h = emblem_bbox
                 frame_h, frame_w = frame.shape[:2]
 

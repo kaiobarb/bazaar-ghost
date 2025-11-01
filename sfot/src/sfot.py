@@ -46,6 +46,7 @@ class SFOTProcessor:
         self.test_mode = config.get('test_mode', False)
         self.quality = config.get('quality', '480p')
         self.old_templates = config.get('old_templates', False)
+        self.method = config.get('method', 'template')
 
         # Load configuration
         self.config = self._load_config()
@@ -79,7 +80,7 @@ class SFOTProcessor:
         self.frames_at_last_update = 0
 
         # Initialize frame processor with quality information, test mode, and template selection
-        self.frame_processor = FrameProcessor(self.config, quality=self.quality, test_mode=self.test_mode, old_templates=self.old_templates)
+        self.frame_processor = FrameProcessor(self.config, quality=self.quality, test_mode=self.test_mode, old_templates=self.old_templates, method=self.method)
 
         # Setup logging
         self._setup_logging()

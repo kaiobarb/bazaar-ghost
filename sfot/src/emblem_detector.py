@@ -15,7 +15,7 @@ class EmblemDetector:
 
     RANKS = ['bronze', 'silver', 'gold', 'diamond', 'legend']
 
-    def __init__(self, templates_dir: str = "/home/kaio/Dev/bazaar-ghost/sfot/templates", resolution: str = "480p", method: str = "akaze", feature_resolution: Optional[str] = None, old_templates: bool = False, template_method: str = 'TM_CCOEFF_NORMED'):
+    def __init__(self, templates_dir: str = "/home/kaio/Dev/bazaar-ghost/sfot/templates", resolution: str = "480p", method: str = "template", feature_resolution: Optional[str] = None, old_templates: bool = False, template_method: str = 'TM_CCOEFF_NORMED'):
         """Initialize with emblem templates and detection method
 
         Args:

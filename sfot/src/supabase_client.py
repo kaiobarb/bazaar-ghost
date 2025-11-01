@@ -288,7 +288,7 @@ class SupabaseClient:
             response = self.client.storage.from_(self.storage_bucket).upload(
                 path=filename,
                 file=image_data,
-                file_options={"content-type": "image/jpeg"}
+                file_options={"content-type": "image/jpeg", "upsert": "true"}
             )
             
             self.logger.debug(f"Uploaded image: {filename}")
@@ -311,7 +311,7 @@ class SupabaseClient:
             response = self.client.storage.from_('logs').upload(
                 path=filename,
                 file=text_bytes,
-                file_options={"content-type": "text/plain; charset=utf-8"}
+                file_options={"content-type": "text/plain; charset=utf-8", "upsert": "true"}
             )
 
             self.logger.debug(f"Uploaded text log: {filename}")
@@ -427,7 +427,7 @@ class SupabaseClient:
             response = self.client.storage.from_('logs').upload(
                 path=filename,
                 file=log_data,
-                file_options={"content-type": "application/x-ndjson"}  # JSONL content type
+                file_options={"content-type": "application/x-ndjson", "upsert": "true"}  # JSONL content type
             )
 
             self.logger.info(f"Successfully uploaded logs to: {filename}")
