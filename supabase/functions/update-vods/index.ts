@@ -29,13 +29,13 @@ interface UpdateVodsResult {
 function extractBazaarChapters(
   chapters: any[],
   videoLengthSeconds: number,
-  bazaarGameId: string
+  bazaarGameId: string,
 ): number[] {
   const bazaarSegments: number[] = [];
 
   // Sort chapters by position
   const sortedChapters = [...chapters].sort(
-    (a, b) => a.positionMilliseconds - b.positionMilliseconds
+    (a, b) => a.positionMilliseconds - b.positionMilliseconds,
   );
 
   for (let i = 0; i < sortedChapters.length; i++) {
@@ -52,7 +52,9 @@ function extractBazaarChapters(
       // Chapter end time: either next chapter start or video end
       let endSeconds: number;
       if (i + 1 < sortedChapters.length) {
-        endSeconds = Math.floor(sortedChapters[i + 1].positionMilliseconds / 1000);
+        endSeconds = Math.floor(
+          sortedChapters[i + 1].positionMilliseconds / 1000,
+        );
       } else {
         endSeconds = videoLengthSeconds;
       }
@@ -61,7 +63,9 @@ function extractBazaarChapters(
       bazaarSegments.push(startSeconds, endSeconds);
 
       console.log(
-        `  Found Bazaar segment: ${startSeconds}s - ${endSeconds}s (${endSeconds - startSeconds}s duration)`
+        `  Found Bazaar segment: ${startSeconds}s - ${endSeconds}s (${
+          endSeconds - startSeconds
+        }s duration)`,
       );
     }
   }
@@ -91,7 +95,9 @@ async function updateVods(streamerId: number): Promise<UpdateVodsResult> {
       throw new Error(`Streamer with ID ${streamerId} not found in database`);
     }
 
-    console.log(`Fetching VODs for streamer: ${streamer.login} (${streamerId})`);
+    console.log(
+      `Fetching VODs for streamer: ${streamer.login} (${streamerId})`,
+    );
 
     // Get The Bazaar game ID
     const bazaarGameId = await getBazaarGameId();
@@ -113,7 +119,9 @@ async function updateVods(streamerId: number): Promise<UpdateVodsResult> {
 
     // If streamer has 1 or fewer VODs, skip chapter processing
     if (vodCount <= 1) {
-      console.log(`Streamer has ${vodCount} VOD(s), skipping chapter fetch and marking has_vods=false`);
+      console.log(
+        `Streamer has ${vodCount} VOD(s), skipping chapter fetch and marking has_vods=false`,
+      );
 
       await supabase
         .from("streamers")
@@ -139,7 +147,7 @@ async function updateVods(streamerId: number): Promise<UpdateVodsResult> {
 
     // Fetch all VODs with chapter data via GraphQL
     const vodsWithChapters = await getStreamerVodsWithChapters(
-      streamer.login
+      streamer.login,
     );
 
     totalVodsFetched = vodsWithChapters.length;
@@ -153,7 +161,7 @@ async function updateVods(streamerId: number): Promise<UpdateVodsResult> {
       let bazaarChapters = extractBazaarChapters(
         vod.chapters,
         vod.lengthSeconds,
-        bazaarGameId
+        bazaarGameId,
       );
 
       // Fallback: If no chapters found but VOD's main game is The Bazaar,
@@ -163,7 +171,9 @@ async function updateVods(streamerId: number): Promise<UpdateVodsResult> {
           vod.game?.name?.toLowerCase().includes("bazaar");
 
         if (isBazaarGame) {
-          console.log(`  No chapters, but VOD game is The Bazaar - treating entire VOD as Bazaar segment`);
+          console.log(
+            `  No chapters, but VOD game is The Bazaar - treating entire VOD as Bazaar segment`,
+          );
           bazaarChapters = [0, vod.lengthSeconds];
         } else {
           console.log(`  No Bazaar gameplay found in VOD ${vod.id}, skipping`);
@@ -175,7 +185,7 @@ async function updateVods(streamerId: number): Promise<UpdateVodsResult> {
       totalBazaarSegments += bazaarChapters.length / 2; // Each segment = 2 numbers
 
       console.log(
-        `  VOD ${vod.id} has ${bazaarChapters.length / 2} Bazaar segment(s)`
+        `  VOD ${vod.id} has ${bazaarChapters.length / 2} Bazaar segment(s)`,
       );
 
       // Upsert VOD to database
@@ -190,13 +200,13 @@ async function updateVods(streamerId: number): Promise<UpdateVodsResult> {
           bazaar_chapters: bazaarChapters,
           availability: "available",
           last_availability_check: new Date().toISOString(),
-          ready_for_processing: false, // Require manual approval
+          ready_for_processing: true,
           updated_at: new Date().toISOString(),
         },
         {
           onConflict: "source,source_id",
           ignoreDuplicates: false,
-        }
+        },
       );
 
       if (vodError) {
@@ -233,7 +243,7 @@ Summary for ${streamer.login}:
   VODs with Bazaar gameplay: ${vodsWithBazaar}
   VODs inserted/updated: ${vodsInserted}
   Total Bazaar segments: ${totalBazaarSegments}
-  Oldest VOD: ${oldestVod || 'N/A'}
+  Oldest VOD: ${oldestVod || "N/A"}
     `);
 
     return {
@@ -258,7 +268,7 @@ serve(async (req) => {
         {
           headers: { "Content-Type": "application/json" },
           status: 401,
-        }
+        },
       );
     }
 
@@ -277,7 +287,7 @@ serve(async (req) => {
         {
           headers: { "Content-Type": "application/json" },
           status: 400,
-        }
+        },
       );
     }
 
