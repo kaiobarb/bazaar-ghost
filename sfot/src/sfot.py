@@ -47,6 +47,13 @@ class SFOTProcessor:
         self.quality = config.get('quality', '480p')
         self.old_templates = config.get('old_templates', False)
         self.method = config.get('method', 'template')
+        self.video_fps = config.get('video_fps', 30)  # Actual video FPS
+
+        # Format quality string with FPS suffix for database storage
+        # Streamlink/Twitch returns quality as "480p", "720p", "1080p" for 30fps, but appends "60"
+        # if it is a 60fps stream.
+        # Append "60" suffix when video is 60fps to match streamlink's naming (e.g., "1080p60")
+        self.formatted_quality = f"{self.quality}60" if self.video_fps == 60 else self.quality
 
         # Load configuration
         self.config = self._load_config()
@@ -180,7 +187,7 @@ class SFOTProcessor:
             self.supabase.update_chunk(
                 self.chunk_id,
                 'processing',
-                quality=self.quality
+                quality=self.formatted_quality
             )
 
             # Start worker threads
@@ -216,7 +223,7 @@ class SFOTProcessor:
                     'completed',
                     frames_processed=self.frames_processed,
                     detections_count=self.matchups_found,
-                    quality=self.quality
+                    quality=self.formatted_quality
                 )
             else:
                 # Set back to pending if interrupted
@@ -226,7 +233,7 @@ class SFOTProcessor:
                     error=f"Processing interrupted after {self.frames_processed} frames",
                     frames_processed=self.frames_processed,
                     detections_count=self.matchups_found,
-                    quality=self.quality
+                    quality=self.formatted_quality
                 )
 
             return {
@@ -247,7 +254,7 @@ class SFOTProcessor:
                     self.chunk_id,
                     'failed',
                     error=f"Processing failed: {str(e)}",
-                    quality=self.quality
+                    quality=self.formatted_quality
                 )
             except Exception as update_error:
                 self.logger.error(f"Failed to update chunk status on error: {update_error}")
@@ -499,10 +506,12 @@ class SFOTProcessor:
                     # Get frame from queue
                     frame_data = self.frame_queue.get(timeout=1)
                     
-                    # Process frame
-                    fps = self.config["processing"]["frame_rate"]
-                    seconds_per_frame = 1 / fps if fps > 0 else 0
-                    timestamp = self.start_time + int(self.frames_processed * seconds_per_frame)
+                    # Calculate timestamp based on sampling rate
+                    # sampling_rate (fps) = how often we extract frames (e.g., 0.2 = every 5 seconds)
+                    # timestamp = start_time + (frames_processed / sampling_rate)
+                    sampling_rate = self.config["processing"]["frame_rate"]
+                    seconds_per_sampled_frame = 1 / sampling_rate if sampling_rate > 0 else 0
+                    timestamp = self.start_time + int(self.frames_processed * seconds_per_sampled_frame)
                     result = self.frame_processor.process_frame(
                         frame_data, 
                         timestamp,
@@ -679,6 +688,7 @@ def main():
         'test_mode': os.getenv('TEST_MODE', 'false').lower() == 'true',
         'quality': os.getenv('QUALITY', '480p'),  # Can be single or comma-separated list
         'old_templates': os.getenv('OLD_TEMPLATES', 'false').lower() == 'true',
+        'video_fps': int(os.getenv('VIDEO_FPS', '30')),  # Actual video FPS (30 or 60)
     }
 
     if not config['chunk_id']:

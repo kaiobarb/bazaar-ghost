@@ -22,8 +22,20 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 /**
  * Verifies that the request contains a valid secret key in the apikey header
  * Returns true if valid, false otherwise
+ * Skips verification for local development and Supabase UI test invocations
  */
 export function verifySecretKey(req: Request): boolean {
+  // Skip verification on local (kong:8000 is the internal Docker URL for local dev)
+  const isLocal = SUPABASE_URL.includes("localhost") ||
+    SUPABASE_URL.includes("127.0.0.1") ||
+    SUPABASE_URL.includes("kong:8000");
+
+  console.log(SUPABASE_URL);
+  if (isLocal) {
+    console.log("Skipped secret verification (local environment)");
+    return true;
+  }
+
   const apiKey = req.headers.get("apikey");
 
   if (!apiKey) {
@@ -32,7 +44,7 @@ export function verifySecretKey(req: Request): boolean {
   }
 
   if (!SECRET_KEY) {
-    console.error("c environment variable not set");
+    console.error("SECRET_KEY environment variable not set");
     return false;
   }
 

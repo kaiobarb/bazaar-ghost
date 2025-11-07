@@ -30,6 +30,7 @@ jobs:
     outputs:
       quality: ${{ steps.check.outputs.quality }}
       available: ${{ steps.check.outputs.available }}
+      video_fps: ${{ steps.check.outputs.video_fps }}
 
     steps:
       - name: Install streamlink
@@ -117,7 +118,17 @@ jobs:
           fi
 
           echo "Selected quality: $QUALITY"
+
+          # Extract FPS from quality string (qualities ending in '60' are 60fps, others are 30fps)
+          if [[ "$QUALITY" == *"60" ]]; then
+            VIDEO_FPS="60"
+          else
+            VIDEO_FPS="30"
+          fi
+          echo "Video FPS: $VIDEO_FPS"
+
           echo "quality=$QUALITY" >> $GITHUB_OUTPUT
+          echo "video_fps=$VIDEO_FPS" >> $GITHUB_OUTPUT
           echo "available=true" >> $GITHUB_OUTPUT
 
       - name: Update VOD status to failed if not available
@@ -174,6 +185,7 @@ jobs:
 
           echo "Processing chunk ${{ matrix.chunk_id }} for VOD ${{ inputs.vod_id }}"
           echo "Using quality: ${{ needs.check-vod.outputs.quality }}"
+          echo "Video FPS: ${{ needs.check-vod.outputs.video_fps }}"
           echo "Small templates mode: ${{ inputs.old_templates }}"
 
           # Run SFOT container - it will handle all chunk details and status updates internally
@@ -185,6 +197,7 @@ jobs:
             -e CHUNK_ID="${{ matrix.chunk_id }}" \
             -e TEST_MODE="false" \
             -e QUALITY="${{ needs.check-vod.outputs.quality }}" \
+            -e VIDEO_FPS="${{ needs.check-vod.outputs.video_fps }}" \
             -e OLD_TEMPLATES="${{ inputs.old_templates }}" \
             bazaar-ghost-sfot
 
