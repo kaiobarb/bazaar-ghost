@@ -60,7 +60,7 @@ jobs:
           echo "$STREAMS_JSON" | jq '.streams | keys'
 
           # Determine best quality based on old_templates flag
-          QUALITY=""
+          SELECTED_STREAM=""
           OLD_TEMPLATES="${{ inputs.old_templates }}"
 
           if [ "$OLD_TEMPLATES" = "true" ]; then
@@ -68,9 +68,9 @@ jobs:
 
             # Check for 480p or 480p60
             if echo "$STREAMS_JSON" | jq -e '.streams["480p"]' > /dev/null 2>&1; then
-              QUALITY="480p"
+              SELECTED_STREAM="480p"
             elif echo "$STREAMS_JSON" | jq -e '.streams["480p60"]' > /dev/null 2>&1; then
-              QUALITY="480p60"
+              SELECTED_STREAM="480p60"
             else
               echo "ERROR: Small templates are 480p only, 480p stream not found"
               echo "Available qualities:"
@@ -91,17 +91,17 @@ jobs:
           else
             # Normal quality selection (preference: 480p -> 720p -> 1080p)
             if echo "$STREAMS_JSON" | jq -e '.streams["480p"]' > /dev/null 2>&1; then
-              QUALITY="480p"
+              SELECTED_STREAM="480p"
             elif echo "$STREAMS_JSON" | jq -e '.streams["480p60"]' > /dev/null 2>&1; then
-              QUALITY="480p"
+              SELECTED_STREAM="480p60"
             elif echo "$STREAMS_JSON" | jq -e '.streams["720p"]' > /dev/null 2>&1; then
-              QUALITY="720p"
+              SELECTED_STREAM="720p"
             elif echo "$STREAMS_JSON" | jq -e '.streams["720p60"]' > /dev/null 2>&1; then
-              QUALITY="720p"
+              SELECTED_STREAM="720p60"
             elif echo "$STREAMS_JSON" | jq -e '.streams["1080p"]' > /dev/null 2>&1; then
-              QUALITY="1080p"
+              SELECTED_STREAM="1080p"
             elif echo "$STREAMS_JSON" | jq -e '.streams["1080p60"]' > /dev/null 2>&1; then
-              QUALITY="1080p"
+              SELECTED_STREAM="1080p60"
             else
               # No supported qualities available
               echo "No supported qualities available, marking vod as failed"
@@ -117,15 +117,19 @@ jobs:
             fi
           fi
 
-          echo "Selected quality: $QUALITY"
+          echo "Selected stream: $SELECTED_STREAM"
 
-          # Extract FPS from quality string (qualities ending in '60' are 60fps, others are 30fps)
-          if [[ "$QUALITY" == *"60" ]]; then
+          # Extract base quality (remove 60 suffix if present) and FPS
+          if [[ "$SELECTED_STREAM" == *"60" ]]; then
+            QUALITY="${SELECTED_STREAM%60}"
             VIDEO_FPS="60"
           else
+            QUALITY="$SELECTED_STREAM"
             VIDEO_FPS="30"
           fi
-          echo "Video FPS: $VIDEO_FPS"
+
+          echo "Resolution: $QUALITY"
+          echo " Video FPS: $VIDEO_FPS"
 
           echo "quality=$QUALITY" >> $GITHUB_OUTPUT
           echo "video_fps=$VIDEO_FPS" >> $GITHUB_OUTPUT
