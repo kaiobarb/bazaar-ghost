@@ -8,6 +8,7 @@ import {
   getStreamerIdByLogin,
   getStreamerVodsWithChapters,
   getVodsFromStreamer,
+  isStreamerLive,
 } from "../_shared/twitch.ts";
 
 interface UpdateVodsRequest {
@@ -112,6 +113,12 @@ async function updateVods(streamerId: number): Promise<UpdateVodsResult> {
       throw new Error(`Could not find Twitch user ID for ${streamer.login}`);
     }
 
+    // Check if streamer is currently live
+    const isLive = await isStreamerLive(twitchUserId);
+    console.log(
+      `Streamer ${streamer.login} live status: ${isLive ? "LIVE" : "offline"}`,
+    );
+
     // Fetch only first 2 VODs to check count (lightweight Helix API call)
     const quickCheck = await getVodsFromStreamer(twitchUserId, { first: "2" });
     const vodCount = quickCheck.data?.length || 0;
@@ -149,6 +156,14 @@ async function updateVods(streamerId: number): Promise<UpdateVodsResult> {
     const vodsWithChapters = await getStreamerVodsWithChapters(
       streamer.login,
     );
+
+    // Skip first VOD if streamer is currently live
+    if (isLive && vodsWithChapters.length > 0) {
+      const skippedVod = vodsWithChapters.shift();
+      console.log(
+        `Streamer is live, skipping most recent VOD (ongoing stream): ${skippedVod?.id}`,
+      );
+    }
 
     totalVodsFetched = vodsWithChapters.length;
     console.log(`Fetched ${totalVodsFetched} total VODs for ${streamer.login}`);

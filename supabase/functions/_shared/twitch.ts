@@ -255,6 +255,28 @@ export async function getVodsFromStreamer(
   return twitchApiCall("videos", queryParams);
 }
 
+export async function isStreamerLive(userId: string): Promise<boolean> {
+  try {
+    const { data } = await twitchApiCall("streams", { user_id: userId });
+
+    // If data array has entries, streamer is live
+    // Empty array means offline
+    const isLive = data && data.length > 0;
+
+    if (isLive) {
+      console.log(`Streamer ${userId} is currently live: ${data[0].title}`);
+    } else {
+      console.log(`Streamer ${userId} is offline`);
+    }
+
+    return isLive;
+  } catch (error) {
+    console.error(`Error checking live status for ${userId}:`, error);
+    // On error, assume not live to avoid skipping VODs
+    return false;
+  }
+}
+
 // GraphQL API constants and functions
 const TWITCH_GQL_URL = "https://gql.twitch.tv/gql";
 const TWITCH_GQL_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"; // Public Twitch web client ID
