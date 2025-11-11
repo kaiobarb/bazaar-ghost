@@ -40,8 +40,8 @@ jobs:
           pipx install git+https://github.com/streamlink/streamlink.git
           # Add pipx bin directory to PATH for subsequent steps
           echo "$HOME/.local/bin" >> $GITHUB_PATH
-          # Verify installation
-          $HOME/.local/bin/streamlink --version
+          export PATH="$HOME/.local/bin:$PATH"
+          streamlink --version
 
       - name: Check VOD availability and quality
         id: check
