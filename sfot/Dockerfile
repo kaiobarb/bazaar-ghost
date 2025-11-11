@@ -24,8 +24,7 @@ RUN --mount=type=cache,target=/var/cache/apt \
 
 WORKDIR /app
 
-# Copy only requirements first to maximize cache hits
-# Add streamlink==7.1.3 to your requirements.txt so it shares the pip cache layer
+RUN pip install --upgrade git+https://github.com/streamlink/streamlink.git # temporary streamlink version with fix to twitch plugin issue
 COPY requirements.txt .
 
 # Faster pip installs via BuildKit cache mount, prefer wheels

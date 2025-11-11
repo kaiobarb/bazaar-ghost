@@ -9,9 +9,10 @@ on:
         required: true
         type: string
       chunk_uuids:
-        description: "JSON array of chunk UUIDs to process"
-        required: true
+        description: "JSON array of chunk UUIDs to process (optional - will fetch from Supabase if not provided)"
+        required: false
         type: string
+        default: ""
       old_templates:
         description: "Use old templates (requires 480p quality)"
         required: false
@@ -35,8 +36,12 @@ jobs:
     steps:
       - name: Install streamlink
         run: |
-          pip install --upgrade streamlink
-          streamlink --version
+          sudo apt-get update && sudo apt-get install -y pipx
+          pipx install git+https://github.com/streamlink/streamlink.git
+          # Add pipx bin directory to PATH for subsequent steps
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          # Verify installation
+          $HOME/.local/bin/streamlink --version
 
       - name: Check VOD availability and quality
         id: check
@@ -151,14 +156,77 @@ jobs:
 
           echo "VOD marked as failed and unavailable"
 
+  # Fetch chunks from Supabase if not provided
+  fetch-chunks:
+    needs: check-vod
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      chunk_uuids: ${{ steps.fetch.outputs.chunk_uuids }}
+
+    steps:
+      - name: Determine chunk UUIDs
+        id: fetch
+        run: |
+          # Check if chunk_uuids was provided as input
+          INPUT_CHUNKS='${{ inputs.chunk_uuids }}'
+
+          if [ -n "$INPUT_CHUNKS" ] && [ "$INPUT_CHUNKS" != "[]" ]; then
+            echo "Using provided chunk UUIDs: $INPUT_CHUNKS"
+            echo "chunk_uuids=$INPUT_CHUNKS" >> $GITHUB_OUTPUT
+          else
+            echo "No chunk UUIDs provided, fetching from Supabase for VOD ${{ inputs.vod_id }}..."
+
+            # Call Supabase RPC function to get pending chunks
+            RESPONSE=$(curl -fsSL -X POST "$SUPABASE_URL/rest/v1/rpc/get_pending_chunks_for_vod" \
+              -H "apikey: $SUPABASE_SECRET_KEY" \
+              -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
+              -H "Content-Type: application/json" \
+              -H "Prefer: return=representation" \
+              -d "{\"p_source_id\": \"${{ inputs.vod_id }}\"}")
+
+            CURL_EXIT=$?
+
+            if [ $CURL_EXIT -ne 0 ]; then
+              echo "Failed to fetch chunks from Supabase (exit code: $CURL_EXIT)"
+              echo "Response: $RESPONSE"
+              exit 1
+            fi
+
+            # Extract chunk IDs and format as JSON array
+            CHUNK_IDS=$(echo "$RESPONSE" | jq -r '[.[] | .chunk_id]' 2>/dev/null || echo "[]")
+
+            # Check if we got any chunks
+            if [ "$CHUNK_IDS" = "[]" ] || [ -z "$CHUNK_IDS" ]; then
+              echo "No pending chunks found for VOD ${{ inputs.vod_id }}"
+              echo "Full response: $RESPONSE"
+
+              # Update VOD status to indicate no chunks available
+              curl -fsSL -X PATCH "$SUPABASE_URL/rest/v1/vods?source_id=eq.${{ inputs.vod_id }}" \
+                -H "apikey: $SUPABASE_SECRET_KEY" \
+                -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
+                -H "Content-Type: application/json" \
+                -H "Prefer: return=minimal" \
+                -d '{"status": "no_chunks"}'
+
+              echo "chunk_uuids=[]" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+
+            CHUNK_COUNT=$(echo "$CHUNK_IDS" | jq 'length')
+            echo "Found $CHUNK_COUNT pending chunks for VOD ${{ inputs.vod_id }}"
+            echo "Chunk UUIDs: $CHUNK_IDS"
+            echo "chunk_uuids=$CHUNK_IDS" >> $GITHUB_OUTPUT
+          fi
+
   # Process all chunks in parallel using matrix strategy
   process-chunk:
-    needs: check-vod
+    needs: [check-vod, fetch-chunks]
     runs-on: ubuntu-latest
     timeout-minutes: 30 # Overall job timeout
     strategy:
       matrix:
-        chunk_id: ${{ fromJson(inputs.chunk_uuids) }}
+        chunk_id: ${{ fromJson(needs.fetch-chunks.outputs.chunk_uuids) }}
       # Allow some chunks to fail without stopping others
       fail-fast: false
 
