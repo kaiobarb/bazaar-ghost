@@ -20,11 +20,14 @@ RUN --mount=type=cache,target=/var/cache/apt \
         libxrender1 \
         libgomp1 \
         wget \
+        git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-RUN pip install --upgrade git+https://github.com/streamlink/streamlink.git # temporary streamlink version with fix to twitch plugin issue
+# Install streamlink from master branch (temporary - includes Twitch API fix)
+# TODO: Remove this and add streamlink to requirements.txt once v8.0.0 is released
+RUN pip install --upgrade git+https://github.com/streamlink/streamlink.git
 COPY requirements.txt .
 
 # Faster pip installs via BuildKit cache mount, prefer wheels
