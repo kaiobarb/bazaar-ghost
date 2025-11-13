@@ -363,7 +363,9 @@ class SFOTProcessor:
                 frame_width, frame_height = (854, 480)  # Default to 480p
 
             # Build video filter chain
-            vf_filters = [f'fps={self.config["processing"]["frame_rate"]}']
+            # Use time-based select filter for precise frame extraction at fixed intervals
+            sampling_interval = self.config["processing"]["sampling_interval"]
+            vf_filters = [f"select='not(mod(t,{sampling_interval}))',setpts=N/FRAME_RATE/TB"]
 
             # Use percentage-based crop configuration if available
             if self.config['detection'].get('crop_region_percent'):
@@ -505,13 +507,12 @@ class SFOTProcessor:
                 try:
                     # Get frame from queue
                     frame_data = self.frame_queue.get(timeout=1)
-                    
-                    # Calculate timestamp based on sampling rate
-                    # sampling_rate (fps) = how often we extract frames (e.g., 0.2 = every 5 seconds)
-                    # timestamp = start_time + (frames_processed / sampling_rate)
-                    sampling_rate = self.config["processing"]["frame_rate"]
-                    seconds_per_sampled_frame = 1 / sampling_rate if sampling_rate > 0 else 0
-                    timestamp = self.start_time + int(self.frames_processed * seconds_per_sampled_frame)
+
+                    # Calculate timestamp based on sampling interval
+                    # With select filter, each frame corresponds to exactly one interval (e.g., 5 seconds)
+                    # timestamp = start_time + (frames_processed * sampling_interval)
+                    sampling_interval = self.config["processing"]["sampling_interval"]
+                    timestamp = self.start_time + int(self.frames_processed * sampling_interval)
                     result = self.frame_processor.process_frame(
                         frame_data, 
                         timestamp,
