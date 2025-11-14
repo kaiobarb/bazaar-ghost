@@ -277,13 +277,12 @@ class SFOTProcessor:
             quality_stream = self.quality if self.quality in ['360p', '360p60', '480p', '480p60', '720p', '720p60', '1080p', '1080p60', 'worst', 'best'] else '480p'
             cmd = [
                 'streamlink',
-                '--default-stream', quality_stream + ',360p60,480p60,720p60,1080p60',
-                f'https://twitch.tv/videos/{self.vod_id}',
+                '--stream-segment-threads', '1',  # Consistent delivery
+                '--hls-segment-stream-data',      # Immediate segment write
                 '--hls-start-offset', str(timedelta(seconds=self.start_time)),
-                '--hls-duration', str(duration),
-                '--retry-streams', str(self.config['streamlink']['retry_delay']),
-                '--retry-max', str(self.config['streamlink']['retry_attempts']),
-                '--quiet',
+                '--stream-segmented-duration', str(duration),  # Use segmented duration
+                f'https://twitch.tv/videos/{self.vod_id}',
+                quality_stream + ',360p60,480p60,720p60,1080p60',
                 '-O'  # Output to stdout
             ]
             
@@ -359,8 +358,14 @@ class SFOTProcessor:
                     return
 
                 self.logger.info("Streamlink confirmed running, starting FFmpeg...")
-                # Use default resolution for streamlink mode
-                frame_width, frame_height = (854, 480)  # Default to 480p
+                # Determine resolution based on quality for streamlink mode
+                quality_resolutions = {
+                    '360p': (640, 360),
+                    '480p': (854, 480),
+                    '720p': (1280, 720),
+                    '1080p': (1920, 1080)
+                }
+                frame_width, frame_height = quality_resolutions.get(self.quality, (854, 480))
 
             # Build video filter chain
             # Use time-based select filter for precise frame extraction at fixed intervals

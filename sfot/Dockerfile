@@ -25,9 +25,6 @@ RUN --mount=type=cache,target=/var/cache/apt \
 
 WORKDIR /app
 
-# Install streamlink from master branch (temporary - includes Twitch API fix)
-# TODO: Remove this and add streamlink to requirements.txt once v8.0.0 is released
-RUN pip install --upgrade git+https://github.com/streamlink/streamlink.git
 COPY requirements.txt .
 
 # Faster pip installs via BuildKit cache mount, prefer wheels
