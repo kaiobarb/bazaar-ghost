@@ -368,9 +368,7 @@ class SFOTProcessor:
                 frame_width, frame_height = quality_resolutions.get(self.quality, (854, 480))
 
             # Build video filter chain
-            # Use time-based select filter for precise frame extraction at fixed intervals
-            sampling_interval = self.config["processing"]["sampling_interval"]
-            vf_filters = [f"select='not(mod(t,{sampling_interval}))',setpts=N/FRAME_RATE/TB"]
+            vf_filters = [f'fps={self.config["processing"]["frame_rate"]}']
 
             # Use percentage-based crop configuration if available
             if self.config['detection'].get('crop_region_percent'):
@@ -398,7 +396,6 @@ class SFOTProcessor:
                     '-i', input_file,  # Input from file
                     '-t', str(self.end_time - self.start_time),  # Duration
                     '-vf', vf_chain,
-                    '-vsync', 'vfr',  # Variable frame rate for select filter
                     '-f', 'image2pipe',
                     '-vcodec', 'mjpeg',
                     '-loglevel', self.config['ffmpeg']['loglevel'],
@@ -410,7 +407,6 @@ class SFOTProcessor:
                     'ffmpeg',
                     '-i', 'pipe:0',  # Input from stdin
                     '-vf', vf_chain,
-                    '-vsync', 'vfr',  # Variable frame rate for select filter
                     '-f', 'image2pipe',
                     '-vcodec', 'mjpeg',
                     '-loglevel', self.config['ffmpeg']['loglevel'],
@@ -515,11 +511,10 @@ class SFOTProcessor:
                     # Get frame from queue
                     frame_data = self.frame_queue.get(timeout=1)
 
-                    # Calculate timestamp based on sampling interval
-                    # With select filter, each frame corresponds to exactly one interval (e.g., 5 seconds)
-                    # timestamp = start_time + (frames_processed * sampling_interval)
-                    sampling_interval = self.config["processing"]["sampling_interval"]
-                    timestamp = self.start_time + int(self.frames_processed * sampling_interval)
+                    # Calculate timestamp based on frame rate
+                    sampling_rate = self.config["processing"]["frame_rate"]
+                    seconds_per_sampled_frame = 1 / sampling_rate if sampling_rate > 0 else 0
+                    timestamp = self.start_time + int(self.frames_processed * seconds_per_sampled_frame)
                     result = self.frame_processor.process_frame(
                         frame_data, 
                         timestamp,
