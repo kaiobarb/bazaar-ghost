@@ -393,6 +393,7 @@ class SFOTProcessor:
                     '-i', input_file,  # Input from file
                     '-t', str(self.end_time - self.start_time),  # Duration
                     '-vf', vf_chain,
+                    '-vsync', 'vfr',  # Variable frame rate for select filter
                     '-f', 'image2pipe',
                     '-vcodec', 'mjpeg',
                     '-loglevel', self.config['ffmpeg']['loglevel'],
@@ -404,6 +405,7 @@ class SFOTProcessor:
                     'ffmpeg',
                     '-i', 'pipe:0',  # Input from stdin
                     '-vf', vf_chain,
+                    '-vsync', 'vfr',  # Variable frame rate for select filter
                     '-f', 'image2pipe',
                     '-vcodec', 'mjpeg',
                     '-loglevel', self.config['ffmpeg']['loglevel'],
