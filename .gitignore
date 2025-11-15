@@ -1,5 +1,6 @@
 .claude/
 .env
+.env.*
 CLAUDE.md
 .ignore/
 *.pyc
@@ -7,3 +8,4 @@ CLAUDE.md
 *.input
 seed.sql
 test_data/
+backup-prod/
