@@ -6,6 +6,7 @@ CLAUDE.md
 *.pyc
 *.secrets
 *.input
+*.vars
 seed.sql
 test_data/
 backup-prod/

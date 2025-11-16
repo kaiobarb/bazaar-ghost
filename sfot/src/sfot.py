@@ -58,6 +58,9 @@ class SFOTProcessor:
         # Load configuration
         self.config = self._load_config()
 
+        # Parse SFOT profile from environment variable
+        self.profile = self._parse_sfot_profile()
+
         # Initialize Supabase client first to fetch chunk details
         self.supabase = SupabaseClient(self.config, test_mode=self.test_mode, quality=self.quality)
 
@@ -129,7 +132,7 @@ class SFOTProcessor:
         config_path = os.path.join(os.path.dirname(__file__), '..', 'config.yaml')
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
-        
+
         # Override with environment variables if present
         if os.getenv('SUPABASE_URL'):
             config['supabase']['url'] = os.getenv('SUPABASE_URL')
@@ -137,6 +140,39 @@ class SFOTProcessor:
             config['supabase']['secret_key'] = os.getenv('SUPABASE_SECRET_KEY')
 
         return config
+
+    def _parse_sfot_profile(self) -> Dict[str, Any]:
+        """Parse SFOT profile from environment variable
+
+        Returns:
+            Dictionary containing profile data with crop_region, scale, etc.
+
+        Raises:
+            ValueError: If SFOT_PROFILE is missing or invalid JSON
+        """
+        sfot_profile_json = os.getenv('SFOT_PROFILE')
+
+        if not sfot_profile_json:
+            raise ValueError(
+                "SFOT_PROFILE environment variable is required. "
+                "This should be provided by the GitHub Actions workflow as a JSON string."
+            )
+
+        try:
+            profile = json.loads(sfot_profile_json)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"SFOT_PROFILE is not valid JSON: {e}")
+
+        # Validate required fields
+        if 'crop_region' not in profile:
+            raise ValueError("SFOT_PROFILE missing required field: crop_region")
+
+        if not isinstance(profile['crop_region'], list) or len(profile['crop_region']) != 4:
+            raise ValueError(
+                f"SFOT_PROFILE crop_region must be array of 4 numbers, got: {profile.get('crop_region')}"
+            )
+
+        return profile
     
     def _setup_logging(self):
         """Setup structured JSON logging"""
@@ -170,6 +206,8 @@ class SFOTProcessor:
     def process_vod_chunk(self) -> Dict[str, Any]:
         """Main processing entry point"""
         self.logger.info(f"Starting VOD processing: {self.vod_id} [{self.start_time}-{self.end_time}]")
+        self.logger.info(f"Using SFOT profile: {self.profile.get('profile_name', 'unknown')}")
+        self.logger.info(f"Crop region: {self.profile['crop_region']}")
         if self.old_templates:
             self.logger.info("Using small templates (underscore-prefixed) for older VOD processing")
 
@@ -370,20 +408,16 @@ class SFOTProcessor:
             # Build video filter chain
             vf_filters = [f'fps={self.config["processing"]["frame_rate"]}']
 
-            # Use percentage-based crop configuration if available
-            if self.config['detection'].get('crop_region_percent'):
-                crop_pixels = self.percent_to_pixels(
-                    self.config['detection']['crop_region_percent'],
-                    frame_width,
-                    frame_height
-                )
-                w, h, x, y = crop_pixels
-                vf_filters.append(f'crop={w}:{h}:{x}:{y}')
-                self.logger.info(f"Applied percentage crop: {crop_pixels} for {frame_width}x{frame_height}")
-            elif self.config['detection'].get('crop_region'):
-                # Fallback to pixel-based crop if percentage not available
-                w, h, x, y = self.config['detection']['crop_region']
-                vf_filters.append(f'crop={w}:{h}:{x}:{y}')
+            # Use crop region from SFOT profile
+            crop_pixels = self.percent_to_pixels(
+                self.profile['crop_region'],
+                frame_width,
+                frame_height
+            )
+            w, h, x, y = crop_pixels
+            vf_filters.append(f'crop={w}:{h}:{x}:{y}')
+            self.logger.info(f"Applied profile crop: [x={x}, y={y}, w={w}, h={h}] for {frame_width}x{frame_height} video")
+            self.logger.info(f"Cropped frame dimensions will be: {w}x{h} pixels")
 
             vf_chain = ','.join(vf_filters)
 

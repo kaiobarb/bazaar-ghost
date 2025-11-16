@@ -84,6 +84,14 @@ class FrameProcessor:
                     self.emblem_threshold = 0.30  # fallback
 
                 self.logger.info(f"Initialized emblem detector with {template_resolution} templates using {method} method (threshold={self.emblem_threshold})")
+
+                # Log template dimensions for debugging
+                if hasattr(self.emblem_detector, 'templates'):
+                    for rank, template in self.emblem_detector.templates.items():
+                        if template is not None:
+                            h, w = template.shape[:2]
+                            self.logger.info(f"Template '{rank}' dimensions: {w}x{h} pixels ({template_resolution})")
+
             except Exception as e:
                 self.logger.warning(f"Could not initialize emblem detector: {e}")
 
