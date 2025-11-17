@@ -90,7 +90,7 @@ class SFOTProcessor:
         self.frames_at_last_update = 0
 
         # Initialize frame processor with quality information, test mode, and template selection
-        self.frame_processor = FrameProcessor(self.config, quality=self.quality, test_mode=self.test_mode, old_templates=self.old_templates, method=self.method)
+        self.frame_processor = FrameProcessor(self.config, quality=self.quality, test_mode=self.test_mode, old_templates=self.old_templates, method=self.method, profile=self.profile)
 
         # Setup logging
         self._setup_logging()
