@@ -8,6 +8,29 @@ on:
         description: "VOD ID to process"
         required: true
         type: string
+      quality:
+        description: "Preferred stream quality"
+        required: false
+        type: string
+        default: "480p"
+      environment:
+        description: "Environment (dev or production)"
+        required: true
+        type: choice
+        options:
+          - dev
+          - production
+        default: dev
+      sfot_profile:
+        description: "SFOT profile configuration (JSON string)"
+        required: false
+        type: string
+        default: ""
+      local:
+        description: "Apply when running this action locally"
+        required: false
+        type: boolean
+        default: false
       chunk_uuids:
         description: "JSON array of chunk UUIDs to process (optional - will fetch from Supabase if not provided)"
         required: false
@@ -19,15 +42,15 @@ on:
         type: boolean
         default: false
 
-env:
-  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-  SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
-
 jobs:
   # Pre-flight check: Verify VOD availability and determine best quality
   check-vod:
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
     timeout-minutes: 5
+    env:
+      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
     outputs:
       quality: ${{ steps.check.outputs.quality }}
       available: ${{ steps.check.outputs.available }}
@@ -35,11 +58,13 @@ jobs:
 
     steps:
       - name: Install streamlink
+        if: ${{ !inputs.local }}
         run: |
           sudo apt-get update && sudo apt-get install -y streamlink
           streamlink --version
 
       - name: Check VOD availability and quality
+        if: ${{ !inputs.local }}
         id: check
         run: |
           echo "Checking VOD ${{ inputs.vod_id }} availability and qualities..."
@@ -156,7 +181,11 @@ jobs:
   fetch-chunks:
     needs: check-vod
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
     timeout-minutes: 5
+    env:
+      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
     outputs:
       chunk_uuids: ${{ steps.fetch.outputs.chunk_uuids }}
 
@@ -190,7 +219,7 @@ jobs:
             fi
 
             # Extract chunk IDs and format as JSON array
-            CHUNK_IDS=$(echo "$RESPONSE" | jq -r '[.[] | .chunk_id]' 2>/dev/null || echo "[]")
+            CHUNK_IDS=$(echo "$RESPONSE" | jq -c '[.[] | .chunk_id]' 2>/dev/null || echo "[]")
 
             # Check if we got any chunks
             if [ "$CHUNK_IDS" = "[]" ] || [ -z "$CHUNK_IDS" ]; then
@@ -219,7 +248,11 @@ jobs:
   process-chunk:
     needs: [check-vod, fetch-chunks]
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
     timeout-minutes: 30 # Overall job timeout
+    env:
+      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
     strategy:
       matrix:
         chunk_id: ${{ fromJson(needs.fetch-chunks.outputs.chunk_uuids) }}
@@ -228,18 +261,22 @@ jobs:
 
     steps:
       - name: Workflow Telemetry
+        if: ${{ !inputs.local }}
         uses: catchpoint/workflow-telemetry-action@v2.0.0
         with:
           theme: dark
 
       - name: Checkout repository
+        if: ${{ !inputs.local }}
         uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
+        if: ${{ !inputs.local }}
         uses: docker/setup-buildx-action@v3
         timeout-minutes: 5
 
       - name: Build SFOT container with cache
+        if: ${{ !inputs.local }}
         uses: docker/build-push-action@v5
         timeout-minutes: 10
         with:
@@ -256,10 +293,36 @@ jobs:
           # Create output directory
           mkdir -p ./output
 
+          # Set quality and FPS (use defaults for local testing if check-vod was skipped)
+          QUALITY="${{ needs.check-vod.outputs.quality }}"
+          VIDEO_FPS="${{ needs.check-vod.outputs.video_fps }}"
+
+          if [ -z "$QUALITY" ]; then
+            QUALITY="${{ inputs.quality }}"
+            echo "Using default quality: $QUALITY (check-vod skipped)"
+          else
+            echo "Using quality: $QUALITY"
+          fi
+
+          if [ -z "$VIDEO_FPS" ]; then
+            VIDEO_FPS="60"
+            echo "Using default FPS: $VIDEO_FPS (check-vod skipped)"
+          else
+            echo "Video FPS: $VIDEO_FPS"
+          fi
+
           echo "Processing chunk ${{ matrix.chunk_id }} for VOD ${{ inputs.vod_id }}"
-          echo "Using quality: ${{ needs.check-vod.outputs.quality }}"
-          echo "Video FPS: ${{ needs.check-vod.outputs.video_fps }}"
           echo "Small templates mode: ${{ inputs.old_templates }}"
+          echo "Environment: ${{ inputs.environment }}"
+
+          # Parse SFOT profile if provided
+          SFOT_PROFILE='${{ inputs.sfot_profile }}'
+          if [ -n "$SFOT_PROFILE" ] && [ "$SFOT_PROFILE" != "" ]; then
+            echo "Using SFOT profile"
+            echo "$SFOT_PROFILE" | jq '.'
+          else
+            echo "No SFOT profile provided, SFOT will use defaults"
+          fi
 
           # Run SFOT container - it will handle all chunk details and status updates internally
           docker run --rm \
@@ -269,9 +332,10 @@ jobs:
             -e SUPABASE_SECRET_KEY="$SUPABASE_SECRET_KEY" \
             -e CHUNK_ID="${{ matrix.chunk_id }}" \
             -e TEST_MODE="false" \
-            -e QUALITY="${{ needs.check-vod.outputs.quality }}" \
-            -e VIDEO_FPS="${{ needs.check-vod.outputs.video_fps }}" \
+            -e QUALITY="$QUALITY" \
+            -e VIDEO_FPS="$VIDEO_FPS" \
             -e OLD_TEMPLATES="${{ inputs.old_templates }}" \
+            -e SFOT_PROFILE="$SFOT_PROFILE" \
             bazaar-ghost-sfot
 
           DOCKER_EXIT_CODE=$?

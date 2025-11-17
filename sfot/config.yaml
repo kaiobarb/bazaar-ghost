@@ -6,10 +6,6 @@ processing:
 
 detection:
   threshold: 0.78
-  # Resolution-agnostic crop region as percentages of frame dimensions
-  # Format: [x, y, width, height] where each value is 0.0-1.0
-  # Converted from 480p pixel values: x=503/854, y=352/480, w=271/854, h=54/480
-  crop_region_percent: [0.5726, 0.7333, 0.3500, 0.1125]
   template_path: "templates/matchup_template.png"
 
 # Emblem detection and removal configuration
@@ -69,7 +65,7 @@ supabase:
   retry_attempts: 3
 
 logging:
-  level: "DEBUG"
+  level: "INFO"
   format: "json"
   max_file_size_mb: 50
   backup_count: 3

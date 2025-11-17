@@ -6,6 +6,12 @@ TRUNCATE TABLE public.detections CASCADE;
 TRUNCATE TABLE public.chunks CASCADE;
 TRUNCATE TABLE public.vods CASCADE;
 TRUNCATE TABLE public.streamers CASCADE;
+TRUNCATE TABLE public.sfot_profiles CASCADE;
+
+-- SFOT Profiles (must be inserted before streamers due to foreign key)
+INSERT INTO public.sfot_profiles (profile_name, crop_region, scale, custom_edge, opaque_edge) VALUES
+('default', ARRAY[0.5726, 0.7333, 0.3500, 0.1125], 1.0, NULL, true),
+('ChronosOutOfTime', ARRAY[0.5726, 0.7620, 0.3500, 0.1125], 1.0, NULL, true);
 
 -- Streamers
 INSERT INTO public.streamers (id, login, display_name, profile_image_url, processing_enabled, has_vods, oldest_vod, num_vods, num_bazaar_vods, created_at, updated_at) VALUES

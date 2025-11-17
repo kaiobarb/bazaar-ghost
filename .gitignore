@@ -1,9 +1,12 @@
 .claude/
 .env
+.env.*
 CLAUDE.md
 .ignore/
 *.pyc
 *.secrets
 *.input
+*.vars
 seed.sql
 test_data/
+backup-prod/

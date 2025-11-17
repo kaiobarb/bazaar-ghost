@@ -28,12 +28,14 @@ async function triggerGithubWorkflow(
   vodId: string,
   chunkUuids: string[],
   oldTemplates: boolean,
+  sfotProfile: string,
+  environment: string,
 ): Promise<string | null> {
   const workflowDispatchUrl =
     `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/process-vod.yml/dispatches`;
 
   console.log(
-    `Triggering workflow for VOD ${vodId} with ${chunkUuids.length} chunks (old_templates: ${oldTemplates})`,
+    `Triggering workflow for VOD ${vodId} with ${chunkUuids.length} chunks (old_templates: ${oldTemplates}, environment: ${environment})`,
   );
 
   const response = await fetch(workflowDispatchUrl, {
@@ -50,6 +52,8 @@ async function triggerGithubWorkflow(
         vod_id: vodId,
         chunk_uuids: JSON.stringify(chunkUuids), // Pass as JSON string
         old_templates: oldTemplates.toString(), // Pass as string
+        sfot_profile: sfotProfile, // Pass profile as JSON string
+        environment: environment, // Pass environment selection
       },
     }),
   });
@@ -166,10 +170,10 @@ Deno.serve(async (req) => {
       `Found ${chunks.length} pending chunks for VOD ${actualVodId} (${actualSourceId})`,
     );
 
-    // Fetch VOD's published_at date to determine if old templates should be used
+    // Fetch VOD's published_at date and streamer's profile to determine processing settings
     const { data: vodData, error: vodError } = await supabase
       .from("vods")
-      .select("published_at")
+      .select("published_at, streamer_id, streamers!inner(sfot_profile_id)")
       .eq("id", actualVodId)
       .single();
 
@@ -186,6 +190,27 @@ Deno.serve(async (req) => {
     console.log(
       `VOD published at: ${vodData.published_at}, cutoff: ${cutoffDate.toISOString()}, use old templates: ${useOldTemplates}`,
     );
+
+    // Fetch the streamer's SFOT profile
+    const sfotProfileId = vodData.streamers.sfot_profile_id;
+    const { data: profileData, error: profileError } = await supabase
+      .from("sfot_profiles")
+      .select("*")
+      .eq("id", sfotProfileId)
+      .single();
+
+    if (profileError) {
+      console.error("Error fetching SFOT profile:", profileError);
+      throw new Error(`Failed to fetch SFOT profile: ${profileError.message}`);
+    }
+
+    // Serialize profile as JSON string for passing to GitHub Actions
+    const sfotProfileJson = JSON.stringify(profileData);
+    console.log(`Using SFOT profile: ${profileData.profile_name}`);
+
+    // Get environment from ENV environment variable (set via .env or .env.dev)
+    const environment = Deno.env.get("ENV") || "production";
+    console.log(`Using environment: ${environment}`);
 
     // If dry run, just return what would be processed
     if (dry_run) {
@@ -223,6 +248,8 @@ Deno.serve(async (req) => {
       actualSourceId,
       chunkUuids,
       useOldTemplates,
+      sfotProfileJson,
+      environment,
     );
 
     console.log(
@@ -268,9 +295,6 @@ Deno.serve(async (req) => {
 
 /* To invoke locally:
 
-  1. Run `supabase start`
-  2. Make an HTTP request:
-
   # Process by VOD ID (internal)
   curl -i --location --request POST 'http://127.0.0.1:54321/functions/v1/process-vod' \
     --header "Authorization: Bearer $SUPABASE_PUBLISHABLE_KEY" \
@@ -291,5 +315,8 @@ Deno.serve(async (req) => {
     --header "apikey: $SUPABASE_PUBLISHABLE_KEY" \
     --header 'Content-Type: application/json' \
     --data '{"vod_id": 552, "dry_run": true}'
+
+  Note: The ENV variable in .env/.env.dev determines which GitHub environment
+  (dev or production) the workflow will use.
 
 */
