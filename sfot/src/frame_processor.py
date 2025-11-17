@@ -15,7 +15,7 @@ from right_edge_detector import RightEdgeDetector
 class FrameProcessor:
     """Process frames for matchup detection and OCR"""
     
-    def __init__(self, config: Dict[str, Any], quality: str = "480p", test_mode: bool = False, old_templates: bool = False, method: str = 'template'):
+    def __init__(self, config: Dict[str, Any], quality: str = "480p", test_mode: bool = False, old_templates: bool = False, method: str = 'template', profile: Optional[Dict[str, Any]] = None):
         """Initialize frame processor with configuration
 
         Args:
@@ -23,6 +23,7 @@ class FrameProcessor:
             quality: Video quality being processed (360p, 480p, 720p, 1080p)
             test_mode: Whether running in test mode
             old_templates: Whether to use underscore-prefixed templates for older VODs
+            profile: SFOT profile containing custom_edge and opaque_edge settings
         """
         self.config = config
         self.quality = quality
@@ -30,6 +31,15 @@ class FrameProcessor:
         self.old_templates = old_templates
         self.logger = logging.getLogger('sfot.frame_processor')
         self.method = method
+
+        # Store profile settings for custom edge detection
+        self.profile = profile or {}
+        self.custom_edge_percent = self.profile.get('custom_edge')  # e.g., 0.80 = 80%
+        self.opaque_edge = self.profile.get('opaque_edge', False)  # Default False for backward compatibility
+
+        # Log custom edge settings if present
+        if self.custom_edge_percent is not None:
+            self.logger.info(f"Custom edge configured: {self.custom_edge_percent*100:.1f}% of crop width, opaque={self.opaque_edge}")
 
         # Load detection parameters
         self.threshold = config['detection']['threshold']
@@ -196,15 +206,34 @@ class FrameProcessor:
 
             self.last_matchup_time = timestamp
 
-            # Right edge detection (only if emblem was found)
+            # Right edge detection with custom edge support
             right_edge_x = None
             no_right_edge = False
+            truncated = False  # Track if custom edge was used
 
-            if self.right_edge_detector:
+            if self.opaque_edge and self.custom_edge_percent is not None:
+                # Case 1: opaque_edge=true - always use custom_edge, skip detection entirely
+                # Calculate custom edge position based on frame width
+                right_edge_x = int(frame.shape[1] * self.custom_edge_percent)
+                truncated = True
+                self.logger.info(f"Using custom edge (opaque mode) at {right_edge_x}px ({self.custom_edge_percent*100:.1f}% of frame width)")
+
+            elif self.right_edge_detector:
+                # Case 2: opaque_edge=false or null - try regular detection first
                 right_edge_x, right_conf = self.right_edge_detector.detect_right_edge(frame, self.right_edge_threshold)
+
                 if right_edge_x is None:
+                    # No right edge detected
                     no_right_edge = True
-                    self.logger.info(f"No right edge detected at {timestamp}s (best conf: {right_conf:.3f}, threshold: {self.right_edge_threshold:.2f}) - possible streamer cam occlusion")
+
+                    # Case 3: Fall back to custom_edge if available
+                    if self.custom_edge_percent is not None:
+                        right_edge_x = int(frame.shape[1] * self.custom_edge_percent)
+                        truncated = True
+                        self.logger.info(f"No right edge detected, using custom edge fallback at {right_edge_x}px ({self.custom_edge_percent*100:.1f}% of frame width)")
+                    else:
+                        # Case 4: No custom_edge configured, log occlusion warning
+                        self.logger.info(f"No right edge detected at {timestamp}s (best conf: {right_conf:.3f}, threshold: {self.right_edge_threshold:.2f}) - possible streamer cam occlusion")
                 else:
                     self.logger.debug(f"Right edge detected at {timestamp}s, x={right_edge_x} (conf: {right_conf:.3f})")
 
@@ -314,6 +343,7 @@ class FrameProcessor:
                 'emblem_right_x': emblem_right_x,
                 'right_edge_x': right_edge_x,
                 'no_right_edge': no_right_edge,
+                'truncated': truncated,  # Track if custom edge was used for truncation
                 'frame_base64': base64.b64encode(frame_jpeg).decode('utf-8') if frame_jpeg else None,
                 'ocr_debug_frame': base64.b64encode(debug_jpeg).decode('utf-8') if debug_jpeg else None
             }

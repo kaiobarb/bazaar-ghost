@@ -180,6 +180,7 @@ class SupabaseClient:
                             'chunk_id': matchup.get('chunk_id'),
                             'storage_path': storage_path,
                             'no_right_edge': matchup.get('no_right_edge', False),
+                            'truncated': matchup.get('truncated', False),  # Track if custom edge was used
                         }
                         batch_data.append(record)
 
