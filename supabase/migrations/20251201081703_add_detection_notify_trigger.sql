@@ -6,6 +6,8 @@ RETURNS TRIGGER AS $$
 DECLARE
   v_secret_key text;
   v_supabase_url text;
+  v_vod record;
+  v_streamer_name text;
 BEGIN
   -- Get secrets from vault
   SELECT decrypted_secret INTO v_secret_key
@@ -23,6 +25,13 @@ BEGIN
     RETURN NEW;
   END IF;
 
+  -- Get VOD and streamer info
+  SELECT v.source_id, v.published_at, s.display_name
+  INTO v_vod
+  FROM vods v
+  JOIN streamers s ON s.id = v.streamer_id
+  WHERE v.id = NEW.vod_id;
+
   PERFORM net.http_post(
     url := v_supabase_url || '/functions/v1/ghost-bot',
     headers := jsonb_build_object(
@@ -33,7 +42,10 @@ BEGIN
       'action', 'notify',
       'username', NEW.username,
       'vod_id', NEW.vod_id,
-      'frame_time_seconds', NEW.frame_time_seconds
+      'frame_time_seconds', NEW.frame_time_seconds,
+      'vod_source_id', v_vod.source_id,
+      'vod_published_at', v_vod.published_at,
+      'streamer_name', v_vod.display_name
     )
   );
   RETURN NEW;

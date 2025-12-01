@@ -23,7 +23,7 @@ Deno.serve(async (req) => {
       return new Response("Unauthorized", { status: 401 })
     }
 
-    const { username, vod_id, frame_time_seconds } = json
+    const { username, frame_time_seconds, vod_source_id, vod_published_at, streamer_name } = json
 
     // Find matching subscriptions (case-sensitive exact match)
     const { data: subscriptions } = await supabase
@@ -36,9 +36,32 @@ Deno.serve(async (req) => {
       return Response.json({ notified: 0 })
     }
 
+    // Build timestamped VOD URL (format: ?t=1h2m3s)
+    const hours = Math.floor(frame_time_seconds / 3600)
+    const minutes = Math.floor((frame_time_seconds % 3600) / 60)
+    const seconds = frame_time_seconds % 60
+    const timeParam = `${hours}h${minutes}m${seconds}s`
+    const vodUrl = `https://www.twitch.tv/videos/${vod_source_id}?t=${timeParam}`
+
+    // Calculate matchup time (vod publish time + frame time)
+    const publishDate = new Date(vod_published_at)
+    const matchupTime = new Date(publishDate.getTime() + frame_time_seconds * 1000)
+    const matchupTimeStr = matchupTime.toLocaleString("en-US", {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZoneName: "short"
+    })
+
+    const message = `**${username}** was spotted on **${streamer_name}**'s stream!\n` +
+      `${matchupTimeStr}\n` +
+      `${vodUrl}`
+
     // Send Discord DM to each subscriber
     for (const sub of subscriptions) {
-      await sendDiscordDM(sub.discord_user_id, `**${username}** was spotted on stream!`)
+      await sendDiscordDM(sub.discord_user_id, message)
     }
 
     return Response.json({ notified: subscriptions.length })
