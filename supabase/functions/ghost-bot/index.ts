@@ -1,17 +1,10 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts"
-import { createClient } from "jsr:@supabase/supabase-js@2"
+import { supabase, verifySecretKey } from "../_shared/supabase.ts"
 import nacl from "https://cdn.skypack.dev/tweetnacl@v1.0.3?dts"
 
 enum DiscordCommandType {
   Ping = 1,
   ApplicationCommand = 2,
-}
-
-function getSupabaseClient() {
-  return createClient(
-    Deno.env.get("SUPABASE_URL")!,
-    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-  )
 }
 
 Deno.serve(async (req) => {
@@ -20,7 +13,38 @@ Deno.serve(async (req) => {
     return new Response("Method not allowed", { status: 405 })
   }
 
-  // Verify Discord signature
+  // Clone request to read body multiple times
+  const body = await req.text()
+  const json = JSON.parse(body)
+
+  // Handle internal trigger calls (action: "notify") - verified via apikey
+  if (json.action === "notify") {
+    if (!verifySecretKey(req)) {
+      return new Response("Unauthorized", { status: 401 })
+    }
+
+    const { username, vod_id, frame_time_seconds } = json
+
+    // Find matching subscriptions (case-sensitive exact match)
+    const { data: subscriptions } = await supabase
+      .from("notification_subscriptions")
+      .select("discord_user_id")
+      .eq("username", username)
+      .eq("enabled", true)
+
+    if (!subscriptions || subscriptions.length === 0) {
+      return Response.json({ notified: 0 })
+    }
+
+    // Send Discord DM to each subscriber
+    for (const sub of subscriptions) {
+      await sendDiscordDM(sub.discord_user_id, `**${username}** was spotted on stream!`)
+    }
+
+    return Response.json({ notified: subscriptions.length })
+  }
+
+  // Discord webhook calls - verify signature
   const signature = req.headers.get("X-Signature-Ed25519")
   const timestamp = req.headers.get("X-Signature-Timestamp")
 
@@ -28,14 +52,13 @@ Deno.serve(async (req) => {
     return new Response("Missing signature headers", { status: 401 })
   }
 
-  const body = await req.text()
-  const isValid = verifySignature(signature, timestamp, body)
+  const isValid = verifyDiscordSignature(signature, timestamp, body)
 
   if (!isValid) {
     return new Response("Invalid signature", { status: 401 })
   }
 
-  const { type, data, member } = JSON.parse(body)
+  const { type, data, member } = json
 
   // Handle Discord ping (verification)
   if (type === DiscordCommandType.Ping) {
@@ -54,8 +77,6 @@ Deno.serve(async (req) => {
       })
     }
 
-    const supabase = getSupabaseClient()
-
     // /notify <username> - Toggle notifications for a username
     if (name === "notify") {
       const username = options?.find((o: { name: string; value: string }) => o.name === "username")?.value
@@ -72,7 +93,7 @@ Deno.serve(async (req) => {
         .from("notification_subscriptions")
         .select("enabled")
         .eq("discord_user_id", discordUserId)
-        .ilike("username", username)
+        .eq("username", username)
         .maybeSingle()
 
       if (existing) {
@@ -82,7 +103,7 @@ Deno.serve(async (req) => {
           .from("notification_subscriptions")
           .update({ enabled: newEnabled })
           .eq("discord_user_id", discordUserId)
-          .ilike("username", username)
+          .eq("username", username)
 
         if (error) {
           console.error("DB error:", error)
@@ -153,7 +174,7 @@ Deno.serve(async (req) => {
   return Response.json({ error: "Unknown command" }, { status: 400 })
 })
 
-function verifySignature(signature: string, timestamp: string, body: string): boolean {
+function verifyDiscordSignature(signature: string, timestamp: string, body: string): boolean {
   const publicKey = Deno.env.get("DISCORD_PUBLIC_KEY")!
   return nacl.sign.detached.verify(
     new TextEncoder().encode(timestamp + body),
@@ -164,4 +185,38 @@ function verifySignature(signature: string, timestamp: string, body: string): bo
 
 function hexToUint8Array(hex: string): Uint8Array {
   return new Uint8Array(hex.match(/.{1,2}/g)!.map((val) => parseInt(val, 16)))
+}
+
+async function sendDiscordDM(userId: string, content: string) {
+  const botToken = Deno.env.get("DISCORD_BOT_TOKEN")!
+
+  // Create DM channel
+  const channelRes = await fetch("https://discord.com/api/v10/users/@me/channels", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bot ${botToken}`,
+    },
+    body: JSON.stringify({ recipient_id: userId }),
+  })
+  const channel = await channelRes.json()
+
+  if (!channel.id) {
+    console.error("Failed to create DM channel:", channel)
+    return
+  }
+
+  // Send message
+  const msgRes = await fetch(`https://discord.com/api/v10/channels/${channel.id}/messages`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bot ${botToken}`,
+    },
+    body: JSON.stringify({ content }),
+  })
+
+  if (!msgRes.ok) {
+    console.error("Failed to send DM:", await msgRes.text())
+  }
 }

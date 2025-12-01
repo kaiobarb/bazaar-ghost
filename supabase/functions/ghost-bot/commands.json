@@ -1,10 +1,10 @@
 [
   {
     "name": "notify",
-    "description": "Toggle notifications for a username in The Bazaar",
+    "description": "Get notified when a username is detected",
     "options": [
       {
-        "name": "username",
+        "name": "bazaar_username",
         "description": "Your username in The Bazaar (case sensitive)",
         "type": 3,
         "required": true
@@ -13,6 +13,6 @@
   },
   {
     "name": "list",
-    "description": "List your active username subscriptions"
+    "description": "List which usernames you will get notifications for"
   }
 ]
