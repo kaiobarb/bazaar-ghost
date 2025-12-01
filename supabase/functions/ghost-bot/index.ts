@@ -79,7 +79,7 @@ Deno.serve(async (req) => {
 
     // /notify <username> - Toggle notifications for a username
     if (name === "notify") {
-      const username = options?.find((o: { name: string; value: string }) => o.name === "username")?.value
+      const username = options?.find((o: { name: string; value: string }) => o.name === "bazaar_username")?.value
 
       if (!username) {
         return Response.json({
