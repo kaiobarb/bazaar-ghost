@@ -1,4 +1,5 @@
 name: Deploy Function
+run-name: Deploy Function
 
 on:
   push:

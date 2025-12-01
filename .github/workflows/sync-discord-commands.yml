@@ -1,4 +1,5 @@
 name: Sync Discord Commands
+run-name: Sync Discord Commands
 
 on:
   push:
