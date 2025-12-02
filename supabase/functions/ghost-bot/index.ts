@@ -143,6 +143,7 @@ Deno.serve(async (req) => {
 Get notified when your username appears on a streamer's VOD.
 
 **Commands:**
+\`/search <username>\` - Search for a username in detected matchups
 \`/notify <username>\` - Subscribe to notifications (default: DM + server)
 \`/notify <username> where:<option>\` - Choose where to receive notifications
 \`/list\` - Show your active subscriptions
@@ -361,6 +362,72 @@ Get notified when your username appears on a streamer's VOD.
       return Response.json({
         type: 4,
         data: { content: `Your active subscriptions:\n${usernameList}`, flags: 64 },
+      });
+    }
+
+    // /search <username> - Search for a username in detected matchups
+    if (name === "search") {
+      const searchUsername = options?.find(
+        (o: { name: string; value: string }) => o.name === "username"
+      )?.value;
+
+      if (!searchUsername) {
+        return Response.json({
+          type: 4,
+          data: { content: "Please provide a username to search", flags: 64 },
+        });
+      }
+
+      // Call fuzzy_search_detections with similarity_threshold=1.0 for exact matches
+      const { data: results, error } = await supabase.rpc(
+        "fuzzy_search_detections",
+        {
+          search_query: searchUsername,
+          similarity_threshold: 1.0,
+          result_limit: 10,
+        }
+      );
+
+      if (error) {
+        console.error("DB error:", error);
+        return Response.json({
+          type: 4,
+          data: { content: `Error: ${error.message}`, flags: 64 },
+        });
+      }
+
+      if (!results || results.length === 0) {
+        return Response.json({
+          type: 4,
+          data: {
+            content: `No results found for **${searchUsername}**`,
+            flags: 64,
+          },
+        });
+      }
+
+      // Format results
+      const resultLines = results.map((r: {
+        streamer_display_name: string;
+        actual_timestamp: string;
+        vod_source_id: string;
+        frame_time_seconds: number;
+      }) => {
+        const timestamp = Math.floor(new Date(r.actual_timestamp).getTime() / 1000);
+        const hours = Math.floor(r.frame_time_seconds / 3600);
+        const minutes = Math.floor((r.frame_time_seconds % 3600) / 60);
+        const seconds = r.frame_time_seconds % 60;
+        const timeParam = `${hours}h${minutes}m${seconds}s`;
+        const vodUrl = `https://www.twitch.tv/videos/${r.vod_source_id}?t=${timeParam}`;
+        return `• **${r.streamer_display_name}** - <t:${timestamp}:f> - [Watch](${vodUrl})`;
+      });
+
+      return Response.json({
+        type: 4,
+        data: {
+          content: `**Results for "${searchUsername}":**\n${resultLines.join("\n")}`,
+          flags: 64,
+        },
       });
     }
   }

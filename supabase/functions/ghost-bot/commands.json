@@ -43,5 +43,17 @@
         "required": false
       }
     ]
+  },
+  {
+    "name": "search",
+    "description": "Search for a username in detected matchups",
+    "options": [
+      {
+        "name": "username",
+        "description": "Username to search for (case insensitive)",
+        "type": 3,
+        "required": true
+      }
+    ]
   }
 ]
