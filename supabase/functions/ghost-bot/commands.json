@@ -1,0 +1,74 @@
+[
+  {
+    "name": "help",
+    "description": "Show available commands and how to use them"
+  },
+  {
+    "name": "notify",
+    "description": "Toggle notifications on a username in The Bazaar.",
+    "options": [
+      {
+        "name": "bazaar_username",
+        "description": "The IGN you want to receive updates on (case sensitive)",
+        "type": 3,
+        "required": true
+      },
+      {
+        "name": "where",
+        "description": "Where to receive notifications",
+        "type": 3,
+        "required": false,
+        "choices": [
+          { "name": "DM", "value": "dm" },
+          { "name": "This server", "value": "server" },
+          { "name": "Both DM and server", "value": "both" }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "list",
+    "description": "List which usernames you are receiving notifications for"
+  },
+  {
+    "name": "setchannel",
+    "description": "Set the channel for username notifications",
+    "default_member_permissions": "16",
+    "options": [
+      {
+        "name": "channel",
+        "description": "Channel to post notifications (defaults to current channel)",
+        "type": 7,
+        "channel_types": [0],
+        "required": false
+      }
+    ]
+  },
+  {
+    "name": "clearchannel",
+    "description": "Stops sending notifications to the set channel",
+    "default_member_permissions": "16"
+  },
+  {
+    "name": "search",
+    "description": "Search for a username in detected matchups",
+    "options": [
+      {
+        "name": "username",
+        "description": "Username to search for (case insensitive)",
+        "type": 3,
+        "required": true
+      },
+      {
+        "name": "results",
+        "description": "Number of results to return. Default: 1 (latest)",
+        "type": 3,
+        "required": false,
+        "choices": [
+          { "name": "Latest", "value": "1" },
+          { "name": "All (max 10)", "value": "all" }
+        ]
+      }
+    ]
+  }
+]
