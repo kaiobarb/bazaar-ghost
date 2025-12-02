@@ -19,8 +19,15 @@ jobs:
 
       - name: Sync commands to Discord
         run: |
+          if [ "${{ github.ref }}" = "refs/heads/dev" ]; then
+            # Dev branch: guild-only commands (instant update)
+            URL="https://discord.com/api/v10/applications/${{ vars.DISCORD_APP_ID }}/guilds/1283636609907949600/commands"
+          else
+            # Main branch: global commands (up to 1 hour to propagate)
+            URL="https://discord.com/api/v10/applications/${{ vars.DISCORD_APP_ID }}/commands"
+          fi
           curl -X PUT \
             -H 'Content-Type: application/json' \
             -H "Authorization: Bot ${{ secrets.DISCORD_BOT_TOKEN }}" \
             -d @supabase/functions/ghost-bot/commands.json \
-            "https://discord.com/api/v10/applications/${{ vars.DISCORD_APP_ID }}/commands"
+            "$URL"

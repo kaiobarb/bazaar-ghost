@@ -143,8 +143,8 @@ Deno.serve(async (req) => {
 Get notified when your username appears on a streamer's VOD.
 
 **Commands:**
-\`/notify <username>\` - Subscribe to notifications for a username
-\`/notify <username> where:<option>\` - Choose where to receive notifications (DM, server, or both)
+\`/notify <username>\` - Subscribe to notifications (default: DM + server)
+\`/notify <username> where:<option>\` - Choose where to receive notifications
 \`/list\` - Show your active subscriptions
 \`/setchannel [channel]\` - Set notification channel for this server (requires Manage Channels)
 
@@ -155,7 +155,7 @@ Get notified when your username appears on a streamer's VOD.
 
       return Response.json({
         type: 4,
-        data: { content: helpText },
+        data: { content: helpText, flags: 64 },
       });
     }
 
@@ -195,6 +195,7 @@ Get notified when your username appears on a streamer's VOD.
         type: 4,
         data: {
           content: `Notifications will be posted to <#${targetChannelId}>`,
+          flags: 64,
         },
       });
     }
@@ -292,6 +293,7 @@ Get notified when your username appears on a streamer's VOD.
           type: 4,
           data: {
             content: `${action} notifications on username **${username}**${whereText}`,
+            flags: 64,
           },
         });
       } else {
@@ -319,6 +321,7 @@ Get notified when your username appears on a streamer's VOD.
           type: 4,
           data: {
             content: `Subscribed to notifications on username **${username}** (${formatWhereOption(whereOption)})`,
+            flags: 64,
           },
         });
       }
@@ -347,6 +350,7 @@ Get notified when your username appears on a streamer's VOD.
           data: {
             content:
               "You have no active subscriptions. Use `/notify <username>` to subscribe.",
+            flags: 64,
           },
         });
       }
@@ -356,7 +360,7 @@ Get notified when your username appears on a streamer's VOD.
       );
       return Response.json({
         type: 4,
-        data: { content: `Your active subscriptions:\n${usernameList}` },
+        data: { content: `Your active subscriptions:\n${usernameList}`, flags: 64 },
       });
     }
   }
