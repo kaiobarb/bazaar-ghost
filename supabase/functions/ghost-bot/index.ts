@@ -142,15 +142,15 @@ Deno.serve(async (req) => {
 
     // /help - Show available commands
     if (name === "help") {
-      const helpText = `**Bazaar Ghost Bot**
-Get notified when your username appears on a streamer's VOD.
+      const helpText =
+        `Get notified when a username appears on a streamer's VOD.
 
 **Commands:**
-\`/search <username>\` - Search for a username in detected matchups
+\`/search <username> [num_results]\` - Search for a username (return just the latest matchup or all)
 \`/notify <username>\` - Subscribe to notifications (default: DM + server)
 \`/notify <username> where:<option>\` - Choose where to receive notifications
 \`/list\` - Show your active subscriptions
-\`/setchannel [channel]\` - Set notification channel for this server (requires Manage Channels)
+\`/setchannel [channel]\` - Set notification channel (defaults to current channel)
 
 **How it works:**
 1. Use \`/notify YourBazaarName\` to subscribe
@@ -199,6 +199,40 @@ Get notified when your username appears on a streamer's VOD.
         type: 4,
         data: {
           content: `Notifications will be posted to <#${targetChannelId}>`,
+          flags: 64,
+        },
+      });
+    }
+
+    // /clearchannel - Remove the notification channel for this server
+    if (name === "clearchannel") {
+      if (!guild_id) {
+        return Response.json({
+          type: 4,
+          data: {
+            content: "This command can only be used in a server",
+            flags: 64,
+          },
+        });
+      }
+
+      const { error } = await supabase
+        .from("server_channels")
+        .delete()
+        .eq("guild_id", guild_id);
+
+      if (error) {
+        console.error("DB error:", error);
+        return Response.json({
+          type: 4,
+          data: { content: `Error: ${error.message}`, flags: 64 },
+        });
+      }
+
+      return Response.json({
+        type: 4,
+        data: {
+          content: "Notification channel has been cleared for this server",
           flags: 64,
         },
       });

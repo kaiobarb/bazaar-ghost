@@ -45,6 +45,11 @@
     ]
   },
   {
+    "name": "clearchannel",
+    "description": "Stops sending notifications to the set channel",
+    "default_member_permissions": "16"
+  },
+  {
     "name": "search",
     "description": "Search for a username in detected matchups",
     "options": [
