@@ -96,7 +96,10 @@ Deno.serve(async (req) => {
         // Include @mentions for all users in this server
         const mentions = userIds.map((id) => `<@${id}>`).join(" ");
         const serverMessage = `${baseMessage}\n${mentions}`;
-        await sendDiscordChannelMessage(serverChannel.channel_id, serverMessage);
+        await sendDiscordChannelMessage(
+          serverChannel.channel_id,
+          serverMessage,
+        );
         notifiedCount += userIds.length;
       }
     }
@@ -164,7 +167,7 @@ Get notified when your username appears on a streamer's VOD.
     if (name === "setchannel") {
       // Get channel from options or use current channel
       const channelOption = options?.find(
-        (o: { name: string; value: string }) => o.name === "channel"
+        (o: { name: string; value: string }) => o.name === "channel",
       )?.value;
       const targetChannelId = channelOption || channel_id;
 
@@ -181,7 +184,7 @@ Get notified when your username appears on a streamer's VOD.
       // Upsert server channel
       const { error } = await supabase.from("server_channels").upsert(
         { guild_id, channel_id: targetChannelId },
-        { onConflict: "guild_id" }
+        { onConflict: "guild_id" },
       );
 
       if (error) {
@@ -207,9 +210,10 @@ Get notified when your username appears on a streamer's VOD.
         o.name === "bazaar_username"
       )?.value;
 
-      const whereOption =
-        options?.find((o: { name: string; value: string }) => o.name === "where")
-          ?.value || "both";
+      const whereOption = options?.find((o: { name: string; value: string }) =>
+        o.name === "where"
+      )
+        ?.value || "both";
 
       if (!username) {
         return Response.json({
@@ -271,7 +275,9 @@ Get notified when your username appears on a streamer's VOD.
         if (newEnabled) {
           updateData.notify_type = whereOption;
           updateData.guild_id =
-            whereOption === "server" || whereOption === "both" ? guild_id : null;
+            whereOption === "server" || whereOption === "both"
+              ? guild_id
+              : null;
         }
 
         const { error } = await supabase
@@ -289,11 +295,14 @@ Get notified when your username appears on a streamer's VOD.
         }
 
         const action = newEnabled ? "Subscribed to" : "Unsubscribed from";
-        const whereText = newEnabled ? ` (${formatWhereOption(whereOption)})` : "";
+        const whereText = newEnabled
+          ? ` (${formatWhereOption(whereOption)})`
+          : "";
         return Response.json({
           type: 4,
           data: {
-            content: `${action} notifications on username **${username}**${whereText}`,
+            content:
+              `${action} notifications on username **${username}**${whereText}`,
             flags: 64,
           },
         });
@@ -306,8 +315,9 @@ Get notified when your username appears on a streamer's VOD.
             username,
             enabled: true,
             notify_type: whereOption,
-            guild_id:
-              whereOption === "server" || whereOption === "both" ? guild_id : null,
+            guild_id: whereOption === "server" || whereOption === "both"
+              ? guild_id
+              : null,
           });
 
         if (error) {
@@ -321,7 +331,10 @@ Get notified when your username appears on a streamer's VOD.
         return Response.json({
           type: 4,
           data: {
-            content: `Subscribed to notifications on username **${username}** (${formatWhereOption(whereOption)})`,
+            content:
+              `Subscribed to notifications on username **${username}** (${
+                formatWhereOption(whereOption)
+              })`,
             flags: 64,
           },
         });
@@ -356,27 +369,34 @@ Get notified when your username appears on a streamer's VOD.
         });
       }
 
-      const usernameList = subscriptions.map((s) => `• **${s.username}**`).join(
+      const usernameList = subscriptions.map((s) => `- **${s.username}**`).join(
         "\n",
       );
       return Response.json({
         type: 4,
-        data: { content: `Your active subscriptions:\n${usernameList}`, flags: 64 },
+        data: {
+          content: `Your active subscriptions:\n${usernameList}`,
+          flags: 64,
+        },
       });
     }
 
     // /search <username> - Search for a username in detected matchups
     if (name === "search") {
       const searchUsername = options?.find(
-        (o: { name: string; value: string }) => o.name === "username"
+        (o: { name: string; value: string }) => o.name === "username",
       )?.value;
 
       const resultsOption =
-        options?.find((o: { name: string; value: string }) => o.name === "results")
+        options?.find((o: { name: string; value: string }) =>
+          o.name === "results"
+        )
           ?.value || "1";
 
       // Parse result limit: "all" = 10, otherwise parse as integer (default 1)
-      const resultLimit = resultsOption === "all" ? 10 : parseInt(resultsOption, 10);
+      const resultLimit = resultsOption === "all"
+        ? 10
+        : parseInt(resultsOption, 10);
 
       if (!searchUsername) {
         return Response.json({
@@ -392,7 +412,7 @@ Get notified when your username appears on a streamer's VOD.
           search_query: searchUsername,
           similarity_threshold: 1.0,
           result_limit: resultLimit,
-        }
+        },
       );
 
       if (error) {
@@ -419,19 +439,26 @@ Get notified when your username appears on a streamer's VOD.
         vod_source_id: string;
         frame_time_seconds: number;
       }) => {
-        const timestamp = Math.floor(new Date(r.actual_timestamp).getTime() / 1000);
+        const timestamp = Math.floor(
+          new Date(r.actual_timestamp).getTime() / 1000,
+        );
         const hours = Math.floor(r.frame_time_seconds / 3600);
         const minutes = Math.floor((r.frame_time_seconds % 3600) / 60);
         const seconds = r.frame_time_seconds % 60;
         const timeParam = `${hours}h${minutes}m${seconds}s`;
-        const vodUrl = `https://www.twitch.tv/videos/${r.vod_source_id}?t=${timeParam}`;
-        return `• **${r.streamer_display_name}** - <t:${timestamp}:f> - [Watch](${vodUrl})`;
+        const vodUrl =
+          `https://www.twitch.tv/videos/${r.vod_source_id}?t=${timeParam}`;
+        return `**${r.streamer_display_name}** - <t:${timestamp}:f> - [Watch](${vodUrl})`;
       });
+
+      const headerText = resultLimit === 1
+        ? `**Latest result for "${searchUsername}":**`
+        : `**Results for "${searchUsername}":**`;
 
       return Response.json({
         type: 4,
         data: {
-          content: `**Results for "${searchUsername}":**\n${resultLines.join("\n")}`,
+          content: `${headerText}\n${resultLines.join("\n")}`,
         },
       });
     }
