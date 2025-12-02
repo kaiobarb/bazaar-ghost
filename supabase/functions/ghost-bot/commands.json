@@ -53,6 +53,16 @@
         "description": "Username to search for (case insensitive)",
         "type": 3,
         "required": true
+      },
+      {
+        "name": "results",
+        "description": "Number of results to return. Default: 1 (latest)",
+        "type": 3,
+        "required": false,
+        "choices": [
+          { "name": "Latest", "value": "1" },
+          { "name": "All (max 10)", "value": "all" }
+        ]
       }
     ]
   }

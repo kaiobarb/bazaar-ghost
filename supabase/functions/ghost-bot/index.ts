@@ -371,10 +371,17 @@ Get notified when your username appears on a streamer's VOD.
         (o: { name: string; value: string }) => o.name === "username"
       )?.value;
 
+      const resultsOption =
+        options?.find((o: { name: string; value: string }) => o.name === "results")
+          ?.value || "1";
+
+      // Parse result limit: "all" = 10, otherwise parse as integer (default 1)
+      const resultLimit = resultsOption === "all" ? 10 : parseInt(resultsOption, 10);
+
       if (!searchUsername) {
         return Response.json({
           type: 4,
-          data: { content: "Please provide a username to search", flags: 64 },
+          data: { content: "Please provide a username to search" },
         });
       }
 
@@ -384,7 +391,7 @@ Get notified when your username appears on a streamer's VOD.
         {
           search_query: searchUsername,
           similarity_threshold: 1.0,
-          result_limit: 10,
+          result_limit: resultLimit,
         }
       );
 
@@ -392,7 +399,7 @@ Get notified when your username appears on a streamer's VOD.
         console.error("DB error:", error);
         return Response.json({
           type: 4,
-          data: { content: `Error: ${error.message}`, flags: 64 },
+          data: { content: `Error: ${error.message}` },
         });
       }
 
@@ -401,7 +408,6 @@ Get notified when your username appears on a streamer's VOD.
           type: 4,
           data: {
             content: `No results found for **${searchUsername}**`,
-            flags: 64,
           },
         });
       }
@@ -426,7 +432,6 @@ Get notified when your username appears on a streamer's VOD.
         type: 4,
         data: {
           content: `**Results for "${searchUsername}":**\n${resultLines.join("\n")}`,
-          flags: 64,
         },
       });
     }
