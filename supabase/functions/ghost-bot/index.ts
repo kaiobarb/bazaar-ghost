@@ -104,6 +104,15 @@ Deno.serve(async (req) => {
       }
     }
 
+    // Increment notification_count for all notified subscriptions
+    const notifiedUserIds = subscriptions.map((s) => s.discord_user_id);
+    if (notifiedUserIds.length > 0) {
+      await supabase.rpc("increment_notification_count", {
+        p_username: username,
+        p_discord_user_ids: notifiedUserIds,
+      });
+    }
+
     return Response.json({ notified: notifiedCount });
   }
 
