@@ -878,9 +878,7 @@ class FrameProcessor:
         import re
         cleaned = re.sub(r'[^a-zA-Z0-9_\-.]', '', text)
 
-        # Validate length (Twitch usernames are 4-25 characters)
-        if 4 <= len(cleaned) <= 25:
-            return cleaned
+        return cleaned
 
         return None
     
