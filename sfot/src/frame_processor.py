@@ -535,6 +535,13 @@ class FrameProcessor:
                 x1 = max(0, emblem_right_x)
                 x2 = min(w, emblem_right_x + estimated_width)
                 self.logger.debug(f"Partial occlusion crop (no right edge): x={x1}-{x2}, y={y1}-{y2}")
+            elif emblem_right_x is None and right_edge_x is not None:
+                # No emblem detected but have right edge (from detection or custom_edge fallback)
+                # Crop from start of frame to right_edge with margin
+                margin_pixels = int(right_edge_x * self.right_edge_crop_margin)
+                x1 = 0
+                x2 = max(20, right_edge_x - margin_pixels)
+                self.logger.debug(f"No emblem crop with right edge (custom_edge fallback or detection): x={x1}-{x2}, y={y1}-{y2}")
             else:
                 # Fallback: use right portion of frame
                 x1 = 0
