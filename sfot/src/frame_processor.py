@@ -518,15 +518,16 @@ class FrameProcessor:
                 # E.g., if right_edge_x=100 and margin=10%, crop at 90
                 margin_pixels = int(right_edge_x * self.right_edge_crop_margin)
 
-                # When using custom_edge fallback, trust the configured value without enforcing minimum width
-                if truncated:
+                # When custom_edge is configured, trust tight crops without enforcing minimum width
+                # This applies whether we used custom_edge fallback or actual detection succeeded
+                if self.custom_edge_percent is not None:
                     right_bound = right_edge_x - margin_pixels
                 else:
                     right_bound = max(emblem_right_x + 20, right_edge_x - margin_pixels)  # Ensure at least 20px width
 
                 # Validate coordinates are reasonable
-                # For custom_edge (truncated), skip minimum width validation
-                min_width = 0 if truncated else 20
+                # For streamers with custom_edge configured, skip minimum width validation
+                min_width = 0 if self.custom_edge_percent is not None else 20
                 if left_bound >= 0 and right_bound <= w and right_bound > left_bound + min_width:
                     x1 = max(0, left_bound)
                     x2 = min(w, right_bound)
@@ -549,8 +550,8 @@ class FrameProcessor:
                 # Crop from start of frame to right_edge with margin
                 margin_pixels = int(right_edge_x * self.right_edge_crop_margin)
                 x1 = 0
-                # When using custom_edge, don't enforce minimum width
-                if truncated:
+                # When custom_edge is configured, don't enforce minimum width
+                if self.custom_edge_percent is not None:
                     x2 = right_edge_x - margin_pixels
                 else:
                     x2 = max(20, right_edge_x - margin_pixels)
