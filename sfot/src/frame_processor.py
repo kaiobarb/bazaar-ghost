@@ -253,7 +253,7 @@ class FrameProcessor:
                     return None
 
             # cropping based on emblem and right edge
-            cropped_frame = self._intelligent_crop_v2(processed_frame, emblem_right_x, right_edge_x)
+            cropped_frame = self._intelligent_crop_v2(processed_frame, emblem_right_x, right_edge_x, truncated)
             
             # Advanced OCR preprocessing
             processed = self._advanced_preprocess_for_ocr(cropped_frame)
@@ -484,7 +484,7 @@ class FrameProcessor:
             self.logger.error(f"Emblem detection/removal error: {e}")
             return frame, None, None
     
-    def _intelligent_crop_v2(self, frame: np.ndarray, emblem_right_x: Optional[int], right_edge_x: Optional[int]) -> np.ndarray:
+    def _intelligent_crop_v2(self, frame: np.ndarray, emblem_right_x: Optional[int], right_edge_x: Optional[int], truncated: bool = False) -> np.ndarray:
         """
         Crop frame intelligently based on emblem and right edge coordinates
 
@@ -492,6 +492,7 @@ class FrameProcessor:
             frame: Input frame
             emblem_right_x: Right boundary from emblem detection (after expansion)
             right_edge_x: Right boundary from right edge detection
+            truncated: Whether custom_edge fallback was used
 
         Returns:
             Cropped frame
@@ -516,15 +517,23 @@ class FrameProcessor:
                 # Apply crop margin to right edge to avoid edge artifacts
                 # E.g., if right_edge_x=100 and margin=10%, crop at 90
                 margin_pixels = int(right_edge_x * self.right_edge_crop_margin)
-                right_bound = max(emblem_right_x + 20, right_edge_x - margin_pixels)  # Ensure at least 20px width
+
+                # When using custom_edge fallback, trust the configured value without enforcing minimum width
+                if truncated:
+                    right_bound = right_edge_x - margin_pixels
+                else:
+                    right_bound = max(emblem_right_x + 20, right_edge_x - margin_pixels)  # Ensure at least 20px width
 
                 # Validate coordinates are reasonable
-                if left_bound >= 0 and right_bound <= w and right_bound > left_bound + 20:
+                # For custom_edge (truncated), skip minimum width validation
+                min_width = 0 if truncated else 20
+                if left_bound >= 0 and right_bound <= w and right_bound > left_bound + min_width:
                     x1 = max(0, left_bound)
                     x2 = min(w, right_bound)
-                    self.logger.debug(f"Ideal crop with both boundaries: x={x1}-{x2}, y={y1}-{y2} (right_edge={right_edge_x}, margin={margin_pixels}px)")
+                    crop_source = "custom_edge" if truncated else "detected"
+                    self.logger.debug(f"Ideal crop with both boundaries ({crop_source}): x={x1}-{x2}, y={y1}-{y2} (right_edge={right_edge_x}, margin={margin_pixels}px)")
                 else:
-                    self.logger.warning(f"Invalid boundaries: emblem_right={emblem_right_x}, right_edge={right_edge_x}, adjusted_right={right_bound}")
+                    self.logger.warning(f"Invalid boundaries: emblem_right={emblem_right_x}, right_edge={right_edge_x}, adjusted_right={right_bound}, truncated={truncated}")
                     x1 = 0
                     x2 = w
             elif emblem_right_x is not None and right_edge_x is None:
@@ -540,8 +549,13 @@ class FrameProcessor:
                 # Crop from start of frame to right_edge with margin
                 margin_pixels = int(right_edge_x * self.right_edge_crop_margin)
                 x1 = 0
-                x2 = max(20, right_edge_x - margin_pixels)
-                self.logger.debug(f"No emblem crop with right edge (custom_edge fallback or detection): x={x1}-{x2}, y={y1}-{y2}")
+                # When using custom_edge, don't enforce minimum width
+                if truncated:
+                    x2 = right_edge_x - margin_pixels
+                else:
+                    x2 = max(20, right_edge_x - margin_pixels)
+                crop_source = "custom_edge" if truncated else "detected"
+                self.logger.debug(f"No emblem crop with right edge ({crop_source}): x={x1}-{x2}, y={y1}-{y2}")
             else:
                 # Fallback: use right portion of frame
                 x1 = 0

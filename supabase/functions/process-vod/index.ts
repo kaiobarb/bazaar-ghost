@@ -38,6 +38,8 @@ async function triggerGithubWorkflow(
     `Triggering workflow for VOD ${vodId} with ${chunkUuids.length} chunks (old_templates: ${oldTemplates}, environment: ${environment})`,
   );
 
+  const branch = environment === "dev" ? "dev" : "main";
+
   const response = await fetch(workflowDispatchUrl, {
     method: "POST",
     headers: {
@@ -47,7 +49,7 @@ async function triggerGithubWorkflow(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      ref: "main", // Branch to run workflow on
+      ref: branch,
       inputs: {
         vod_id: vodId,
         chunk_uuids: JSON.stringify(chunkUuids), // Pass as JSON string
