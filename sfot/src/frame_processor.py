@@ -206,6 +206,12 @@ class FrameProcessor:
 
             self.last_matchup_time = timestamp
 
+            # Calculate emblem right boundary for cropping (needed for multi-crop OCR)
+            emblem_right_x = None
+            if emblem_bbox:
+                x, y, w, h = emblem_bbox
+                emblem_right_x = min(frame.shape[1], x + w)  # Use exact bbox width
+
             # Right edge detection with custom edge support
             right_edge_x = None
             no_right_edge = False
@@ -250,12 +256,6 @@ class FrameProcessor:
 
             # Remove emblem from frame for better OCR
             processed_frame = frame.copy()
-
-            # Calculate emblem right boundary for cropping
-            emblem_right_x = None
-            if emblem_bbox:
-                x, y, w, h = emblem_bbox
-                emblem_right_x = min(frame.shape[1], x + w)  # Use exact bbox width
 
             # Validate right edge position - reject if right edge is to the left of emblem
             if right_edge_x is not None and emblem_right_x is not None:
