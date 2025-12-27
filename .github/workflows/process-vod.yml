@@ -345,14 +345,18 @@ jobs:
       - name: Generate workflow summary
         if: success()
         run: |
-          # Check if detection summary file exists
-          if [ ! -f ./output/detections.json ]; then
-            echo "No detection summary found"
+          # Check if detection summary file exists for this chunk
+          SUMMARY_FILE="./output/detections_${{ matrix.chunk_id }}.json"
+
+          if [ ! -f "$SUMMARY_FILE" ]; then
+            echo "No detection summary found for chunk ${{ matrix.chunk_id }}"
+            echo "## Chunk ${{ matrix.chunk_id }}" >> $GITHUB_STEP_SUMMARY
+            echo "No detections found in this chunk." >> $GITHUB_STEP_SUMMARY
             exit 0
           fi
 
           # Parse detection summary
-          SUMMARY=$(cat ./output/detections.json)
+          SUMMARY=$(cat "$SUMMARY_FILE")
           CHUNK_ID=$(echo "$SUMMARY" | jq -r '.chunk_id')
           VOD_ID=$(echo "$SUMMARY" | jq -r '.vod_id')
           STREAMER=$(echo "$SUMMARY" | jq -r '.streamer')
@@ -371,16 +375,15 @@ jobs:
 
           # Generate markdown summary
           cat >> $GITHUB_STEP_SUMMARY << EOF
-          ## SFOT Processing Results
+          ## Chunk ${{ matrix.chunk_id }} Results
 
           **VOD:** [${VOD_ID}](https://www.twitch.tv/videos/${VOD_ID}) (${STREAMER})
-          **Chunk:** \`${CHUNK_ID}\`
           **Time Range:** ${START_HMS} - ${END_HMS} (${DURATION}s)
           **Quality:** ${QUALITY}
           **Frames Processed:** ${FRAMES}
           **Matchups Detected:** ${MATCHUPS}
 
-          ### Detected Usernames
+          ### Detected Usernames (showing first 10)
 
           | Timestamp | Username | Confidence | Rank |
           |-----------|----------|------------|------|
@@ -390,7 +393,7 @@ jobs:
           echo "$SUMMARY" | jq -r '.detections[] | "| \(.timestamp)s | \(.username) | \(.confidence | tonumber * 100 | floor)% | \(.rank) |"' >> $GITHUB_STEP_SUMMARY
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "View full results at [bazaarghost.stream/vod/${VOD_ID}](https://bazaarghost.stream/vod/${VOD_ID})" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
 
       - name: Update VOD status to failed
         if: failure()

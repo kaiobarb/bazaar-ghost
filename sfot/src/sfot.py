@@ -653,11 +653,11 @@ class SFOTProcessor:
         except Exception as e:
             self.logger.error(f"Progress monitor failed: {e}")
 
-    def export_detection_summary(self, output_path: str = "/app/output/detections.json"):
+    def export_detection_summary(self, output_dir: str = "/app/output"):
         """Export detection summary for GitHub Actions workflow summary
 
         Args:
-            output_path: Path to write the summary JSON file
+            output_dir: Directory to write the summary JSON file
         """
         try:
             # Prepare summary with limited number of sample images (first 5 detections)
@@ -682,8 +682,9 @@ class SFOTProcessor:
                     'rank': detection['rank']
                 })
 
-            # Write to output directory for GitHub Actions to read
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            # Write to output directory with unique filename per chunk
+            os.makedirs(output_dir, exist_ok=True)
+            output_path = os.path.join(output_dir, f"detections_{self.chunk_id}.json")
             with open(output_path, 'w') as f:
                 json.dump(summary, f, indent=2)
 
