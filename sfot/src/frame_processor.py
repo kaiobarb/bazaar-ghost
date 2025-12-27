@@ -253,7 +253,7 @@ class FrameProcessor:
                     return None
 
             # cropping based on emblem and right edge
-            cropped_frame = self._intelligent_crop_v2(processed_frame, emblem_right_x, right_edge_x, truncated)
+            cropped_frame = self._intelligent_crop(processed_frame, emblem_right_x, right_edge_x, truncated)
             
             # Advanced OCR preprocessing
             processed = self._advanced_preprocess_for_ocr(cropped_frame)
@@ -484,7 +484,7 @@ class FrameProcessor:
             self.logger.error(f"Emblem detection/removal error: {e}")
             return frame, None, None
     
-    def _intelligent_crop_v2(self, frame: np.ndarray, emblem_right_x: Optional[int], right_edge_x: Optional[int], truncated: bool = False) -> np.ndarray:
+    def _intelligent_crop(self, frame: np.ndarray, emblem_right_x: Optional[int], right_edge_x: Optional[int], truncated: bool = False) -> np.ndarray:
         """
         Crop frame intelligently based on emblem and right edge coordinates
 
@@ -576,63 +576,6 @@ class FrameProcessor:
 
         except Exception as e:
             self.logger.error(f"Intelligent crop v2 error: {e}")
-            return frame
-
-    def _intelligent_crop(self, frame: np.ndarray, template_left_x: Optional[int], emblem_right_x: Optional[int]) -> np.ndarray:
-        """
-        Crop frame intelligently based on template and emblem coordinates
-        
-        Args:
-            frame: Input frame
-            template_left_x: Left boundary from template matching
-            emblem_right_x: Right boundary from emblem detection (after expansion)
-            
-        Returns:
-            Cropped frame
-        """
-        try:
-            h, w = frame.shape[:2]
-            
-            # Crop top and bottom by 12px as per preset
-            top_crop = 12
-            bottom_crop = 12
-            y1 = max(0, top_crop)
-            y2 = min(h, h - bottom_crop)
-            
-            # Determine horizontal cropping
-            if template_left_x is not None and emblem_right_x is not None:
-                # Handle coordinate order (emblem might be left of template match)
-                left_bound = min(template_left_x, emblem_right_x) 
-                right_bound = max(template_left_x, emblem_right_x)
-                
-                # Validate coordinates are reasonable
-                if left_bound >= 0 and right_bound <= w and right_bound > left_bound + 20:  # Min 20px width
-                    x1 = max(0, left_bound)
-                    x2 = min(w, right_bound)
-                    self.logger.debug(f"Intelligent crop using coordinates: x={x1}-{x2}, y={y1}-{y2}")
-                else:
-                    self.logger.warning(f"Coordinates too close: template_left={template_left_x}, emblem_right={emblem_right_x}, falling back")
-                    x1 = 0
-                    x2 = max(w - 20, w // 2)
-            else:
-                # Fallback: use full width but apply right crop from preset (20px)
-                x1 = 0
-                x2 = max(w - 20, w // 2)  # Ensure we don't crop too much
-                self.logger.debug(f"Fallback crop (missing coordinates): x={x1}-{x2}, y={y1}-{y2}")
-            
-            # Final validation: ensure minimum crop size
-            min_width = 50  # Minimum width for meaningful OCR
-            min_height = 20  # Minimum height for meaningful OCR
-            
-            if y2 - y1 < min_height or x2 - x1 < min_width:
-                self.logger.warning(f"Crop too small ({x2-x1}x{y2-y1}), returning original frame")
-                return frame
-                
-            cropped = frame[y1:y2, x1:x2]
-            return cropped
-            
-        except Exception as e:
-            self.logger.error(f"Intelligent crop error: {e}")
             return frame
     
     def _advanced_preprocess_for_ocr(self, frame: np.ndarray) -> np.ndarray:
