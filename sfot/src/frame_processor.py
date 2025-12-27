@@ -226,11 +226,22 @@ class FrameProcessor:
                     # No right edge detected
                     no_right_edge = True
 
-                    # Case 3: Fall back to custom_edge if available
+                    # Case 3: Fall back to multi-crop OCR if custom_edge configured
                     if self.custom_edge_percent is not None:
-                        right_edge_x = int(frame.shape[1] * self.custom_edge_percent)
-                        truncated = True
-                        self.logger.info(f"No right edge detected, using custom edge fallback at {right_edge_x}px ({self.custom_edge_percent*100:.1f}% of frame width)")
+                        # Try multi-crop OCR to find optimal crop position
+                        self.logger.info(f"No right edge detected, trying multi-crop OCR (custom_edge={self.custom_edge_percent*100:.1f}% as max bound)")
+
+                        optimal_crop_x = self._multi_crop_ocr(frame, emblem_right_x, timestamp)
+
+                        if optimal_crop_x is not None:
+                            right_edge_x = optimal_crop_x
+                            truncated = True
+                            self.logger.info(f"Multi-crop OCR found optimal crop at {right_edge_x}px")
+                        else:
+                            # Multi-crop failed, fall back to custom_edge directly
+                            right_edge_x = int(frame.shape[1] * self.custom_edge_percent)
+                            truncated = True
+                            self.logger.info(f"Multi-crop failed, using custom edge fallback at {right_edge_x}px ({self.custom_edge_percent*100:.1f}% of frame width)")
                     else:
                         # Case 4: No custom_edge configured, log occlusion warning
                         self.logger.info(f"No right edge detected at {timestamp}s (best conf: {right_conf:.3f}, threshold: {self.right_edge_threshold:.2f}) - possible streamer cam occlusion")
@@ -577,7 +588,103 @@ class FrameProcessor:
         except Exception as e:
             self.logger.error(f"Intelligent crop v2 error: {e}")
             return frame
-    
+
+    def _multi_crop_ocr(self, frame: np.ndarray, emblem_right_x: Optional[int], timestamp: int, num_samples: int = 15) -> Optional[int]:
+        """
+        Multi-crop OCR approach: Try multiple crop positions and find the best one
+
+        Args:
+            frame: Input frame
+            emblem_right_x: Left boundary (where emblem ends)
+            timestamp: Frame timestamp for logging
+            num_samples: Number of crop positions to test
+
+        Returns:
+            Optimal crop position (right edge x), or None if all attempts failed
+        """
+        try:
+            if emblem_right_x is None or self.custom_edge_percent is None:
+                return None
+
+            h, w = frame.shape[:2]
+            custom_edge_x = int(w * self.custom_edge_percent)
+
+            # Vertical crop parameters (same as _intelligent_crop)
+            crop_ratio = 0.24
+            top_crop = int(h * crop_ratio)
+            bottom_crop = int(h * crop_ratio)
+            y1 = max(0, top_crop)
+            y2 = min(h, h - bottom_crop)
+
+            # Generate sample positions (quadratic spacing for more samples near custom_edge)
+            positions = []
+            for i in range(num_samples):
+                t = (i / (num_samples - 1)) ** 1.5  # Quadratic spacing
+                x = int(custom_edge_x + t * (w - custom_edge_x))
+                positions.append(x)
+
+            self.logger.debug(f"Multi-crop testing {num_samples} positions from {custom_edge_x} to {w}")
+
+            results = []
+
+            for right_x in positions:
+                # Horizontal crop
+                x1 = emblem_right_x
+                x2 = min(w, right_x)
+
+                if x2 <= x1:
+                    continue
+
+                # Crop frame
+                cropped = frame[y1:y2, x1:x2]
+
+                # Preprocess for OCR
+                preprocessed = self._advanced_preprocess_for_ocr(cropped)
+
+                # Run OCR
+                username, conf, ocr_data = self._extract_usernames(preprocessed)
+
+                if username:
+                    results.append({
+                        'right_x': right_x,
+                        'width': x2 - x1,
+                        'text': username,
+                        'confidence': conf
+                    })
+
+            if not results:
+                self.logger.debug(f"Multi-crop: No valid OCR results")
+                return None
+
+            # Selection strategy: Among high-confidence results (>= 0.85), pick highest confidence
+            # If tied, prefer longest text (most complete username)
+            high_conf_threshold = 0.85
+            high_conf_results = [r for r in results if r['confidence'] >= high_conf_threshold]
+
+            if not high_conf_results:
+                # No high-confidence results, use highest confidence overall
+                best = max(results, key=lambda x: x['confidence'])
+                self.logger.debug(f"Multi-crop: No high-confidence results, using best overall (conf={best['confidence']:.3f})")
+            else:
+                # Find maximum confidence among high-confidence results
+                max_conf = max(r['confidence'] for r in high_conf_results)
+
+                # Get all with max confidence
+                max_conf_results = [r for r in high_conf_results if r['confidence'] == max_conf]
+
+                # If multiple tied, prefer longest text
+                best = max(max_conf_results, key=lambda x: len(x['text']))
+
+                self.logger.debug(f"Multi-crop: Selected from {len(high_conf_results)} high-conf results (max_conf={max_conf:.3f})")
+
+            self.logger.info(f"Multi-crop result: '{best['text']}' at crop={best['right_x']}px (conf={best['confidence']:.3f}, width={best['width']}px)")
+
+            return best['right_x']
+
+        except Exception as e:
+            self.logger.error(f"Multi-crop OCR error: {e}")
+            return None
+
     def _advanced_preprocess_for_ocr(self, frame: np.ndarray) -> np.ndarray:
         """Advanced OCR preprocessing based on tuned parameters"""
         try:
