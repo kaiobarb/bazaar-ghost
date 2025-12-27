@@ -1,8 +1,7 @@
 processing:
   frame_rate: 0.5 # 1 frame every 2 seconds
-  queue_size: 10
+  queue_size: 100
   timeout: 1800 # 30 minutes max per chunk
-  batch_update_interval: 20 # Update Supabase every 20 seconds
 
 detection:
   threshold: 0.78

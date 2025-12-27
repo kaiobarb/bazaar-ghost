@@ -88,6 +88,8 @@ class SFOTProcessor:
         self.matchups_found = 0
         self.last_update_time = time.time()
         self.frames_at_last_update = 0
+        self.result_batch = []  # Current batch being accumulated
+        self.all_detections = []  # All detections for summary export
 
         # Initialize frame processor with quality information, test mode, and template selection
         self.frame_processor = FrameProcessor(self.config, quality=self.quality, test_mode=self.test_mode, old_templates=self.old_templates, method=self.method, profile=self.profile)
@@ -273,6 +275,9 @@ class SFOTProcessor:
                     detections_count=self.matchups_found,
                     quality=self.formatted_quality
                 )
+
+            # Export detection summary for GitHub Actions workflow
+            self.export_detection_summary()
 
             return {
                 'status': status,
@@ -577,43 +582,40 @@ class SFOTProcessor:
             self.shutdown.set()
     
     def result_worker(self):
-        """Worker to handle results and update Supabase"""
-        batch = []
-        last_batch_time = time.time()
-        
+        """Worker to handle results and update Supabase in batches"""
         try:
             while not self.shutdown.is_set():
                 try:
                     # Get result from queue
                     result = self.result_queue.get(timeout=1)
-                    batch.append(result)
-                    
-                    # Check if batch should be sent
-                    current_time = time.time()
-                    should_send = (
-                        len(batch) >= self.config['supabase']['batch_size'] or
-                        current_time - last_batch_time >= self.config['processing']['batch_update_interval']
-                    )
-                    
-                    if should_send and batch:
-                        self.supabase.upload_batch(batch)
-                        batch = []
-                        last_batch_time = current_time
-                        
+                    self.result_batch.append(result)
+
+                    # Track all detections for summary export
+                    self.all_detections.append({
+                        'timestamp': result['timestamp'],
+                        'username': result['username'],
+                        'confidence': result.get('confidence', 0),
+                        'rank': result.get('detected_rank'),
+                        'frame_base64': result.get('frame_base64')  # For workflow summary images
+                    })
+
+                    # Send batch when it reaches configured size
+                    if len(self.result_batch) >= self.config['supabase']['batch_size']:
+                        self.supabase.upload_batch(self.result_batch)
+                        self.result_batch = []
+
                 except queue.Empty:
-                    # Check if time to send partial batch
-                    current_time = time.time()
-                    if batch and current_time - last_batch_time >= self.config['processing']['batch_update_interval']:
-                        self.supabase.upload_batch(batch)
-                        batch = []
-                        last_batch_time = current_time
-                        
+                    # Continue waiting for more results
+                    continue
+
         except Exception as e:
             self.logger.error(f"Result worker failed: {e}")
         finally:
-            # Send remaining batch
-            if batch:
-                self.supabase.upload_batch(batch)
+            # Send remaining batch at shutdown
+            if self.result_batch:
+                self.logger.info(f"Flushing final batch of {len(self.result_batch)} detections")
+                self.supabase.upload_batch(self.result_batch)
+                self.result_batch = []
 
     def progress_monitor_worker(self):
         """Worker to log progress updates every 10 seconds"""
@@ -650,6 +652,45 @@ class SFOTProcessor:
 
         except Exception as e:
             self.logger.error(f"Progress monitor failed: {e}")
+
+    def export_detection_summary(self, output_path: str = "/app/output/detections.json"):
+        """Export detection summary for GitHub Actions workflow summary
+
+        Args:
+            output_path: Path to write the summary JSON file
+        """
+        try:
+            # Prepare summary with limited number of sample images (first 5 detections)
+            summary = {
+                'chunk_id': self.chunk_id,
+                'vod_id': self.vod_id,
+                'streamer': self.streamer,
+                'start_time': self.start_time,
+                'end_time': self.end_time,
+                'quality': self.formatted_quality,
+                'frames_processed': self.frames_processed,
+                'matchups_found': self.matchups_found,
+                'detections': []
+            }
+
+            # Add detection details (limit to 10 samples for summary, without base64 images)
+            for detection in self.all_detections[:10]:
+                summary['detections'].append({
+                    'timestamp': detection['timestamp'],
+                    'username': detection['username'],
+                    'confidence': detection['confidence'],
+                    'rank': detection['rank']
+                })
+
+            # Write to output directory for GitHub Actions to read
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            with open(output_path, 'w') as f:
+                json.dump(summary, f, indent=2)
+
+            self.logger.info(f"Exported detection summary to {output_path}")
+
+        except Exception as e:
+            self.logger.error(f"Failed to export detection summary: {e}")
 
     def cleanup(self):
         """Clean up resources on shutdown"""

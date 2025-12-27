@@ -342,6 +342,56 @@ jobs:
             exit $DOCKER_EXIT_CODE
           fi
 
+      - name: Generate workflow summary
+        if: success()
+        run: |
+          # Check if detection summary file exists
+          if [ ! -f ./output/detections.json ]; then
+            echo "No detection summary found"
+            exit 0
+          fi
+
+          # Parse detection summary
+          SUMMARY=$(cat ./output/detections.json)
+          CHUNK_ID=$(echo "$SUMMARY" | jq -r '.chunk_id')
+          VOD_ID=$(echo "$SUMMARY" | jq -r '.vod_id')
+          STREAMER=$(echo "$SUMMARY" | jq -r '.streamer')
+          QUALITY=$(echo "$SUMMARY" | jq -r '.quality')
+          FRAMES=$(echo "$SUMMARY" | jq -r '.frames_processed')
+          MATCHUPS=$(echo "$SUMMARY" | jq -r '.matchups_found')
+          START_TIME=$(echo "$SUMMARY" | jq -r '.start_time')
+          END_TIME=$(echo "$SUMMARY" | jq -r '.end_time')
+
+          # Calculate duration
+          DURATION=$((END_TIME - START_TIME))
+
+          # Format timestamp for readability
+          START_HMS=$(date -u -d "@${START_TIME}" +%H:%M:%S 2>/dev/null || echo "${START_TIME}s")
+          END_HMS=$(date -u -d "@${END_TIME}" +%H:%M:%S 2>/dev/null || echo "${END_TIME}s")
+
+          # Generate markdown summary
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## SFOT Processing Results
+
+          **VOD:** [${VOD_ID}](https://www.twitch.tv/videos/${VOD_ID}) (${STREAMER})
+          **Chunk:** \`${CHUNK_ID}\`
+          **Time Range:** ${START_HMS} - ${END_HMS} (${DURATION}s)
+          **Quality:** ${QUALITY}
+          **Frames Processed:** ${FRAMES}
+          **Matchups Detected:** ${MATCHUPS}
+
+          ### Detected Usernames
+
+          | Timestamp | Username | Confidence | Rank |
+          |-----------|----------|------------|------|
+          EOF
+
+          # Add detection rows (limit to 10 for summary)
+          echo "$SUMMARY" | jq -r '.detections[] | "| \(.timestamp)s | \(.username) | \(.confidence | tonumber * 100 | floor)% | \(.rank) |"' >> $GITHUB_STEP_SUMMARY
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "View full results at [bazaarghost.stream/vod/${VOD_ID}](https://bazaarghost.stream/vod/${VOD_ID})" >> $GITHUB_STEP_SUMMARY
+
       - name: Update VOD status to failed
         if: failure()
         run: |
