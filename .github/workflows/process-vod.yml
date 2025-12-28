@@ -384,14 +384,30 @@ jobs:
           **Frames Processed:** ${FRAMES}
           **Matchups Detected:** ${MATCHUPS}
 
-          ### Detected Usernames (showing first 10)
+          ### All Detected Usernames
 
-          | Timestamp | Username | Confidence | Rank |
-          |-----------|----------|------------|------|
           EOF
 
-          # Add detection rows (limit to 10 for summary)
-          echo "$SUMMARY" | jq -r '.detections[] | "| \(.timestamp)s | \(.username) | \(.confidence | tonumber * 100 | floor)% | \(.rank) |"' >> $GITHUB_STEP_SUMMARY
+          # Add each detection with image and details
+          echo "$SUMMARY" | jq -r '.detections[] | @base64' | while read -r detection_b64; do
+            detection=$(echo "$detection_b64" | base64 -d)
+
+            timestamp=$(echo "$detection" | jq -r '.timestamp')
+            username=$(echo "$detection" | jq -r '.username')
+            confidence=$(echo "$detection" | jq -r '.confidence | tonumber * 100 | floor')
+            rank=$(echo "$detection" | jq -r '.rank')
+            frame_base64=$(echo "$detection" | jq -r '.frame_base64 // empty')
+
+            # Add detection header
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "#### ${username} (${confidence}%, ${rank}) - ${timestamp}s" >> $GITHUB_STEP_SUMMARY
+
+            # Add image if available
+            if [ -n "$frame_base64" ] && [ "$frame_base64" != "null" ]; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "<img src=\"data:image/jpeg;base64,${frame_base64}\" width=\"400\" />" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
 
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY

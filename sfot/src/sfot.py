@@ -676,13 +676,14 @@ class SFOTProcessor:
                 'detections': []
             }
 
-            # Add detection details (limit to 10 samples for summary, without base64 images)
-            for detection in self.all_detections[:10]:
+            # Add ALL detection details with images
+            for detection in self.all_detections:
                 summary['detections'].append({
                     'timestamp': detection['timestamp'],
                     'username': detection['username'],
                     'confidence': detection['confidence'],
-                    'rank': detection['rank']
+                    'rank': detection['rank'],
+                    'frame_base64': detection.get('frame_base64')  # Include image for display
                 })
 
             # Ensure output directory exists and is writable
