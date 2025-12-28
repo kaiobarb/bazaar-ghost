@@ -284,8 +284,9 @@ jobs:
         id: sfot
         timeout-minutes: 25
         run: |
-          # Create output directory
+          # Create output directory with write permissions for container user (UID 1000)
           mkdir -p ./output
+          chmod 777 ./output
 
           # Set quality and FPS (use defaults for local testing if check-vod was skipped)
           QUALITY="${{ needs.check-vod.outputs.quality }}"
