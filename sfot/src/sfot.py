@@ -660,7 +660,10 @@ class SFOTProcessor:
             output_dir: Directory to write the summary JSON file
         """
         try:
-            # Prepare summary with limited number of sample images (first 5 detections)
+            self.logger.info(f"Exporting detection summary for chunk {self.chunk_id}")
+            self.logger.info(f"Total detections tracked: {len(self.all_detections)}")
+
+            # Prepare summary
             summary = {
                 'chunk_id': self.chunk_id,
                 'vod_id': self.vod_id,
@@ -682,16 +685,30 @@ class SFOTProcessor:
                     'rank': detection['rank']
                 })
 
+            # Ensure output directory exists and is writable
+            try:
+                os.makedirs(output_dir, exist_ok=True)
+                self.logger.info(f"Output directory ready: {output_dir}")
+            except Exception as mkdir_err:
+                self.logger.error(f"Failed to create output directory: {mkdir_err}")
+                raise
+
             # Write to output directory with unique filename per chunk
-            os.makedirs(output_dir, exist_ok=True)
             output_path = os.path.join(output_dir, f"detections_{self.chunk_id}.json")
+            self.logger.info(f"Writing summary to: {output_path}")
+
             with open(output_path, 'w') as f:
                 json.dump(summary, f, indent=2)
 
-            self.logger.info(f"Exported detection summary to {output_path}")
+            # Verify file was written
+            if os.path.exists(output_path):
+                file_size = os.path.getsize(output_path)
+                self.logger.info(f"Successfully exported detection summary ({file_size} bytes)")
+            else:
+                self.logger.error(f"File was not created: {output_path}")
 
         except Exception as e:
-            self.logger.error(f"Failed to export detection summary: {e}")
+            self.logger.error(f"Failed to export detection summary: {e}", exc_info=True)
 
     def cleanup(self):
         """Clean up resources on shutdown"""
