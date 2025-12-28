@@ -676,14 +676,13 @@ class SFOTProcessor:
                 'detections': []
             }
 
-            # Add ALL detection details with images
+            # Add ALL detection details (images are in Supabase storage)
             for detection in self.all_detections:
                 summary['detections'].append({
                     'timestamp': detection['timestamp'],
                     'username': detection['username'],
                     'confidence': detection['confidence'],
-                    'rank': detection['rank'],
-                    'frame_base64': detection.get('frame_base64')  # Include image for display
+                    'rank': detection['rank']
                 })
 
             # Ensure output directory exists and is writable
