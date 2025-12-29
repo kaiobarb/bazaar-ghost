@@ -206,6 +206,12 @@ class FrameProcessor:
 
             self.last_matchup_time = timestamp
 
+            # Calculate emblem right boundary for cropping (needed for multi-crop OCR)
+            emblem_right_x = None
+            if emblem_bbox:
+                x, y, w, h = emblem_bbox
+                emblem_right_x = min(frame.shape[1], x + w)  # Use exact bbox width
+
             # Right edge detection with custom edge support
             right_edge_x = None
             no_right_edge = False
@@ -226,11 +232,22 @@ class FrameProcessor:
                     # No right edge detected
                     no_right_edge = True
 
-                    # Case 3: Fall back to custom_edge if available
+                    # Case 3: Fall back to multi-crop OCR if custom_edge configured
                     if self.custom_edge_percent is not None:
-                        right_edge_x = int(frame.shape[1] * self.custom_edge_percent)
-                        truncated = True
-                        self.logger.info(f"No right edge detected, using custom edge fallback at {right_edge_x}px ({self.custom_edge_percent*100:.1f}% of frame width)")
+                        # Try multi-crop OCR to find optimal crop position
+                        self.logger.info(f"No right edge detected, trying multi-crop OCR (custom_edge={self.custom_edge_percent*100:.1f}% as max bound)")
+
+                        optimal_crop_x = self._multi_crop_ocr(frame, emblem_right_x, timestamp)
+
+                        if optimal_crop_x is not None:
+                            right_edge_x = optimal_crop_x
+                            truncated = True
+                            self.logger.info(f"Multi-crop OCR found optimal crop at {right_edge_x}px")
+                        else:
+                            # Multi-crop failed, fall back to custom_edge directly
+                            right_edge_x = int(frame.shape[1] * self.custom_edge_percent)
+                            truncated = True
+                            self.logger.info(f"Multi-crop failed, using custom edge fallback at {right_edge_x}px ({self.custom_edge_percent*100:.1f}% of frame width)")
                     else:
                         # Case 4: No custom_edge configured, log occlusion warning
                         self.logger.info(f"No right edge detected at {timestamp}s (best conf: {right_conf:.3f}, threshold: {self.right_edge_threshold:.2f}) - possible streamer cam occlusion")
@@ -240,12 +257,6 @@ class FrameProcessor:
             # Remove emblem from frame for better OCR
             processed_frame = frame.copy()
 
-            # Calculate emblem right boundary for cropping
-            emblem_right_x = None
-            if emblem_bbox:
-                x, y, w, h = emblem_bbox
-                emblem_right_x = min(frame.shape[1], x + w)  # Use exact bbox width
-
             # Validate right edge position - reject if right edge is to the left of emblem
             if right_edge_x is not None and emblem_right_x is not None:
                 if right_edge_x < emblem_right_x:
@@ -253,7 +264,7 @@ class FrameProcessor:
                     return None
 
             # cropping based on emblem and right edge
-            cropped_frame = self._intelligent_crop_v2(processed_frame, emblem_right_x, right_edge_x)
+            cropped_frame = self._intelligent_crop(processed_frame, emblem_right_x, right_edge_x, truncated)
             
             # Advanced OCR preprocessing
             processed = self._advanced_preprocess_for_ocr(cropped_frame)
@@ -484,7 +495,7 @@ class FrameProcessor:
             self.logger.error(f"Emblem detection/removal error: {e}")
             return frame, None, None
     
-    def _intelligent_crop_v2(self, frame: np.ndarray, emblem_right_x: Optional[int], right_edge_x: Optional[int]) -> np.ndarray:
+    def _intelligent_crop(self, frame: np.ndarray, emblem_right_x: Optional[int], right_edge_x: Optional[int], truncated: bool = False) -> np.ndarray:
         """
         Crop frame intelligently based on emblem and right edge coordinates
 
@@ -492,6 +503,7 @@ class FrameProcessor:
             frame: Input frame
             emblem_right_x: Right boundary from emblem detection (after expansion)
             right_edge_x: Right boundary from right edge detection
+            truncated: Whether custom_edge fallback was used
 
         Returns:
             Cropped frame
@@ -516,15 +528,24 @@ class FrameProcessor:
                 # Apply crop margin to right edge to avoid edge artifacts
                 # E.g., if right_edge_x=100 and margin=10%, crop at 90
                 margin_pixels = int(right_edge_x * self.right_edge_crop_margin)
-                right_bound = max(emblem_right_x + 20, right_edge_x - margin_pixels)  # Ensure at least 20px width
+
+                # When custom_edge is configured, trust tight crops without enforcing minimum width
+                # This applies whether we used custom_edge fallback or actual detection succeeded
+                if self.custom_edge_percent is not None:
+                    right_bound = right_edge_x - margin_pixels
+                else:
+                    right_bound = max(emblem_right_x + 20, right_edge_x - margin_pixels)  # Ensure at least 20px width
 
                 # Validate coordinates are reasonable
-                if left_bound >= 0 and right_bound <= w and right_bound > left_bound + 20:
+                # For streamers with custom_edge configured, skip minimum width validation
+                min_width = 0 if self.custom_edge_percent is not None else 20
+                if left_bound >= 0 and right_bound <= w and right_bound > left_bound + min_width:
                     x1 = max(0, left_bound)
                     x2 = min(w, right_bound)
-                    self.logger.debug(f"Ideal crop with both boundaries: x={x1}-{x2}, y={y1}-{y2} (right_edge={right_edge_x}, margin={margin_pixels}px)")
+                    crop_source = "custom_edge" if truncated else "detected"
+                    self.logger.debug(f"Ideal crop with both boundaries ({crop_source}): x={x1}-{x2}, y={y1}-{y2} (right_edge={right_edge_x}, margin={margin_pixels}px)")
                 else:
-                    self.logger.warning(f"Invalid boundaries: emblem_right={emblem_right_x}, right_edge={right_edge_x}, adjusted_right={right_bound}")
+                    self.logger.warning(f"Invalid boundaries: emblem_right={emblem_right_x}, right_edge={right_edge_x}, adjusted_right={right_bound}, truncated={truncated}")
                     x1 = 0
                     x2 = w
             elif emblem_right_x is not None and right_edge_x is None:
@@ -535,6 +556,18 @@ class FrameProcessor:
                 x1 = max(0, emblem_right_x)
                 x2 = min(w, emblem_right_x + estimated_width)
                 self.logger.debug(f"Partial occlusion crop (no right edge): x={x1}-{x2}, y={y1}-{y2}")
+            elif emblem_right_x is None and right_edge_x is not None:
+                # No emblem detected but have right edge (from detection or custom_edge fallback)
+                # Crop from start of frame to right_edge with margin
+                margin_pixels = int(right_edge_x * self.right_edge_crop_margin)
+                x1 = 0
+                # When custom_edge is configured, don't enforce minimum width
+                if self.custom_edge_percent is not None:
+                    x2 = right_edge_x - margin_pixels
+                else:
+                    x2 = max(20, right_edge_x - margin_pixels)
+                crop_source = "custom_edge" if truncated else "detected"
+                self.logger.debug(f"No emblem crop with right edge ({crop_source}): x={x1}-{x2}, y={y1}-{y2}")
             else:
                 # Fallback: use right portion of frame
                 x1 = 0
@@ -556,63 +589,102 @@ class FrameProcessor:
             self.logger.error(f"Intelligent crop v2 error: {e}")
             return frame
 
-    def _intelligent_crop(self, frame: np.ndarray, template_left_x: Optional[int], emblem_right_x: Optional[int]) -> np.ndarray:
+    def _multi_crop_ocr(self, frame: np.ndarray, emblem_right_x: Optional[int], timestamp: int, num_samples: int = 15) -> Optional[int]:
         """
-        Crop frame intelligently based on template and emblem coordinates
-        
+        Multi-crop OCR approach: Try multiple crop positions and find the best one
+
         Args:
             frame: Input frame
-            template_left_x: Left boundary from template matching
-            emblem_right_x: Right boundary from emblem detection (after expansion)
-            
+            emblem_right_x: Left boundary (where emblem ends)
+            timestamp: Frame timestamp for logging
+            num_samples: Number of crop positions to test
+
         Returns:
-            Cropped frame
+            Optimal crop position (right edge x), or None if all attempts failed
         """
         try:
+            if emblem_right_x is None or self.custom_edge_percent is None:
+                return None
+
             h, w = frame.shape[:2]
-            
-            # Crop top and bottom by 12px as per preset
-            top_crop = 12
-            bottom_crop = 12
+            custom_edge_x = int(w * self.custom_edge_percent)
+
+            # Vertical crop parameters (same as _intelligent_crop)
+            crop_ratio = 0.24
+            top_crop = int(h * crop_ratio)
+            bottom_crop = int(h * crop_ratio)
             y1 = max(0, top_crop)
             y2 = min(h, h - bottom_crop)
-            
-            # Determine horizontal cropping
-            if template_left_x is not None and emblem_right_x is not None:
-                # Handle coordinate order (emblem might be left of template match)
-                left_bound = min(template_left_x, emblem_right_x) 
-                right_bound = max(template_left_x, emblem_right_x)
-                
-                # Validate coordinates are reasonable
-                if left_bound >= 0 and right_bound <= w and right_bound > left_bound + 20:  # Min 20px width
-                    x1 = max(0, left_bound)
-                    x2 = min(w, right_bound)
-                    self.logger.debug(f"Intelligent crop using coordinates: x={x1}-{x2}, y={y1}-{y2}")
-                else:
-                    self.logger.warning(f"Coordinates too close: template_left={template_left_x}, emblem_right={emblem_right_x}, falling back")
-                    x1 = 0
-                    x2 = max(w - 20, w // 2)
+
+            # Generate sample positions (quadratic spacing for more samples near custom_edge)
+            positions = []
+            for i in range(num_samples):
+                t = (i / (num_samples - 1)) ** 1.5  # Quadratic spacing
+                x = int(custom_edge_x + t * (w - custom_edge_x))
+                positions.append(x)
+
+            self.logger.debug(f"Multi-crop testing {num_samples} positions from {custom_edge_x} to {w}")
+
+            results = []
+
+            for right_x in positions:
+                # Horizontal crop
+                x1 = emblem_right_x
+                x2 = min(w, right_x)
+
+                if x2 <= x1:
+                    continue
+
+                # Crop frame
+                cropped = frame[y1:y2, x1:x2]
+
+                # Preprocess for OCR
+                preprocessed = self._advanced_preprocess_for_ocr(cropped)
+
+                # Run OCR
+                username, conf, ocr_data = self._extract_usernames(preprocessed)
+
+                if username:
+                    results.append({
+                        'right_x': right_x,
+                        'width': x2 - x1,
+                        'text': username,
+                        'confidence': conf
+                    })
+
+            if not results:
+                self.logger.debug(f"Multi-crop: No valid OCR results")
+                return None
+
+            # Selection strategy: Among high-confidence results (>= 0.85), pick highest confidence
+            # If tied, prefer longest text (most complete username)
+            high_conf_threshold = 0.85
+            high_conf_results = [r for r in results if r['confidence'] >= high_conf_threshold]
+
+            if not high_conf_results:
+                # No high-confidence results, use highest confidence overall
+                best = max(results, key=lambda x: x['confidence'])
+                self.logger.debug(f"Multi-crop: No high-confidence results, using best overall (conf={best['confidence']:.3f})")
             else:
-                # Fallback: use full width but apply right crop from preset (20px)
-                x1 = 0
-                x2 = max(w - 20, w // 2)  # Ensure we don't crop too much
-                self.logger.debug(f"Fallback crop (missing coordinates): x={x1}-{x2}, y={y1}-{y2}")
-            
-            # Final validation: ensure minimum crop size
-            min_width = 50  # Minimum width for meaningful OCR
-            min_height = 20  # Minimum height for meaningful OCR
-            
-            if y2 - y1 < min_height or x2 - x1 < min_width:
-                self.logger.warning(f"Crop too small ({x2-x1}x{y2-y1}), returning original frame")
-                return frame
-                
-            cropped = frame[y1:y2, x1:x2]
-            return cropped
-            
+                # Find maximum confidence among high-confidence results
+                max_conf = max(r['confidence'] for r in high_conf_results)
+
+                # Get all with max confidence
+                max_conf_results = [r for r in high_conf_results if r['confidence'] == max_conf]
+
+                # If multiple tied, prefer longest text
+                best = max(max_conf_results, key=lambda x: len(x['text']))
+
+                self.logger.debug(f"Multi-crop: Selected from {len(high_conf_results)} high-conf results (max_conf={max_conf:.3f})")
+
+            self.logger.info(f"Multi-crop result: '{best['text']}' at crop={best['right_x']}px (conf={best['confidence']:.3f}, width={best['width']}px)")
+
+            return best['right_x']
+
         except Exception as e:
-            self.logger.error(f"Intelligent crop error: {e}")
-            return frame
-    
+            self.logger.error(f"Multi-crop OCR error: {e}")
+            return None
+
     def _advanced_preprocess_for_ocr(self, frame: np.ndarray) -> np.ndarray:
         """Advanced OCR preprocessing based on tuned parameters"""
         try:
@@ -878,9 +950,7 @@ class FrameProcessor:
         import re
         cleaned = re.sub(r'[^a-zA-Z0-9_\-.]', '', text)
 
-        # Validate length (Twitch usernames are 4-25 characters)
-        if 4 <= len(cleaned) <= 25:
-            return cleaned
+        return cleaned
 
         return None
     

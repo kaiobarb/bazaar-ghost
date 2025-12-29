@@ -27,7 +27,7 @@ fi
 
 # Database connection strings
 # Using transaction mode pooler (port 6543) for IPv4 compatibility
-PROD_DB_URL="postgresql://postgres.dzklnkhayqmwldnjxywr:${PROD_DB_PASSWORD}@aws-0-us-east-1.pooler.supabase.com:6543/postgres"
+PROD_DB_URL="postgresql://postgres.dzklnkhayqmwldnjxywr:${PROD_DB_PASSWORD}@aws-1-us-east-2.pooler.supabase.com:6543/postgres"
 DEV_DB_URL="postgresql://postgres.lcqtbxpdiskkssvspnku:${DEV_DB_PASSWORD}@aws-0-us-west-2.pooler.supabase.com:6543/postgres"
 
 echo -e "${YELLOW}════════════════════════════════════════════════════════════════${NC}"

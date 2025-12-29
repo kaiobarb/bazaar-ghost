@@ -82,31 +82,30 @@ class RightEdgeDetector:
         try:
             # Perform template matching with mask if available
             if self.mask is not None:
-                # Use TM_SQDIFF with mask - lower scores are better (non-normalized)
-                result = cv2.matchTemplate(frame, self.template, cv2.TM_SQDIFF, mask=self.mask)
+                # Use TM_CCOEFF_NORMED with mask - higher scores are better (normalized 0-1)
+                result = cv2.matchTemplate(frame, self.template, cv2.TM_CCOEFF_NORMED, mask=self.mask)
             else:
                 # No mask, use regular matching
-                result = cv2.matchTemplate(frame, self.template, cv2.TM_SQDIFF)
+                result = cv2.matchTemplate(frame, self.template, cv2.TM_CCOEFF_NORMED)
 
             min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
 
-            # For SQDIFF (non-normalized), lower scores are better matches
-            # Normalize to 0-1 range: perfect match = 0, worst = very high value
-            # Use a scaling factor based on template size
-            template_pixels = self.template.shape[0] * self.template.shape[1] * self.template.shape[2]
-            max_possible_diff = template_pixels * 255 * 255  # Max squared difference per pixel
-            normalized_score = min_val / max_possible_diff
-            confidence = 1.0 - min(normalized_score, 1.0)  # Clamp to [0, 1]
+            # For TM_CCOEFF_NORMED, higher scores are better matches
+            # Returns absolute similarity in range [0, 1] where:
+            #   1.0 = perfect match
+            #   0.0 = no correlation
+            #   <0.0 = negative correlation (rare, usually means very poor match)
+            confidence = max_val  # Already normalized to [0, 1]
 
             # Check if match exceeds threshold
             if confidence >= threshold:
                 # Calculate right edge x-coordinate
                 template_width = self.template.shape[1]
-                right_edge_x = min_loc[0] + template_width  # Use min_loc for SQDIFF
+                right_edge_x = max_loc[0] + template_width  # Use max_loc for TM_CCOEFF_NORMED
 
                 self.logger.debug(
                     f"Right edge detected at x={right_edge_x} "
-                    f"(template at {min_loc[0]}), confidence={confidence:.3f}"
+                    f"(template at {max_loc[0]}), confidence={confidence:.3f}"
                 )
                 return right_edge_x, confidence
             else:
@@ -147,10 +146,11 @@ class RightEdgeDetector:
 
             # Find the y position (from the match location)
             if self.mask is not None:
-                result = cv2.matchTemplate(frame, self.template, cv2.TM_SQDIFF, mask=self.mask)
+                result = cv2.matchTemplate(frame, self.template, cv2.TM_CCOEFF_NORMED, mask=self.mask)
             else:
-                result = cv2.matchTemplate(frame, self.template, cv2.TM_SQDIFF)
-            _, _, min_loc, _ = cv2.minMaxLoc(result)
+                result = cv2.matchTemplate(frame, self.template, cv2.TM_CCOEFF_NORMED)
+            _, _, _, max_loc = cv2.minMaxLoc(result)
+            min_loc = max_loc  # Use max_loc for TM_CCOEFF_NORMED (higher is better)
 
             cv2.rectangle(vis,
                          (template_x, min_loc[1]),

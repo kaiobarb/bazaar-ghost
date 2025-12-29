@@ -57,11 +57,13 @@ jobs:
       video_fps: ${{ steps.check.outputs.video_fps }}
 
     steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Install streamlink
-        if: ${{ !inputs.local }}
-        run: |
-          sudo apt-get update && sudo apt-get install -y streamlink
-          streamlink --version
+        run: pip install streamlink
 
       - name: Check VOD availability and quality
         if: ${{ !inputs.local }}
@@ -260,12 +262,6 @@ jobs:
       fail-fast: false
 
     steps:
-      - name: Workflow Telemetry
-        if: ${{ !inputs.local }}
-        uses: catchpoint/workflow-telemetry-action@v2.0.0
-        with:
-          theme: dark
-
       - name: Checkout repository
         if: ${{ !inputs.local }}
         uses: actions/checkout@v4
@@ -290,8 +286,9 @@ jobs:
         id: sfot
         timeout-minutes: 25
         run: |
-          # Create output directory
+          # Create output directory with write permissions for container user (UID 1000)
           mkdir -p ./output
+          chmod 777 ./output
 
           # Set quality and FPS (use defaults for local testing if check-vod was skipped)
           QUALITY="${{ needs.check-vod.outputs.quality }}"
@@ -347,6 +344,62 @@ jobs:
             echo "Chunk ${{ matrix.chunk_id }} failed with exit code: $DOCKER_EXIT_CODE"
             exit $DOCKER_EXIT_CODE
           fi
+
+      - name: Generate workflow summary
+        if: success()
+        run: |
+          # Check if detection summary file exists for this chunk
+          SUMMARY_FILE="./output/detections_${{ matrix.chunk_id }}.json"
+
+          if [ ! -f "$SUMMARY_FILE" ]; then
+            echo "No detection summary found for chunk ${{ matrix.chunk_id }}"
+            echo "## Chunk ${{ matrix.chunk_id }}" >> $GITHUB_STEP_SUMMARY
+            echo "No detections found in this chunk." >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+
+          # Parse detection summary
+          SUMMARY=$(cat "$SUMMARY_FILE")
+          CHUNK_ID=$(echo "$SUMMARY" | jq -r '.chunk_id')
+          VOD_ID=$(echo "$SUMMARY" | jq -r '.vod_id')
+          STREAMER=$(echo "$SUMMARY" | jq -r '.streamer')
+          QUALITY=$(echo "$SUMMARY" | jq -r '.quality')
+          FRAMES=$(echo "$SUMMARY" | jq -r '.frames_processed')
+          MATCHUPS=$(echo "$SUMMARY" | jq -r '.matchups_found')
+          START_TIME=$(echo "$SUMMARY" | jq -r '.start_time')
+          END_TIME=$(echo "$SUMMARY" | jq -r '.end_time')
+
+          # Calculate duration
+          DURATION=$((END_TIME - START_TIME))
+
+          # Format timestamp for readability
+          START_HMS=$(date -u -d "@${START_TIME}" +%H:%M:%S 2>/dev/null || echo "${START_TIME}s")
+          END_HMS=$(date -u -d "@${END_TIME}" +%H:%M:%S 2>/dev/null || echo "${END_TIME}s")
+
+          # Generate markdown summary
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## Chunk ${{ matrix.chunk_id }} Results
+
+          **VOD:** [${VOD_ID}](https://www.twitch.tv/videos/${VOD_ID}) (${STREAMER})
+          **Time Range:** ${START_HMS} - ${END_HMS} (${DURATION}s)
+          **Quality:** ${QUALITY}
+          **Frames Processed:** ${FRAMES}
+          **Matchups Detected:** ${MATCHUPS}
+
+          ### All Detected Usernames
+
+          | Timestamp | Username | Confidence | Rank | Image |
+          |-----------|----------|------------|------|-------|
+          EOF
+
+          # Get source_id for image URLs
+          SOURCE_ID=$(echo "$SUMMARY" | jq -r '.vod_id')
+
+          # Add each detection as a table row with link to image in Supabase storage
+          echo "$SUMMARY" | jq -r --arg sid "$SOURCE_ID" --arg base_url "$SUPABASE_URL" '.detections[] | "| \(.timestamp)s | \(.username) | \(.confidence * 100 | floor)% | \(.rank) | [view](\($base_url)/storage/v1/object/public/detections/\($sid)/\(.timestamp).jpg) |"' >> $GITHUB_STEP_SUMMARY
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
 
       - name: Update VOD status to failed
         if: failure()
