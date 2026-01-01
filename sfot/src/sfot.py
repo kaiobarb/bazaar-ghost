@@ -14,7 +14,6 @@ import time
 import json
 import logging
 import math
-import io
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Tuple, List
 import yaml
@@ -28,6 +27,11 @@ load_dotenv()
 from frame_processor import FrameProcessor
 from supabase_client import SupabaseClient
 from json_logger import JSONFormatter
+from telemetry import (
+    init_telemetry, create_span, record_counter, record_histogram,
+    extract_trace_context, set_span_attribute, add_span_event,
+    shutdown_telemetry
+)
 
 # Quality configuration mapping for test mode
 QUALITY_CONFIGS = {
@@ -86,8 +90,6 @@ class SFOTProcessor:
         self.ffmpeg_proc: Optional[subprocess.Popen] = None
         self.frames_processed = 0
         self.matchups_found = 0
-        self.last_update_time = time.time()
-        self.frames_at_last_update = 0
         self.result_batch = []  # Current batch being accumulated
         self.all_detections = []  # All detections for summary export
 
@@ -96,6 +98,9 @@ class SFOTProcessor:
 
         # Setup logging
         self._setup_logging()
+
+        # Initialize OpenTelemetry
+        self._init_telemetry()
 
         # Register signal handlers
         signal.signal(signal.SIGTERM, self._handle_shutdown)
@@ -184,22 +189,53 @@ class SFOTProcessor:
         # JSON formatter
         formatter = JSONFormatter()
 
-        # Console handler
+        # Console handler (stdout for docker logs / GitHub Actions)
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setFormatter(formatter)
         self.logger.addHandler(console_handler)
 
-        # String buffer handler to capture logs for upload
-        self.log_buffer = io.StringIO()
-        buffer_handler = logging.StreamHandler(self.log_buffer)
-        buffer_handler.setFormatter(formatter)
-        self.logger.addHandler(buffer_handler)
-
-        # Add VOD context to all logs
+        # Add context to all logs for Grafana/Loki queryability
+        # Note: environment comes from OpenTelemetry resource attributes, not here
+        self.environment = os.getenv('ENVIRONMENT', 'production')
         self.logger = logging.LoggerAdapter(self.logger, {
             'vod_id': self.vod_id,
+            'chunk_id': self.chunk_id,
+            'streamer': self.streamer,
+            'quality': self.formatted_quality,
         })
-    
+
+    def _init_telemetry(self):
+        """Initialize OpenTelemetry for distributed tracing and metrics"""
+        # Initialize telemetry (will be no-op if OTEL_EXPORTER_OTLP_ENDPOINT not set)
+        telemetry_enabled = init_telemetry(
+            service_name="sfot",
+            environment=self.environment
+        )
+
+        if telemetry_enabled:
+            self.logger.info("OpenTelemetry initialized successfully")
+        else:
+            self.logger.info("OpenTelemetry disabled (OTEL_EXPORTER_OTLP_ENDPOINT not set)")
+
+        # Extract trace context if provided (propagated from GitHub Actions via process-vod edge function)
+        trace_parent = os.getenv("TRACEPARENT")
+        if trace_parent:
+            self.trace_context = extract_trace_context({"traceparent": trace_parent})
+            self.logger.info(f"Trace context extracted from TRACEPARENT: {trace_parent[:50]}...")
+        else:
+            self.trace_context = None
+
+        # Common span attributes for this chunk
+        self.span_attributes = {
+            "vod.id": self.vod_id,
+            "chunk.id": self.chunk_id,
+            "streamer": self.streamer,
+            "quality": self.formatted_quality,
+            "profile.name": self.profile.get('profile_name', 'default'),
+            "start_seconds": self.start_time,
+            "end_seconds": self.end_time,
+        }
+
     def _handle_shutdown(self, signum, frame):
         """Handle shutdown signals gracefully"""
         self.logger.info(f"Received signal {signum}, initiating shutdown")
@@ -213,97 +249,143 @@ class SFOTProcessor:
         if self.old_templates:
             self.logger.info("Using small templates (underscore-prefixed) for older VOD processing")
 
-        try:
-            # Always clean up existing detections and images when rerunning a chunk
-            # This ensures clean slate whether chunk was completed, failed, or partially processed
-            self.logger.info(f"Cleaning up any existing detections for chunk {self.chunk_id} (status: {self.initial_status})...")
-            deleted_count = self.supabase.delete_chunk_detections(self.chunk_id)
-            if deleted_count > 0:
-                self.logger.info(f"Deleted {deleted_count} existing detections and their images for clean reprocessing")
-            else:
-                self.logger.info(f"No existing detections found for chunk {self.chunk_id}")
+        # Track processing time for metrics
+        processing_start_time = time.time()
 
-            # Update chunk status to processing with quality info
-            self.supabase.update_chunk(
-                self.chunk_id,
-                'processing',
-                quality=self.formatted_quality
-            )
-
-            # Start worker threads
-            threads = [
-                threading.Thread(target=self.streamlink_worker, name="streamlink"),
-                threading.Thread(target=self.ffmpeg_worker, name="ffmpeg"),
-                threading.Thread(target=self.opencv_worker, name="opencv"),
-                threading.Thread(target=self.result_worker, name="results"),
-                threading.Thread(target=self.progress_monitor_worker, name="progress_monitor")
-            ]
-
-            for thread in threads:
-                thread.start()
-
-            # Wait for completion or shutdown
-            for thread in threads:
-                thread.join(timeout=self.config['processing']['timeout'])
-
-            # Final status update - check if we completed successfully
-            # If shutdown was set but we processed frames successfully, it's completion
-            if self.frames_processed > 0 and self.shutdown.is_set():
-                status = 'completed'
-            elif not self.shutdown.is_set():
-                status = 'completed'
-            else:
-                status = 'interrupted'
-            self.logger.info(f"Processing {status}: {self.frames_processed} frames, {self.matchups_found} matchups")
-
-            # Update chunk with final status
-            if status == 'completed':
-                self.supabase.update_chunk(
-                    self.chunk_id,
-                    'completed',
-                    frames_processed=self.frames_processed,
-                    detections_count=self.matchups_found,
-                    quality=self.formatted_quality
-                )
-            else:
-                # Set back to pending if interrupted
-                self.supabase.update_chunk(
-                    self.chunk_id,
-                    'pending',
-                    error=f"Processing interrupted after {self.frames_processed} frames",
-                    frames_processed=self.frames_processed,
-                    detections_count=self.matchups_found,
-                    quality=self.formatted_quality
-                )
-
-            # Export detection summary for GitHub Actions workflow
-            self.export_detection_summary()
-
-            return {
-                'status': status,
-                'frames_processed': self.frames_processed,
-                'matchups_found': self.matchups_found,
-                'vod_id': self.vod_id,
-                'start_time': self.start_time,
-                'end_time': self.end_time,
-                'quality': self.quality
-            }
-
-        except Exception as e:
-            self.logger.error(f"Processing failed: {e}", exc_info=True)
-            # Update chunk status to failed with error message
+        # Wrap entire processing in a root span
+        with create_span("process_chunk", attributes=self.span_attributes) as root_span:
             try:
+                # Always clean up existing detections and images when rerunning a chunk
+                # This ensures clean slate whether chunk was completed, failed, or partially processed
+                self.logger.info(f"Cleaning up any existing detections for chunk {self.chunk_id} (status: {self.initial_status})...")
+                deleted_count = self.supabase.delete_chunk_detections(self.chunk_id)
+                if deleted_count > 0:
+                    self.logger.info(f"Deleted {deleted_count} existing detections and their images for clean reprocessing")
+                else:
+                    self.logger.info(f"No existing detections found for chunk {self.chunk_id}")
+
+                # Update chunk status to processing with quality info
                 self.supabase.update_chunk(
                     self.chunk_id,
-                    'failed',
-                    error=f"Processing failed: {str(e)}",
+                    'processing',
                     quality=self.formatted_quality
                 )
-            except Exception as update_error:
-                self.logger.error(f"Failed to update chunk status on error: {update_error}")
-            raise
-        finally:
-            self.cleanup()
+
+                # Start worker threads
+                threads = [
+                    threading.Thread(target=self.streamlink_worker, name="streamlink"),
+                    threading.Thread(target=self.ffmpeg_worker, name="ffmpeg"),
+                    threading.Thread(target=self.opencv_worker, name="opencv"),
+                    threading.Thread(target=self.result_worker, name="results"),
+                ]
+
+                for thread in threads:
+                    thread.start()
+
+                # Wait for completion or shutdown
+                for thread in threads:
+                    thread.join(timeout=self.config['processing']['timeout'])
+
+                # Final status update - check if we completed successfully
+                # If shutdown was set but we processed frames successfully, it's completion
+                if self.frames_processed > 0 and self.shutdown.is_set():
+                    status = 'completed'
+                elif not self.shutdown.is_set():
+                    status = 'completed'
+                else:
+                    status = 'interrupted'
+
+                # Record telemetry metrics
+                duration_ms = (time.time() - processing_start_time) * 1000
+
+                # Structured event for chunk completion
+                self.logger.info(
+                    "chunk_finished",
+                    extra={
+                        'event': 'chunk_finished',
+                        'status': status,
+                        'frames_processed': self.frames_processed,
+                        'matchups_found': self.matchups_found,
+                        'duration_ms': round(duration_ms, 2),
+                        'fps': round(self.frames_processed / (duration_ms / 1000), 2) if duration_ms > 0 else 0,
+                    }
+                )
+                metric_attrs = {
+                    "streamer": self.streamer or "unknown",
+                }
+
+                if status == 'completed':
+                    record_counter("chunks_completed", 1, metric_attrs)
+                else:
+                    record_counter("chunks_failed", 1, metric_attrs)
+
+                record_histogram("processing_duration", duration_ms, metric_attrs)
+
+                if duration_ms > 0:
+                    fps = self.frames_processed / (duration_ms / 1000)
+                    record_histogram("frame_processing_rate", fps, metric_attrs)
+
+                # Set span attributes with final results
+                if root_span:
+                    root_span.set_attribute("frames.processed", self.frames_processed)
+                    root_span.set_attribute("matchups.found", self.matchups_found)
+                    root_span.set_attribute("duration.ms", duration_ms)
+                    root_span.set_attribute("status", status)
+
+                # Update chunk with final status
+                if status == 'completed':
+                    self.supabase.update_chunk(
+                        self.chunk_id,
+                        'completed',
+                        frames_processed=self.frames_processed,
+                        detections_count=self.matchups_found,
+                        quality=self.formatted_quality
+                    )
+                else:
+                    # Set back to pending if interrupted
+                    self.supabase.update_chunk(
+                        self.chunk_id,
+                        'pending',
+                        error=f"Processing interrupted after {self.frames_processed} frames",
+                        frames_processed=self.frames_processed,
+                        detections_count=self.matchups_found,
+                        quality=self.formatted_quality
+                    )
+
+                # Export detection summary for GitHub Actions workflow
+                self.export_detection_summary()
+
+                return {
+                    'status': status,
+                    'frames_processed': self.frames_processed,
+                    'matchups_found': self.matchups_found,
+                    'vod_id': self.vod_id,
+                    'start_time': self.start_time,
+                    'end_time': self.end_time,
+                    'quality': self.quality
+                }
+
+            except Exception as e:
+                self.logger.error(f"Processing failed: {e}", exc_info=True)
+                # Record failure metric
+                record_counter("chunks_failed", 1, {
+                    "streamer": self.streamer or "unknown",
+                    "quality": self.formatted_quality,
+                    "error_type": type(e).__name__,
+                })
+                # Update chunk status to failed with error message
+                try:
+                    self.supabase.update_chunk(
+                        self.chunk_id,
+                        'failed',
+                        error=f"Processing failed: {str(e)}",
+                        quality=self.formatted_quality
+                    )
+                except Exception as update_error:
+                    self.logger.error(f"Failed to update chunk status on error: {update_error}")
+                raise
+            finally:
+                self.cleanup()
     
     def streamlink_worker(self):
         """Worker to run streamlink and pipe output to FFmpeg"""
@@ -544,6 +626,9 @@ class SFOTProcessor:
     def opencv_worker(self):
         """Worker to process frames with OpenCV"""
         self.logger.info("OpenCV worker starting...")
+        metric_attrs = {
+            "streamer": self.streamer or "unknown",
+        }
         try:
             while not self.shutdown.is_set():
                 try:
@@ -555,28 +640,44 @@ class SFOTProcessor:
                     seconds_per_sampled_frame = 1 / sampling_rate if sampling_rate > 0 else 0
                     timestamp = self.start_time + int(self.frames_processed * seconds_per_sampled_frame)
                     result = self.frame_processor.process_frame(
-                        frame_data, 
+                        frame_data,
                         timestamp,
                         self.vod_id,
                         self.chunk_id
                     )
-                    
-                    self.frames_processed += 1
 
-                    # Log every frame processed
-                    # self.logger.debug(f"Processed frame {self.frames_processed} at {timestamp}s")
+                    self.frames_processed += 1
+                    record_counter("frames_processed", 1, metric_attrs)
 
                     # If matchup detected, add to result queue
                     if result and result.get('is_matchup'):
                         self.result_queue.put(result)
                         self.matchups_found += 1
-                        self.logger.info(f"Matchup detected at {timestamp}s")
-                        
+                        # Structured event for Loki queryability
+                        self.logger.info(
+                            "matchup_detected",
+                            extra={
+                                'event': 'matchup_detected',
+                                'timestamp_seconds': timestamp,
+                                'username': result.get('username'),
+                                'ocr_confidence': result.get('confidence'),
+                                'emblem_rank': result.get('detected_rank'),
+                                'truncated': result.get('truncated', False),
+                            }
+                        )
+
+                        # Record matchup detection
+                        record_counter("matchups_detected", 1, metric_attrs)
+
+                        # Record OCR confidence histogram
+                        if result.get('confidence'):
+                            record_histogram("ocr_confidence", result['confidence'], metric_attrs)
+
                 except queue.Empty:
                     continue
                 except Exception as e:
                     self.logger.error(f"Frame processing error: {e}")
-                    
+
         except Exception as e:
             self.logger.error(f"OpenCV worker failed: {e}")
             self.shutdown.set()
@@ -616,42 +717,6 @@ class SFOTProcessor:
                 self.logger.info(f"Flushing final batch of {len(self.result_batch)} detections")
                 self.supabase.upload_batch(self.result_batch)
                 self.result_batch = []
-
-    def progress_monitor_worker(self):
-        """Worker to log progress updates every 10 seconds"""
-        self.logger.info("Progress monitor starting...")
-        update_interval = 10.0  # seconds
-
-        try:
-            while not self.shutdown.is_set():
-                # Wait for the update interval or until shutdown
-                if self.shutdown.wait(update_interval):
-                    break
-
-                # Calculate progress metrics
-                current_time = time.time()
-                time_elapsed = current_time - self.last_update_time
-                frames_since_update = self.frames_processed - self.frames_at_last_update
-
-                # Calculate processing rate
-                if time_elapsed > 0:
-                    fps = frames_since_update / time_elapsed
-                else:
-                    fps = 0.0
-
-                # Log progress update
-                self.logger.info(
-                    f"Progress: Processed {self.frames_processed} frames, "
-                    f"{self.matchups_found} matchups detected, "
-                    f"{frames_since_update} frames since last update ({fps:.1f} fps)"
-                )
-
-                # Update tracking variables
-                self.last_update_time = current_time
-                self.frames_at_last_update = self.frames_processed
-
-        except Exception as e:
-            self.logger.error(f"Progress monitor failed: {e}")
 
     def export_detection_summary(self, output_dir: str = "/app/output"):
         """Export detection summary for GitHub Actions workflow summary
@@ -735,45 +800,11 @@ class SFOTProcessor:
             except queue.Empty:
                 break
 
+        # Flush and shutdown telemetry before exit
+        self.logger.info("Flushing telemetry...")
+        shutdown_telemetry()
+
         self.logger.info("Cleanup completed")
-
-        # Upload logs to storage
-        try:
-            self.upload_logs()
-        except Exception as e:
-            print(f"Failed to upload logs: {e}", file=sys.stderr)
-
-    def upload_logs(self):
-        """Upload captured logs to Supabase storage"""
-        try:
-            # Flush any remaining logs - access the underlying logger from the adapter
-            underlying_logger = self.logger.logger if hasattr(self.logger, 'logger') else self.logger
-            for handler in underlying_logger.handlers:
-                handler.flush()
-
-            # Get log contents from buffer
-            log_contents = self.log_buffer.getvalue()
-            if not log_contents:
-                self.logger.warning("No logs to upload")
-                return
-
-            # Generate filename with timestamp
-            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            if self.test_mode:
-                filename = f"test/{self.quality}/{self.chunk_id}_{timestamp}.jsonl"
-            else:
-                filename = f"production/{self.chunk_id}_{timestamp}.jsonl"
-
-            # Upload to Supabase
-            self.logger.info(f"Uploading logs to storage: {filename}")
-            success = self.supabase.upload_logs(filename, log_contents)
-            if success:
-                self.logger.info(f"Logs successfully uploaded to: {filename}")
-            else:
-                self.logger.error("Failed to upload logs to storage")
-
-        except Exception as e:
-            self.logger.error(f"Failed to upload logs: {e}")
 
 
 def main():

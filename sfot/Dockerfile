@@ -29,8 +29,10 @@ COPY requirements.txt .
 
 # Faster pip installs via BuildKit cache mount, prefer wheels
 RUN --mount=type=cache,target=/root/.cache/pip \
-    python -m pip install --upgrade pip \
- && python -m pip install --prefer-binary -r requirements.txt
+      python -m pip install --upgrade pip \
+   && python -m pip install --prefer-binary -r requirements.txt \
+   && pip install opentelemetry-distro opentelemetry-exporter-otlp \
+   && opentelemetry-bootstrap --action=install
 
 # Download Legacy-compatible Tesseract traineddata
 # The tessdata repo contains combined Legacy+LSTM models

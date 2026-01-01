@@ -9,3 +9,5 @@ supabase==2.24.0
 gotrue==2.10.0
 psutil==6.1.1
 Pillow==11.1.0
+opentelemetry-distro>=0.60b1
+opentelemetry-exporter-otlp>=1.39.1
