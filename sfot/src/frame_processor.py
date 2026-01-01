@@ -12,6 +12,7 @@ from PIL import Image
 import io
 from emblem_detector import EmblemDetector
 from right_edge_detector import RightEdgeDetector
+from telemetry import create_span, record_histogram
 class FrameProcessor:
     """Process frames for matchup detection and OCR"""
     
@@ -253,6 +254,8 @@ class FrameProcessor:
                         self.logger.info(f"No right edge detected at {timestamp}s (best conf: {right_conf:.3f}, threshold: {self.right_edge_threshold:.2f}) - possible streamer cam occlusion")
                 else:
                     self.logger.debug(f"Right edge detected at {timestamp}s, x={right_edge_x} (conf: {right_conf:.3f})")
+                    # Record right edge confidence metric
+                    record_histogram("right_edge_confidence", right_conf, {})
 
             # Remove emblem from frame for better OCR
             processed_frame = frame.copy()
@@ -402,22 +405,31 @@ class FrameProcessor:
             self.logger.warning("Emblem detector not initialized, cannot detect matchups")
             return None, None, 0.0
 
-        try:
-            # Try to detect any of the 5 rank emblems
-            rank, bbox, confidence = self.emblem_detector.detect_emblem(
-                frame,
-                threshold=self.emblem_threshold
-            )
+        with create_span("emblem_detection") as span:
+            try:
+                # Try to detect any of the 5 rank emblems
+                rank, bbox, confidence = self.emblem_detector.detect_emblem(
+                    frame,
+                    threshold=self.emblem_threshold
+                )
 
-            if rank is not None:
-                self.logger.info(f"Matchup detected via {rank} emblem at {bbox}, confidence={confidence:.3f}")
-                return rank, bbox, confidence
+                if rank is not None:
+                    self.logger.info(f"Matchup detected via {rank} emblem at {bbox}, confidence={confidence:.3f}")
+                    if span:
+                        span.set_attribute("emblem.rank", rank)
+                        span.set_attribute("emblem.confidence", confidence)
+                        span.set_attribute("emblem.detected", True)
+                    # Record emblem confidence histogram
+                    record_histogram("emblem_confidence", confidence, {"rank": rank})
+                    return rank, bbox, confidence
 
-            return None, None, 0.0
+                if span:
+                    span.set_attribute("emblem.detected", False)
+                return None, None, 0.0
 
-        except Exception as e:
-            self.logger.error(f"Emblem-first detection error: {e}")
-            return None, None, 0.0
+            except Exception as e:
+                self.logger.error(f"Emblem-first detection error: {e}")
+                return None, None, 0.0
 
     def _detect_matchup(self, frame: np.ndarray) -> Tuple[bool, float, Optional[int]]:
         """
@@ -755,48 +767,62 @@ class FrameProcessor:
             Tuple of (username, confidence, ocr_data) where confidence is 0-1 scale
             ocr_data is the full Tesseract output dict for debugging
         """
-        try:
-            # Run OCR with detailed output to get confidence scores
-            data = pytesseract.image_to_data(
-                frame,
-                lang=self.tesseract_lang,
-                config=self.tesseract_config,
-                output_type=pytesseract.Output.DICT
-            )
+        with create_span("ocr_extraction") as span:
+            try:
+                # Run OCR with detailed output to get confidence scores
+                data = pytesseract.image_to_data(
+                    frame,
+                    lang=self.tesseract_lang,
+                    config=self.tesseract_config,
+                    output_type=pytesseract.Output.DICT
+                )
 
-            # Extract text and confidence from OCR results
-            # Filter out entries with no confidence (-1) and empty strings
-            valid_words = []
-            confidences = []
+                # Extract text and confidence from OCR results
+                # Filter out entries with no confidence (-1) and empty strings
+                valid_words = []
+                confidences = []
 
-            for i, conf in enumerate(data['conf']):
-                text = data['text'][i].strip()
-                if conf != -1 and text:  # -1 means no confidence available
-                    valid_words.append(text)
-                    confidences.append(float(conf))
+                for i, conf in enumerate(data['conf']):
+                    text = data['text'][i].strip()
+                    if conf != -1 and text:  # -1 means no confidence available
+                        valid_words.append(text)
+                        confidences.append(float(conf))
 
-            if not valid_words:
-                return None, 0.0, data
+                if not valid_words:
+                    if span:
+                        span.set_attribute("ocr.text", "")
+                        span.set_attribute("ocr.confidence", 0.0)
+                        span.set_attribute("ocr.word_count", 0)
+                    return None, 0.0, data
 
-            # Join words into full text
-            text = ' '.join(valid_words)
+                # Join words into full text
+                text = ' '.join(valid_words)
 
-            # Calculate average confidence (normalized to 0-1 range)
-            avg_confidence = np.mean(confidences) / 100.0 if confidences else 0.0
+                # Calculate average confidence (normalized to 0-1 range)
+                avg_confidence = np.mean(confidences) / 100.0 if confidences else 0.0
 
-            # Log low confidence OCR results for debugging
-            if avg_confidence < 0.5:
-                self.logger.warning(f"Low OCR confidence: text='{text}', confidences={confidences}, avg={avg_confidence:.3f}")
+                # Log low confidence OCR results for debugging
+                if avg_confidence < 0.5:
+                    self.logger.warning(f"Low OCR confidence: text='{text}', confidences={confidences}, avg={avg_confidence:.3f}")
 
-            # Clean up text
-            cleaned = self._clean_username(text)
+                # Clean up text
+                cleaned = self._clean_username(text)
 
-            return cleaned, avg_confidence, data
+                # Set span attributes for tracing
+                if span:
+                    span.set_attribute("ocr.text", cleaned or "")
+                    span.set_attribute("ocr.confidence", avg_confidence)
+                    span.set_attribute("ocr.word_count", len(valid_words))
+                    span.set_attribute("ocr.raw_text", text)
 
-        except Exception as e:
-            self.logger.error(f"Username extraction error: {e}")
+                return cleaned, avg_confidence, data
 
-        return None, 0.0, None
+            except Exception as e:
+                self.logger.error(f"Username extraction error: {e}")
+                if span:
+                    span.set_attribute("ocr.error", str(e))
+
+            return None, 0.0, None
 
     def _create_ocr_visualization(self, preprocessed_frame: np.ndarray, ocr_data: dict) -> Optional[bytes]:
         """

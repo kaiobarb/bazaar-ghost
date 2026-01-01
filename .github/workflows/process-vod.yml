@@ -333,6 +333,11 @@ jobs:
             -e VIDEO_FPS="$VIDEO_FPS" \
             -e OLD_TEMPLATES="${{ inputs.old_templates }}" \
             -e SFOT_PROFILE="$SFOT_PROFILE" \
+            -e ENVIRONMENT="${{ inputs.environment }}" \
+            -e OTEL_EXPORTER_OTLP_ENDPOINT="${{ secrets.GRAFANA_OTLP_ENDPOINT }}" \
+            -e OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic ${{ secrets.GRAFANA_OTLP_AUTH }}" \
+            -e OTEL_SERVICE_NAME="sfot" \
+            -e OTEL_RESOURCE_ATTRIBUTES="deployment.environment=${{ inputs.environment }},vod.id=${{ inputs.vod_id }},chunk.id=${{ matrix.chunk_id }}" \
             bazaar-ghost-sfot
 
           DOCKER_EXIT_CODE=$?
