@@ -298,18 +298,16 @@ class SFOTProcessor:
                 # Record telemetry metrics
                 duration_ms = (time.time() - processing_start_time) * 1000
 
-                # Structured event for chunk completion
-                self.logger.info(
-                    "chunk_finished",
-                    extra={
-                        'event': 'chunk_finished',
-                        'status': status,
-                        'frames_processed': self.frames_processed,
-                        'matchups_found': self.matchups_found,
-                        'duration_ms': round(duration_ms, 2),
-                        'fps': round(self.frames_processed / (duration_ms / 1000), 2) if duration_ms > 0 else 0,
-                    }
-                )
+                # Structured JSON event for chunk completion
+                # Log as JSON so Loki can parse with | json
+                self.logger.info(json.dumps({
+                    'event': 'chunk_finished',
+                    'status': status,
+                    'frames_processed': self.frames_processed,
+                    'matchups_found': self.matchups_found,
+                    'duration_ms': round(duration_ms, 2),
+                    'fps': round(self.frames_processed / (duration_ms / 1000), 2) if duration_ms > 0 else 0,
+                }))
                 metric_attrs = {
                     "streamer": self.streamer or "unknown",
                 }
@@ -653,18 +651,16 @@ class SFOTProcessor:
                     if result and result.get('is_matchup'):
                         self.result_queue.put(result)
                         self.matchups_found += 1
-                        # Structured event for Loki queryability
-                        self.logger.info(
-                            "matchup_detected",
-                            extra={
-                                'event': 'matchup_detected',
-                                'timestamp_seconds': timestamp,
-                                'username': result.get('username'),
-                                'ocr_confidence': result.get('confidence'),
-                                'emblem_rank': result.get('detected_rank'),
-                                'truncated': result.get('truncated', False),
-                            }
-                        )
+                        # Structured JSON event for Loki queryability
+                        # Log as JSON so Loki can parse with | json
+                        self.logger.info(json.dumps({
+                            'event': 'matchup_detected',
+                            'timestamp_seconds': timestamp,
+                            'username': result.get('username'),
+                            'ocr_confidence': result.get('confidence'),
+                            'emblem_rank': result.get('detected_rank'),
+                            'truncated': result.get('truncated', False),
+                        }))
 
                         # Record matchup detection
                         record_counter("matchups_detected", 1, metric_attrs)
