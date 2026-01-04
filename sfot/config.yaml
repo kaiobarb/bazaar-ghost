@@ -24,15 +24,6 @@ right_edge_detection:
   templates_dir: "templates/"
   crop_margin_percent: 5
 
-# OCR preprocessing for easyOCR
-ocr_preprocessing:
-  scale_factor: 3.0 # Upscale before preprocessing
-  gaussian_blur: 2 # Gaussian blur kernel size (0 to disable)
-  clahe_enabled: true # Enable CLAHE contrast enhancement
-  clahe_clip: 1.4 # CLAHE clip limit
-  clahe_grid: 11 # CLAHE tile grid size
-  binary_threshold: 154 # Binary threshold value (0-255)
-  invert: true # Invert black/white after binary threshold
 
 resources:
   max_memory_mb: 512
@@ -48,14 +39,6 @@ ffmpeg:
   keyframes_only: true
   output_format: "mjpeg"
   loglevel: "warning"
-
-easyocr:
-  lang: ["en"]
-  model_storage_directory: "./models" # Pre-download models here
-  download_enabled: false
-  confidence_threshold: 0.5 # Minimum confidence to accept
-  paragraph: false # Expect single line text
-  batch_size: 1
 
 supabase:
   storage_bucket: "detections"

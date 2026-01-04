@@ -1,10 +1,10 @@
 """
-Frame processor module - Handles OpenCV detection and easyOCR
+Frame processor module - Handles OpenCV detection and PaddleOCR
 """
 
 import cv2
 import numpy as np
-import easyocr
+from paddleocr import PaddleOCR
 from typing import Optional, Dict, Any, Tuple
 import logging
 import base64
@@ -33,7 +33,9 @@ class FrameProcessor:
 
         # Store profile settings for custom edge detection
         self.profile = profile or {}
-        self.custom_edge_percent = self.profile.get('custom_edge')  # e.g., 0.80 = 80%
+        # Convert custom_edge to float if present (it may come as string from JSON)
+        custom_edge_value = self.profile.get('custom_edge')
+        self.custom_edge_percent = float(custom_edge_value) if custom_edge_value is not None else None
         self.opaque_edge = self.profile.get('opaque_edge', False)  # Default False for backward compatibility
 
         # Log custom edge settings if present
@@ -118,27 +120,22 @@ class FrameProcessor:
                 self.logger.info(f"Initialized right edge detector with {template_resolution} template (crop margin: {self.right_edge_crop_margin*100:.0f}%)")
             except Exception as e:
                 self.logger.warning(f"Could not initialize right edge detector: {e}")
-        
-        # OCR preprocessing parameters
-        self.ocr_preprocessing = config.get('ocr_preprocessing', {})
 
-        # Initialize easyOCR reader
-        easyocr_config = config.get('easyocr', {})
-        model_storage = easyocr_config.get('model_storage_directory', './models')
-
+        # Initialize PaddleOCR with mobile models (smallest footprint)
+        self.ocr_confidence_threshold = 0.5
         try:
-            self.reader = easyocr.Reader(
-                ['en'],
-                gpu=False,
-                model_storage_directory=model_storage,
-                download_enabled=False,
-                verbose=False
+            self.reader = PaddleOCR(
+                lang="en",
+                text_detection_model_name="PP-OCRv5_mobile_det",
+                text_recognition_model_name="en_PP-OCRv5_mobile_rec",
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+                text_rec_score_thresh=self.ocr_confidence_threshold
             )
-            # Set allowlist for valid username characters
-            self.reader.allowlist = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-'
-            self.logger.info(f"Initialized easyOCR reader (CPU mode) with character allowlist")
+            self.logger.info("Initialized PaddleOCR (mobile models)")
         except Exception as e:
-            self.logger.error(f"Failed to initialize easyOCR reader: {e}")
+            self.logger.error(f"Failed to initialize PaddleOCR: {e}")
             raise
 
         # Cache for performance
@@ -268,11 +265,9 @@ class FrameProcessor:
             # Simple top/bottom cropping and emblem removal
             cropped_frame = self._crop(processed_frame, emblem_bbox)
 
-            # Preprocess frame for OCR
-            preprocessed_frame = self._preprocess_for_easyocr(cropped_frame)
-
-            # Extract username via OCR using preprocessed frame (returns username, confidence, and ocr_data)
-            username, ocr_confidence, ocr_data = self._extract_usernames(preprocessed_frame)
+            # Extract username via OCR using BGR frame (PaddleOCR expects 3-channel images)
+            # PaddleOCR will handle any necessary preprocessing internally
+            username, ocr_confidence, ocr_data = self._extract_usernames(cropped_frame)
 
             # Encode the original frame (already cropped by FFmpeg)
             success, encoded = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -281,8 +276,8 @@ class FrameProcessor:
             # Create OCR debug visualization (always on matchup frames)
             debug_jpeg = None
             if ocr_data is not None:
-                # Generate OCR visualization with bounding boxes on preprocessed frame
-                debug_jpeg = self._create_ocr_visualization(preprocessed_frame, ocr_data)
+                # Generate OCR visualization with bounding boxes on cropped BGR frame
+                debug_jpeg = self._create_ocr_visualization(cropped_frame, ocr_data)
 
             # Create emblem bounding box visualization if emblem detector is available
             boxes_jpeg = None
@@ -460,78 +455,12 @@ class FrameProcessor:
             return frame
 
 
-    def _preprocess_for_easyocr(self, frame: np.ndarray) -> np.ndarray:
-        """
-        Preprocessing for easyOCR using scaling, CLAHE, blur, binary threshold, and inversion
-
-        Args:
-            frame: Input frame (BGR or grayscale)
-
-        Returns:
-            Preprocessed frame
-        """
-        try:
-            if frame is None or frame.size == 0:
-                self.logger.error("Empty frame provided to preprocessing")
-                return frame
-
-            # Convert to grayscale if needed
-            if len(frame.shape) == 3:
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            else:
-                gray = frame.copy()
-
-            # Scale factor from preset (3.0x)
-            scale_factor = self.ocr_preprocessing.get('scale_factor', 3.0)
-            scale_factor = max(1.0, min(10.0, scale_factor))  # Clamp to reasonable range
-            if scale_factor > 1.0:
-                gray = cv2.resize(gray, None, fx=scale_factor, fy=scale_factor,
-                                 interpolation=cv2.INTER_CUBIC)
-
-            # Gaussian blur for noise reduction (2px from preset)
-            gaussian_blur = self.ocr_preprocessing.get('gaussian_blur', 2)
-            gaussian_blur = max(0, min(15, gaussian_blur))  # Clamp to reasonable range
-            if gaussian_blur > 0:
-                # Ensure odd kernel size
-                kernel_size = gaussian_blur if gaussian_blur % 2 == 1 else gaussian_blur + 1
-                kernel_size = max(3, kernel_size)  # Minimum kernel size
-                gray = cv2.GaussianBlur(gray, (kernel_size, kernel_size), 0)
-
-            # CLAHE contrast enhancement
-            if self.ocr_preprocessing.get('clahe_enabled', True):
-                clahe_clip = self.ocr_preprocessing.get('clahe_clip', 1.4)
-                clahe_grid = self.ocr_preprocessing.get('clahe_grid', 11)
-                clahe_clip = max(1.0, min(10.0, clahe_clip))  # Reasonable range
-                clahe_grid = max(2, min(20, clahe_grid))  # Reasonable range
-                clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(clahe_grid, clahe_grid))
-                gray = clahe.apply(gray)
-
-            # Binary thresholding
-            binary_threshold = self.ocr_preprocessing.get('binary_threshold', 154)
-            binary_threshold = max(0, min(255, binary_threshold))  # Valid range
-            _, binary = cv2.threshold(gray, binary_threshold, 255, cv2.THRESH_BINARY)
-
-            # Invert if specified (from preset)
-            if self.ocr_preprocessing.get('invert', True):
-                binary = 255 - binary
-
-            # Final check for valid output
-            if binary is None or binary.size == 0:
-                self.logger.error("Preprocessing produced empty result")
-                return frame
-
-            return binary
-
-        except Exception as e:
-            self.logger.error(f"OCR preprocessing error: {e}")
-            return frame
-    
     def _extract_usernames(self, frame: np.ndarray) -> Tuple[Optional[str], float, Optional[dict]]:
         """
-        Extract username from preprocessed nameplate frame using easyOCR
+        Extract username from cropped nameplate frame using PaddleOCR
 
         Args:
-            frame: Preprocessed frame (grayscale, optionally upscaled)
+            frame: Cropped BGR frame (PaddleOCR requires 3-channel images)
 
         Returns:
             Tuple of (username, confidence, ocr_data) where confidence is 0-1 scale
@@ -539,14 +468,10 @@ class FrameProcessor:
         """
         with create_span("ocr_extraction") as span:
             try:
-                # Run easyOCR detection
-                results = self.reader.readtext(frame)
+                # Run PaddleOCR prediction
+                results = self.reader.predict(frame)
 
-                # results format: List[Tuple[bbox, text, confidence]]
-                # bbox: [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
-                # text: detected string
-                # confidence: 0-1 float
-
+                # Handle empty results
                 if not results:
                     if span:
                         span.set_attribute("ocr.text", "")
@@ -554,28 +479,59 @@ class FrameProcessor:
                         span.set_attribute("ocr.detection_count", 0)
                     return None, 0.0, {"detections": []}
 
-                # Strategy: Take detection with highest confidence
-                # (easyOCR typically returns one result per text region)
-                best_detection = max(results, key=lambda x: x[2])
-                bbox, text, confidence = best_detection
+                # Extract result data
+                result = results[0]
+                result_json = result.json
+                res_data = result_json.get('res', None)
+
+                if res_data is None or not res_data:
+                    if span:
+                        span.set_attribute("ocr.text", "")
+                        span.set_attribute("ocr.confidence", 0.0)
+                        span.set_attribute("ocr.detection_count", 0)
+                    return None, 0.0, {"detections": []}
+
+                # Extract recognition results from res_data
+                rec_texts = res_data.get('rec_texts', [])
+                rec_scores = res_data.get('rec_scores', [])
+                rec_polys = res_data.get('rec_polys', [])
+
+                # Handle empty detections
+                if not rec_texts:
+                    if span:
+                        span.set_attribute("ocr.text", "")
+                        span.set_attribute("ocr.confidence", 0.0)
+                        span.set_attribute("ocr.detection_count", 0)
+                    return None, 0.0, {"detections": []}
+
+                # Find text with highest confidence
+                best_idx = max(range(len(rec_scores)), key=lambda i: rec_scores[i])
+                text = rec_texts[best_idx]
+                confidence = rec_scores[best_idx]
 
                 # Clean up text
                 cleaned = self._clean_username(text)
 
-                # Build debug data structure
-                ocr_data = {
-                    "detections": [
-                        {
-                            "bbox": bbox,
-                            "text": text,
-                            "confidence": conf
-                        }
-                        for bbox, text, conf in results
-                    ]
-                }
+                # Build debug data structure (convert numpy arrays to lists)
+                ocr_data = {"detections": []}
+                for i in range(len(rec_texts)):
+                    detection = {
+                        "text": rec_texts[i],
+                        "confidence": rec_scores[i]
+                    }
+                    # Handle bbox - might be numpy array or list
+                    if i < len(rec_polys):
+                        bbox = rec_polys[i]
+                        if hasattr(bbox, 'tolist'):
+                            detection["bbox"] = bbox.tolist()
+                        else:
+                            detection["bbox"] = bbox
+                    else:
+                        detection["bbox"] = []
+                    ocr_data["detections"].append(detection)
 
                 # Log low confidence
-                if confidence < 0.5:
+                if confidence < self.ocr_confidence_threshold:
                     self.logger.warning(
                         f"Low OCR confidence: text='{text}', "
                         f"confidence={confidence:.3f}"
@@ -585,7 +541,7 @@ class FrameProcessor:
                 if span:
                     span.set_attribute("ocr.text", cleaned or "")
                     span.set_attribute("ocr.confidence", confidence)
-                    span.set_attribute("ocr.detection_count", len(results))
+                    span.set_attribute("ocr.detection_count", len(rec_texts))
                     span.set_attribute("ocr.raw_text", text)
 
                 return cleaned, confidence, ocr_data
@@ -596,23 +552,23 @@ class FrameProcessor:
                     span.set_attribute("ocr.error", str(e))
                 return None, 0.0, None
 
-    def _create_ocr_visualization(self, preprocessed_frame: np.ndarray, ocr_data: dict) -> Optional[bytes]:
+    def _create_ocr_visualization(self, frame: np.ndarray, ocr_data: dict) -> Optional[bytes]:
         """
-        Create visualization showing easyOCR bounding boxes
+        Create visualization showing PaddleOCR bounding boxes
 
         Args:
-            preprocessed_frame: The preprocessed image fed to easyOCR
-            ocr_data: easyOCR output dict with detection list
+            frame: The cropped frame passed to PaddleOCR
+            ocr_data: PaddleOCR output dict with detection list
 
         Returns:
             JPEG bytes of visualization, or None on error
         """
         try:
-            # Convert grayscale to color
-            if len(preprocessed_frame.shape) == 2:
-                vis = cv2.cvtColor(preprocessed_frame, cv2.COLOR_GRAY2BGR)
+            # Ensure color image for visualization
+            if len(frame.shape) == 2:
+                vis = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
             else:
-                vis = preprocessed_frame.copy()
+                vis = frame.copy()
 
             # Draw bounding boxes for each detection
             for detection in ocr_data.get('detections', []):
@@ -651,10 +607,10 @@ class FrameProcessor:
 
     def _generate_ocr_log(self, ocr_data: dict, timestamp: int, username: Optional[str], confidence: float) -> str:
         """
-        Generate human-readable OCR debug log for easyOCR
+        Generate human-readable OCR debug log for PaddleOCR
 
         Args:
-            ocr_data: easyOCR output dict with detection list
+            ocr_data: PaddleOCR output dict with detection list
             timestamp: Frame timestamp
             username: Detected/cleaned username
             confidence: OCR confidence (0-1)
@@ -665,7 +621,7 @@ class FrameProcessor:
         try:
             lines = []
             lines.append("=" * 60)
-            lines.append("OCR Debug Log (easyOCR)")
+            lines.append("OCR Debug Log (PaddleOCR)")
             lines.append("=" * 60)
             lines.append(f"Timestamp: {timestamp}s")
             lines.append(f"Detected Username: {username if username else '(none)'}")
@@ -694,13 +650,25 @@ class FrameProcessor:
             return f"Error generating OCR log: {e}"
     
     def _clean_username(self, text: str) -> Optional[str]:
-        """Clean and validate extracted username"""
+        """
+        Clean and validate extracted username
+        Enforces alphanumeric + dot + dash character allowlist
+        """
         if not text:
             return None
 
         # Remove non-alphanumeric characters except underscore, dash, and dot
         import re
         cleaned = re.sub(r'[^a-zA-Z0-9_\-.]', '', text)
+
+        # Additional validation: Twitch username rules
+        # - 4-25 characters
+        # - Must start with letter or number
+        if len(cleaned) < 4 or len(cleaned) > 25:
+            return None
+
+        if not cleaned[0].isalnum():
+            return None
 
         return cleaned if cleaned else None
     
