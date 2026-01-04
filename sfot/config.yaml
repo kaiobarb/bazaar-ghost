@@ -24,15 +24,15 @@ right_edge_detection:
   templates_dir: "templates/"
   crop_margin_percent: 5
 
-# OCR preprocessing based on tuned parameters
+# OCR preprocessing for easyOCR
 ocr_preprocessing:
-  scale_factor: 3.0
-  gaussian_blur: 2
-  clahe_enabled: true
-  clahe_clip: 1.4
-  clahe_grid: 11
-  binary_threshold: 154
-  invert: true
+  scale_factor: 3.0 # Upscale before preprocessing
+  gaussian_blur: 2 # Gaussian blur kernel size (0 to disable)
+  clahe_enabled: true # Enable CLAHE contrast enhancement
+  clahe_clip: 1.4 # CLAHE clip limit
+  clahe_grid: 11 # CLAHE tile grid size
+  binary_threshold: 154 # Binary threshold value (0-255)
+  invert: true # Invert black/white after binary threshold
 
 resources:
   max_memory_mb: 512
@@ -49,13 +49,13 @@ ffmpeg:
   output_format: "mjpeg"
   loglevel: "warning"
 
-tesseract:
-  lang: "eng"
-  config: "-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ_-.abcdefghijklmnopqrstuvwxyz0123456789 -c load_system_dawg=0 -c load_freq_dawg=0"
-  psm: 8 # Single Word
-  oem: 0 # Legacy performs waay better on the pre-processed frames
-  dpi: 300
-  timeout: 5
+easyocr:
+  lang: ["en"]
+  model_storage_directory: "./models" # Pre-download models here
+  download_enabled: false
+  confidence_threshold: 0.5 # Minimum confidence to accept
+  paragraph: false # Expect single line text
+  batch_size: 1
 
 supabase:
   storage_bucket: "detections"

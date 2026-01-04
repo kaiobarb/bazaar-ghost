@@ -53,10 +53,6 @@ class SFOTProcessor:
         self.method = config.get('method', 'template')
         self.video_fps = config.get('video_fps', 30)  # Actual video FPS
 
-        # Format quality string with FPS suffix for database storage
-        # Streamlink/Twitch returns quality as "480p", "720p", "1080p" for 30fps, but appends "60"
-        # if it is a 60fps stream.
-        # Append "60" suffix when video is 60fps to match streamlink's naming (e.g., "1080p60")
         self.formatted_quality = f"{self.quality}60" if self.video_fps == 60 else self.quality
 
         # Load configuration
@@ -93,8 +89,8 @@ class SFOTProcessor:
         self.result_batch = []  # Current batch being accumulated
         self.all_detections = []  # All detections for summary export
 
-        # Initialize frame processor with quality information, test mode, and template selection
-        self.frame_processor = FrameProcessor(self.config, quality=self.quality, test_mode=self.test_mode, old_templates=self.old_templates, method=self.method, profile=self.profile)
+        # Initialize frame processor with quality information and template selection
+        self.frame_processor = FrameProcessor(self.config, quality=self.quality, old_templates=self.old_templates, method=self.method, profile=self.profile)
 
         # Setup logging
         self._setup_logging()
