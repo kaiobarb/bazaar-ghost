@@ -1,7 +1,7 @@
 """
 Frame processor module - Handles OpenCV detection and PaddleOCR
 """
-
+import os
 import cv2
 import numpy as np
 from paddleocr import PaddleOCR
@@ -16,7 +16,7 @@ from telemetry import create_span, record_histogram
 class FrameProcessor:
     """Process frames for matchup detection and OCR"""
     
-    def __init__(self, config: Dict[str, Any], quality: str = "480p", old_templates: bool = False, method: str = 'template', profile: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: Dict[str, Any], quality: str = "480p", old_templates: bool = False, profile: Optional[Dict[str, Any]] = None):
         """Initialize frame processor with configuration
 
         Args:
@@ -29,7 +29,6 @@ class FrameProcessor:
         self.quality = quality
         self.old_templates = old_templates
         self.logger = logging.getLogger('sfot.frame_processor')
-        self.method = method
 
         # Store profile settings for custom edge detection
         self.profile = profile or {}
@@ -70,31 +69,17 @@ class FrameProcessor:
             try:
                 emblem_config = config['emblem_detection']
                 templates_dir = emblem_config.get('templates_dir', 'templates/')
-
-                # Get feature resolution for AKAZE (optional)
-                feature_resolution = emblem_config.get('akaze_feature_resolution') if method == 'akaze' else None
-
-                # Initialize detector with method and optional feature resolution
-                # Use TM_CCOEFF_NORMED for better discrimination against gameplay UI
                 template_method = emblem_config.get('template_method', 'TM_CCOEFF_NORMED')
+                self.emblem_threshold = emblem_config.get('template_threshold', 0.5)
+
                 self.emblem_detector = EmblemDetector(
                     templates_dir,
                     resolution=template_resolution,
-                    method=method,
-                    feature_resolution=feature_resolution,
                     old_templates=self.old_templates,
                     template_method=template_method
                 )
 
-                # Set threshold based on method
-                if method == 'akaze':
-                    self.emblem_threshold = emblem_config.get('akaze_threshold', 0.30)
-                elif method == 'template':
-                    self.emblem_threshold = emblem_config.get('template_threshold', 0.80)
-                else:
-                    self.emblem_threshold = 0.30  # fallback
-
-                self.logger.info(f"Initialized emblem detector with {template_resolution} templates using {method} method (threshold={self.emblem_threshold})")
+                self.logger.info(f"Initialized emblem detector with {template_resolution} templates (threshold={self.emblem_threshold})")
 
                 # Log template dimensions for debugging
                 if hasattr(self.emblem_detector, 'templates'):
@@ -125,7 +110,6 @@ class FrameProcessor:
         self.ocr_confidence_threshold = 0.5
         try:
             self.reader = PaddleOCR(
-                lang="en",
                 text_detection_model_name="PP-OCRv5_mobile_det",
                 text_recognition_model_name="en_PP-OCRv5_mobile_rec",
                 use_doc_orientation_classify=False,
@@ -172,40 +156,6 @@ class FrameProcessor:
             if emblem_bbox is None:
                 self.logger.info(f"Rejecting detection at {timestamp}s: emblem detected but bbox is None")
                 return None
-
-            # Validate emblem bounding box position and size
-            if emblem_bbox and self.method != 'template':
-                x, y, w, h = emblem_bbox
-                frame_h, frame_w = frame.shape[:2]
-
-                # Check 0: Bounding box dimensions must be positive
-                if w <= 0 or h <= 0:
-                    self.logger.info(f"Rejecting detection at {timestamp}s: invalid bbox dimensions (w={w}, h={h})")
-                    return None
-
-                # Calculate centroid (allow bbox to extend slightly off-frame)
-                centroid_x = x + w / 2
-                centroid_y = y + h / 2
-
-                # Check 1: Centroid must be within frame boundaries
-                if centroid_x < 0 or centroid_x >= frame_w or centroid_y < 0 or centroid_y >= frame_h:
-                    self.logger.info(f"Rejecting detection at {timestamp}s: centroid outside frame (centroid={centroid_x:.1f},{centroid_y:.1f}, frame={frame_w}x{frame_h})")
-                    return None
-
-                # Check 2: Centroid must be vertically centered (within middle 60% of frame height)
-                # This allows for slight vertical offset but rejects wildly misplaced detections
-                min_y = frame_h * 0.20  # Top 20% margin
-                max_y = frame_h * 0.80  # Bottom 20% margin
-                if centroid_y < min_y or centroid_y > max_y:
-                    self.logger.info(f"Rejecting detection at {timestamp}s: centroid not vertically centered (y={centroid_y:.1f}, valid range={min_y:.1f}-{max_y:.1f})")
-                    return None
-
-                # Check 3: Emblem height must be reasonable (at least 80% of frame height)
-                # Reduced from 90% to allow for some variation in template size
-                min_height = frame_h * 0.80
-                if h < min_height:
-                    self.logger.info(f"Rejecting detection at {timestamp}s: emblem too short (h={h:.1f}, min={min_height:.1f})")
-                    return None
 
             # Check minimum interval
             if timestamp - self.last_matchup_time < self.min_matchup_interval:

@@ -6,6 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONUNBUFFERED=1
 
+
 # OS deps (cache apt metadata; no dev pkgs)
 RUN --mount=type=cache,target=/var/cache/apt \
     --mount=type=cache,target=/var/lib/apt/lists \
@@ -32,8 +33,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
    && pip install opentelemetry-distro opentelemetry-exporter-otlp \
    && opentelemetry-bootstrap --action=install
 
-# Pre-download PaddleOCR mobile models (smallest footprint)
-RUN python -c "from paddleocr import PaddleOCR; PaddleOCR(lang='en', text_detection_model_name='PP-OCRv5_mobile_det', text_recognition_model_name='en_PP-OCRv5_mobile_rec', use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False); print('PaddleOCR mobile models downloaded')"
+# Pre-download PaddleOCR mobile models
+RUN python -c "from paddleocr import PaddleOCR; PaddleOCR(lang='en', text_detection_model_name='PP-OCRv5_mobile_det', text_recognition_model_name='en_PP-OCRv5_mobile_rec', use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False)"
 
 # Copy the rest (use --chown to avoid a later chown layer)
 COPY --chown=1000:1000 config.yaml .
@@ -43,7 +44,8 @@ COPY --chown=1000:1000 templates/ ./templates/
 # Create health file and set up user permissions
 RUN echo "ok" > /app/health && \
     useradd -m -u 1000 sfot && \
-    chown -R sfot:sfot /app
+    cp -r /root/.paddlex /home/sfot/.paddlex && \
+    chown -R sfot:sfot /app /home/sfot/.paddlex
 
 # Switch to non-root user
 USER sfot

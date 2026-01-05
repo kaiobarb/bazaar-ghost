@@ -19,9 +19,10 @@ from typing import Optional, Dict, Any, Tuple, List
 import yaml
 import numpy as np
 from dotenv import load_dotenv
-
+# skips connectivity check to the paddle OCR model hoster (models are pre-downloaded)
+os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
 # Load environment variables
-load_dotenv()
+load_dotenv(".env.local")
 
 # Import worker modules
 from frame_processor import FrameProcessor
@@ -50,7 +51,6 @@ class SFOTProcessor:
         self.test_mode = config.get('test_mode', False)
         self.quality = config.get('quality', '480p')
         self.old_templates = config.get('old_templates', False)
-        self.method = config.get('method', 'template')
         self.video_fps = config.get('video_fps', 30)  # Actual video FPS
 
         self.formatted_quality = f"{self.quality}60" if self.video_fps == 60 else self.quality
@@ -90,7 +90,7 @@ class SFOTProcessor:
         self.all_detections = []  # All detections for summary export
 
         # Initialize frame processor with quality information and template selection
-        self.frame_processor = FrameProcessor(self.config, quality=self.quality, old_templates=self.old_templates, method=self.method, profile=self.profile)
+        self.frame_processor = FrameProcessor(self.config, quality=self.quality, old_templates=self.old_templates, profile=self.profile)
 
         # Setup logging
         self._setup_logging()

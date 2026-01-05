@@ -10,12 +10,9 @@ detection:
 # Emblem detection and removal configuration
 emblem_detection:
   enabled: true
-  method: "template" # Detection method: 'akaze' or 'template'
   template_method: "TM_CCOEFF_NORMED"
-  akaze_threshold: 0.45 # AKAZE: real emblems >0.52, false positives <0.03
-  template_threshold: 0.5 # Template matching: threshold for TM_CCOEFF_NORMED (was 0.70 for TM_SQDIFF_NORMED)
+  template_threshold: 0.5
   templates_dir: "templates/"
-  akaze_feature_resolution: "1080p" # Resolution to use for AKAZE feature extraction (only used when method='akaze')
 
 # Right edge detection for partial occlusion handling
 right_edge_detection:
