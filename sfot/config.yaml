@@ -10,12 +10,9 @@ detection:
 # Emblem detection and removal configuration
 emblem_detection:
   enabled: true
-  method: "template" # Detection method: 'akaze' or 'template'
   template_method: "TM_CCOEFF_NORMED"
-  akaze_threshold: 0.45 # AKAZE: real emblems >0.52, false positives <0.03
-  template_threshold: 0.5 # Template matching: threshold for TM_CCOEFF_NORMED (was 0.70 for TM_SQDIFF_NORMED)
+  template_threshold: 0.5
   templates_dir: "templates/"
-  akaze_feature_resolution: "1080p" # Resolution to use for AKAZE feature extraction (only used when method='akaze')
 
 # Right edge detection for partial occlusion handling
 right_edge_detection:
@@ -24,15 +21,6 @@ right_edge_detection:
   templates_dir: "templates/"
   crop_margin_percent: 5
 
-# OCR preprocessing based on tuned parameters
-ocr_preprocessing:
-  scale_factor: 3.0
-  gaussian_blur: 2
-  clahe_enabled: true
-  clahe_clip: 1.4
-  clahe_grid: 11
-  binary_threshold: 154
-  invert: true
 
 resources:
   max_memory_mb: 512
@@ -48,14 +36,6 @@ ffmpeg:
   keyframes_only: true
   output_format: "mjpeg"
   loglevel: "warning"
-
-tesseract:
-  lang: "eng"
-  config: "-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ_-.abcdefghijklmnopqrstuvwxyz0123456789 -c load_system_dawg=0 -c load_freq_dawg=0"
-  psm: 8 # Single Word
-  oem: 0 # Legacy performs waay better on the pre-processed frames
-  dpi: 300
-  timeout: 5
 
 supabase:
   storage_bucket: "detections"

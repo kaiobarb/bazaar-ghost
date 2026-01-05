@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug SFOT",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/sfot/src/sfot.py",
+      "cwd": "${workspaceFolder}/sfot",
+      "python": "${workspaceFolder}/.venv-scripts/bin/python3",
+      "envFile": "${workspaceFolder}/.env.local"
+    }
+  ]
+}
