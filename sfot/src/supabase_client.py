@@ -205,7 +205,7 @@ class SupabaseClient:
                                 'type': 'ocr_debug'
                             })
 
-                        # Upload emblem bounding box frame (test mode only)
+                        # Upload emblem bounding box frame
                         if 'emblem_boxes_frame' in matchup:
                             image_uploads.append({
                                 'vod_id': matchup['vod_id'],
@@ -214,16 +214,7 @@ class SupabaseClient:
                                 'type': 'emblem_boxes'
                             })
 
-                        # Upload OCR visualization frame (test mode only)
-                        if 'ocr_viz_frame' in matchup:
-                            image_uploads.append({
-                                'vod_id': matchup['vod_id'],
-                                'timestamp': matchup['timestamp'],
-                                'data': matchup['ocr_viz_frame'],
-                                'type': 'ocr_viz'
-                            })
-
-                        # Upload OCR text log (test mode only)
+                        # Upload OCR text log
                         if 'ocr_log_text' in matchup:
                             text_logs.append({
                                 'timestamp': matchup['timestamp'],
@@ -268,9 +259,6 @@ class SupabaseClient:
                 elif image_type == 'emblem_boxes':
                     # Emblem bounding box frames go in ocr_debug folder (test mode only)
                     filename = f"test/{self.quality}/{vod_id}/ocr_debug/boxes_{timestamp}.jpg"
-                elif image_type == 'ocr_viz':
-                    # OCR visualization with bounding boxes go in ocr_debug folder (test mode only)
-                    filename = f"test/{self.quality}/{vod_id}/ocr_debug/ocr_{timestamp}.jpg"
                 else:
                     # Fallback for any other debug type
                     filename = f"test/{self.quality}/{vod_id}/ocr_debug/{image_type}_{timestamp}.jpg"
