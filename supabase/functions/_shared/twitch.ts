@@ -1,6 +1,58 @@
 const TWITCH_CLIENT_ID = Deno.env.get("TWITCH_CLIENT_ID")!;
 const TWITCH_CLIENT_SECRET = Deno.env.get("TWITCH_CLIENT_SECRET")!;
 
+/**
+ * Verify Twitch EventSub webhook signature using HMAC-SHA256.
+ * See: https://dev.twitch.tv/docs/eventsub/handling-webhook-events/#verifying-the-event-message
+ */
+export async function verifyEventSubSignature(
+  messageId: string,
+  timestamp: string,
+  body: string,
+  signature: string,
+  secret: string,
+): Promise<boolean> {
+  const message = messageId + timestamp + body;
+  const encoder = new TextEncoder();
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+
+  const signatureBuffer = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    encoder.encode(message),
+  );
+
+  const expectedSignature = "sha256=" +
+    Array.from(new Uint8Array(signatureBuffer))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+
+  // Timing-safe comparison to prevent timing attacks
+  return timingSafeEqual(
+    encoder.encode(expectedSignature),
+    encoder.encode(signature),
+  );
+}
+
+/**
+ * Timing-safe string comparison to prevent timing attacks.
+ */
+function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a[i] ^ b[i];
+  }
+  return result === 0;
+}
+
 interface TwitchToken {
   access_token: string;
   expires_at: number;
@@ -343,7 +395,7 @@ export async function twitchGraphQLCall<T = any>(
   return result;
 }
 
-interface VideoChapter {
+export interface VideoChapter {
   positionMilliseconds: number;
   type: string;
   description: string;
@@ -354,7 +406,7 @@ interface VideoChapter {
   };
 }
 
-interface VODWithChapters {
+export interface VODWithChapters {
   id: string;
   title: string;
   lengthSeconds: number;
@@ -367,11 +419,13 @@ interface VODWithChapters {
 }
 
 /**
- * Fetch all VODs for a streamer with chapter data using GraphQL
- * Returns only VODs that have chapters available
+ * Fetch VODs for a streamer with chapter data using GraphQL.
+ * @param streamerLogin - Twitch login name
+ * @param numVods - Optional limit on number of VODs to fetch. If not provided, fetches all (up to 5000).
  */
 export async function getStreamerVodsWithChapters(
   streamerLogin: string,
+  numVods?: number,
 ): Promise<VODWithChapters[]> {
   const query = `
     query GetUserVideos($login: String!, $first: Int!, $after: Cursor) {
@@ -424,12 +478,16 @@ export async function getStreamerVodsWithChapters(
   const allVods: VODWithChapters[] = [];
   let cursor: string | undefined;
   let pageCount = 0;
-  const maxPages = 50; // Reasonable limit for per-streamer VODs
+
+  // If numVods specified, fetch exactly that many (max 100 per request)
+  // Otherwise, fetch all with pagination (up to 50 pages = 5000 VODs)
+  const perPage = numVods ? Math.min(numVods, 100) : 100;
+  const maxPages = numVods ? 1 : 50;
 
   do {
     const variables: { login: string; first: number; after?: string } = {
       login: streamerLogin,
-      first: 100,
+      first: perPage,
     };
 
     if (cursor) {
