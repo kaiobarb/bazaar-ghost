@@ -316,6 +316,9 @@ deno_version = 2
 
 [edge_runtime.secrets]
 SUPABASE_SECRET_KEY = "env(SUPABASE_SECRET_KEY)"
+TWITCH_EVENTSUB_SECRET = "env(TWITCH_EVENTSUB_SECRET)"
+OTEL_EXPORTER_OTLP_ENDPOINT = "env(OTEL_EXPORTER_OTLP_ENDPOINT)"
+OTEL_EXPORTER_OTLP_HEADERS= "env(OTEL_EXPORTER_OTLP_HEADERS)"
 
 [analytics]
 enabled = true
@@ -422,3 +425,5 @@ entrypoint = "./functions/ghost-bot/index.ts"
 # Specifies static files to be bundled with the function. Supports glob patterns.
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/ghost-bot/*.html" ]
+
+# [functions.eventsub-webhook] - REMOVED: EventSub webhook handling merged into process-vod
