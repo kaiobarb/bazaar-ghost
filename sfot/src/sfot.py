@@ -398,7 +398,7 @@ class SFOTProcessor:
                 'streamlink',
                 '--stream-segment-threads', '1',  # Consistent delivery
                 '--hls-segment-stream-data',      # Immediate segment write
-                '--hls-start-offset', str(timedelta(seconds=self.start_time)),
+                '--hls-start-offset', f"{self.start_time // 3600}:{(self.start_time % 3600) // 60:02d}:{self.start_time % 60:02d}",
                 '--stream-segmented-duration', str(duration),  # Use segmented duration
                 f'https://twitch.tv/videos/{self.vod_id}',
                 quality_stream + ',360p60,480p60,720p60,1080p60',
