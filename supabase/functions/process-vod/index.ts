@@ -1,11 +1,19 @@
 // Process VOD - Find and trigger processing for all pending chunks of a VOD
+// Also handles Twitch EventSub stream.offline webhooks
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
-import { supabase, verifySecretKey } from "../_shared/supabase.ts";
+import {
+  fetchAndUpsertVods,
+  supabase,
+  verifySecretKey,
+} from "../_shared/supabase.ts";
+import { verifyEventSubSignature } from "../_shared/twitch.ts";
+import { log, recordCounter } from "../_shared/telemetry.ts";
 
 const GITHUB_TOKEN = Deno.env.get("GITHUB_TOKEN")!;
 const GITHUB_OWNER = "kaiobarb";
 const GITHUB_REPO = "bazaar-ghost";
+const TWITCH_EVENTSUB_SECRET = Deno.env.get("TWITCH_EVENTSUB_SECRET")!;
 
 interface ProcessVodRequest {
   vod_id?: number | string; // Can be bigint (internal) or string
@@ -22,6 +30,22 @@ interface ProcessVodResponse {
   chunk_uuids?: string[];
   github_run_url?: string;
   error?: string;
+}
+
+// EventSub payload types
+interface EventSubPayload {
+  subscription: {
+    id: string;
+    type: string;
+    status: string;
+    condition: Record<string, string>;
+  };
+  event?: {
+    broadcaster_user_id: string;
+    broadcaster_user_login: string;
+    broadcaster_user_name: string;
+  };
+  challenge?: string;
 }
 
 async function triggerGithubWorkflow(
@@ -96,7 +120,281 @@ async function getPendingChunksForVod(
   return data || [];
 }
 
-Deno.serve(async (req) => {
+/**
+ * Handle Twitch EventSub webhook requests
+ */
+async function handleEventSubWebhook(
+  req: Request,
+  messageType: string,
+): Promise<Response> {
+  const body = await req.text();
+  const messageId = req.headers.get("Twitch-Eventsub-Message-Id");
+  const timestamp = req.headers.get("Twitch-Eventsub-Message-Timestamp");
+  const signature = req.headers.get("Twitch-Eventsub-Message-Signature");
+
+  // Record webhook received metric
+  recordCounter("eventsub.webhook.received", 1, { message_type: messageType });
+
+  // Validate required headers
+  if (!messageId || !timestamp || !signature) {
+    log("warn", "Missing EventSub headers", { messageId, timestamp, signature });
+    return new Response("Missing required headers", { status: 400 });
+  }
+
+  // Verify signature
+  if (!TWITCH_EVENTSUB_SECRET) {
+    log("error", "TWITCH_EVENTSUB_SECRET not configured");
+    return new Response("Server configuration error", { status: 500 });
+  }
+
+  const isValid = await verifyEventSubSignature(
+    messageId,
+    timestamp,
+    body,
+    signature,
+    TWITCH_EVENTSUB_SECRET,
+  );
+
+  if (!isValid) {
+    recordCounter("eventsub.signature.invalid", 1);
+    log("warn", "Invalid EventSub signature", { messageId });
+    return new Response("Invalid signature", { status: 403 });
+  }
+
+  const payload: EventSubPayload = JSON.parse(body);
+
+  // Handle webhook callback verification (challenge)
+  if (messageType === "webhook_callback_verification") {
+    log("info", "EventSub challenge verification", {
+      subscription_type: payload.subscription.type,
+    });
+    return new Response(payload.challenge, {
+      status: 200,
+      headers: { "Content-Type": "text/plain" },
+    });
+  }
+
+  // Handle subscription revocation
+  if (messageType === "revocation") {
+    log("warn", "EventSub subscription revoked", {
+      subscription_id: payload.subscription.id,
+      subscription_type: payload.subscription.type,
+      status: payload.subscription.status,
+    });
+    recordCounter("eventsub.revocation", 1, {
+      type: payload.subscription.type,
+      status: payload.subscription.status,
+    });
+    return new Response(null, { status: 204 });
+  }
+
+  // Handle notification
+  if (messageType === "notification") {
+    if (payload.subscription.type === "stream.offline" && payload.event) {
+      await processStreamOffline(payload.event);
+    } else {
+      log("info", "Received unsupported EventSub notification", {
+        type: payload.subscription.type,
+      });
+    }
+  }
+
+  return new Response(null, { status: 204 });
+}
+
+/**
+ * Process stream.offline event - fetch latest VOD and trigger processing
+ */
+async function processStreamOffline(event: {
+  broadcaster_user_id: string;
+  broadcaster_user_login: string;
+  broadcaster_user_name: string;
+}): Promise<void> {
+  const { broadcaster_user_id, broadcaster_user_login, broadcaster_user_name } =
+    event;
+
+  log("info", "Processing stream.offline event", {
+    user_id: broadcaster_user_id,
+    login: broadcaster_user_login,
+    name: broadcaster_user_name,
+  });
+
+  // 1. Look up streamer in database (try by ID first, then by login)
+  let streamer: {
+    id: number;
+    login: string;
+    display_name: string;
+    processing_enabled: boolean;
+  } | null = null;
+
+  // Try by ID first
+  const { data: streamerById } = await supabase
+    .from("streamers")
+    .select("id, login, display_name, processing_enabled")
+    .eq("id", parseInt(broadcaster_user_id))
+    .single();
+
+  if (streamerById) {
+    streamer = streamerById;
+  } else {
+    // Fallback to login lookup (useful for testing with Twitch CLI)
+    const { data: streamerByLogin } = await supabase
+      .from("streamers")
+      .select("id, login, display_name, processing_enabled")
+      .eq("login", broadcaster_user_login)
+      .single();
+    streamer = streamerByLogin;
+  }
+
+  if (!streamer) {
+    recordCounter("eventsub.stream_offline.skipped", 1, { reason: "not_found" });
+    log("info", "Streamer not found in database", {
+      user_id: broadcaster_user_id,
+      login: broadcaster_user_login,
+    });
+    return;
+  }
+
+  // 2. Check if processing is enabled
+  if (!streamer.processing_enabled) {
+    recordCounter("eventsub.stream_offline.skipped", 1, { reason: "disabled" });
+    log("info", "Processing disabled for streamer", {
+      streamer_id: streamer.id,
+      login: streamer.login,
+    });
+    return;
+  }
+
+  // 3. Fetch latest VOD with chapters and upsert to database
+  log("info", "Fetching latest VOD for streamer", {
+    streamer_id: streamer.id,
+    login: streamer.login,
+  });
+
+  const { vodsUpserted, bazaarSegments, upsertedVodIds } =
+    await fetchAndUpsertVods(
+      streamer.id,
+      streamer.login,
+      1, // Only fetch the latest VOD
+    );
+
+  if (vodsUpserted === 0 || upsertedVodIds.length === 0) {
+    recordCounter("eventsub.stream_offline.skipped", 1, { reason: "no_bazaar" });
+    log("info", "No Bazaar VOD found for streamer", {
+      streamer_id: streamer.id,
+      login: streamer.login,
+    });
+    return;
+  }
+
+  const vodSourceId = upsertedVodIds[0];
+
+  recordCounter("eventsub.stream_offline.processed", 1, {
+    streamer: streamer.login,
+  });
+  log("info", "Upserted VOD for streamer", {
+    streamer_id: streamer.id,
+    login: streamer.login,
+    vod_source_id: vodSourceId,
+    bazaar_segments: bazaarSegments,
+  });
+
+  // 4. Trigger processing for the new VOD
+  try {
+    const chunks = await getPendingChunksForVod(undefined, vodSourceId);
+
+    if (chunks.length === 0) {
+      log("info", "No pending chunks for new VOD", {
+        vod_source_id: vodSourceId,
+      });
+      return;
+    }
+
+    const chunkUuids = chunks.map((chunk: any) => chunk.chunk_id);
+    const actualVodId = chunks[0].vod_id;
+
+    // Fetch VOD's published_at date and streamer's profile
+    const { data: vodData, error: vodError } = await supabase
+      .from("vods")
+      .select("published_at, streamer_id, streamers!inner(sfot_profile_id)")
+      .eq("id", actualVodId)
+      .single();
+
+    if (vodError) {
+      log("error", "Failed to fetch VOD data", {
+        vod_id: actualVodId,
+        error: vodError.message,
+      });
+      return;
+    }
+
+    // Check if VOD was published on or before August 12, 2025
+    const cutoffDate = new Date("2025-08-12T00:00:00Z");
+    const vodPublishedAt = new Date(vodData.published_at);
+    const useOldTemplates = vodPublishedAt <= cutoffDate;
+
+    // Fetch SFOT profile
+    const sfotProfileId = vodData.streamers.sfot_profile_id;
+    const { data: profileData, error: profileError } = await supabase
+      .from("sfot_profiles")
+      .select("*")
+      .eq("id", sfotProfileId)
+      .single();
+
+    if (profileError) {
+      log("error", "Failed to fetch SFOT profile", {
+        profile_id: sfotProfileId,
+        error: profileError.message,
+      });
+      return;
+    }
+
+    const sfotProfileJson = JSON.stringify(profileData);
+    const environment = Deno.env.get("ENV") || "production";
+
+    // Update chunks to 'queued' status
+    const { error: updateError } = await supabase
+      .from("chunks")
+      .update({ status: "queued" })
+      .in("id", chunkUuids);
+
+    if (updateError) {
+      log("error", "Failed to update chunks to queued", {
+        error: updateError.message,
+      });
+      return;
+    }
+
+    // Trigger GitHub workflow
+    const githubRunUrl = await triggerGithubWorkflow(
+      vodSourceId,
+      chunkUuids,
+      useOldTemplates,
+      sfotProfileJson,
+      environment,
+    );
+
+    recordCounter("process_vod.triggered", 1, {
+      source: "eventsub",
+      streamer: streamer.login,
+    });
+    log("info", "Triggered processing for stream.offline VOD", {
+      vod_source_id: vodSourceId,
+      chunks_count: chunks.length,
+      github_url: githubRunUrl,
+    });
+  } catch (error: any) {
+    log("error", "Failed to trigger processing for stream.offline VOD", {
+      vod_source_id: vodSourceId,
+      error: error.message,
+    });
+  }
+}
+
+/**
+ * Handle internal API requests (existing flow)
+ */
+async function handleInternalRequest(req: Request): Promise<Response> {
   try {
     // Handle CORS preflight
     if (req.method === "OPTIONS") {
@@ -254,6 +552,8 @@ Deno.serve(async (req) => {
       environment,
     );
 
+    recordCounter("process_vod.triggered", 1, { source: "internal" });
+
     console.log(
       `Successfully triggered GitHub workflow for VOD ${actualVodId} with ${chunks.length} chunks`,
     );
@@ -293,6 +593,21 @@ Deno.serve(async (req) => {
       status: 500,
     });
   }
+}
+
+/**
+ * Main entry point - routes to EventSub handler or internal API based on headers
+ */
+Deno.serve(async (req) => {
+  // Check if this is an EventSub webhook (by headers)
+  const messageType = req.headers.get("Twitch-Eventsub-Message-Type");
+
+  if (messageType) {
+    return handleEventSubWebhook(req, messageType);
+  }
+
+  // Otherwise, handle as internal API request
+  return handleInternalRequest(req);
 });
 
 /* To invoke locally:
@@ -317,6 +632,11 @@ Deno.serve(async (req) => {
     --header "apikey: $SUPABASE_PUBLISHABLE_KEY" \
     --header 'Content-Type: application/json' \
     --data '{"vod_id": 552, "dry_run": true}'
+
+  # Test EventSub webhook with Twitch CLI:
+  twitch event trigger stream.offline \
+    -F http://localhost:54321/functions/v1/process-vod \
+    -s $TWITCH_EVENTSUB_SECRET
 
   Note: The ENV variable in .env/.env.dev determines which GitHub environment
   (dev or production) the workflow will use.
