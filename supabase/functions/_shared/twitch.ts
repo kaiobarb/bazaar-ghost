@@ -558,3 +558,218 @@ export async function getStreamerVodsWithChapters(
   console.log(`Total VODs fetched for ${streamerLogin}: ${allVods.length}`);
   return allVods;
 }
+
+// ============================================================================
+// EventSub Subscription Management
+// ============================================================================
+
+export interface EventSubSubscription {
+  id: string;
+  status: string;
+  type: string;
+  condition: {
+    broadcaster_user_id: string;
+  };
+  transport: {
+    method: string;
+    callback?: string;
+  };
+  created_at: string;
+}
+
+export interface CreateSubscriptionResult {
+  success: boolean;
+  subscription_id: string | null;
+  already_exists: boolean;
+  error?: string;
+}
+
+/**
+ * Create a stream.offline EventSub subscription for a broadcaster.
+ * Returns success if subscription is created or already exists.
+ */
+export async function createEventSubSubscription(
+  broadcasterUserId: string,
+): Promise<CreateSubscriptionResult> {
+  const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
+  const TWITCH_EVENTSUB_SECRET = Deno.env.get("TWITCH_EVENTSUB_SECRET");
+
+  if (!SUPABASE_URL) {
+    console.error("SUPABASE_URL not configured");
+    return {
+      success: false,
+      subscription_id: null,
+      already_exists: false,
+      error: "SUPABASE_URL not configured",
+    };
+  }
+
+  if (!TWITCH_EVENTSUB_SECRET) {
+    console.error("TWITCH_EVENTSUB_SECRET not configured");
+    return {
+      success: false,
+      subscription_id: null,
+      already_exists: false,
+      error: "TWITCH_EVENTSUB_SECRET not configured",
+    };
+  }
+
+  const token = await getTwitchToken();
+  const callbackUrl = `${SUPABASE_URL}/functions/v1/process-vod`;
+
+  const payload = {
+    type: "stream.offline",
+    version: "1",
+    condition: {
+      broadcaster_user_id: broadcasterUserId,
+    },
+    transport: {
+      method: "webhook",
+      callback: callbackUrl,
+      secret: TWITCH_EVENTSUB_SECRET,
+    },
+  };
+
+  console.log(
+    `Creating EventSub subscription for broadcaster ${broadcasterUserId}`,
+  );
+  console.log(`Callback URL: ${callbackUrl}`);
+
+  try {
+    const response = await fetch(
+      "https://api.twitch.tv/helix/eventsub/subscriptions",
+      {
+        method: "POST",
+        headers: {
+          "Client-Id": TWITCH_CLIENT_ID,
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      },
+    );
+
+    if (response.status === 202) {
+      // Success - subscription created
+      const data = await response.json();
+      const subscriptionId = data.data?.[0]?.id;
+      console.log(`EventSub subscription created: ${subscriptionId}`);
+      return {
+        success: true,
+        subscription_id: subscriptionId,
+        already_exists: false,
+      };
+    }
+
+    if (response.status === 409) {
+      // Subscription already exists - this is still success
+      console.log(
+        `EventSub subscription already exists for ${broadcasterUserId}`,
+      );
+
+      // Try to get the existing subscription ID
+      const existing = await hasEventSubSubscription(broadcasterUserId);
+      return {
+        success: true,
+        subscription_id: existing.subscription_id,
+        already_exists: true,
+      };
+    }
+
+    // Other error
+    const errorText = await response.text();
+    console.error(`EventSub creation failed: ${response.status} ${errorText}`);
+    return {
+      success: false,
+      subscription_id: null,
+      already_exists: false,
+      error: `${response.status}: ${errorText}`,
+    };
+  } catch (error: any) {
+    console.error(`EventSub creation error:`, error);
+    return {
+      success: false,
+      subscription_id: null,
+      already_exists: false,
+      error: error.message,
+    };
+  }
+}
+
+/**
+ * List all EventSub subscriptions for the app.
+ * Can filter by type and/or user_id (broadcaster).
+ */
+export async function listEventSubSubscriptions(
+  filters?: {
+    type?: string;
+    user_id?: string;
+  },
+): Promise<EventSubSubscription[]> {
+  const token = await getTwitchToken();
+  const allSubscriptions: EventSubSubscription[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const url = new URL("https://api.twitch.tv/helix/eventsub/subscriptions");
+
+    if (filters?.type) {
+      url.searchParams.set("type", filters.type);
+    }
+    if (filters?.user_id) {
+      url.searchParams.set("user_id", filters.user_id);
+    }
+    if (cursor) {
+      url.searchParams.set("after", cursor);
+    }
+
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: {
+        "Client-Id": TWITCH_CLIENT_ID,
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(
+        `Failed to list EventSub subscriptions: ${response.status} ${errorText}`,
+      );
+      break;
+    }
+
+    const data = await response.json();
+
+    if (data.data) {
+      allSubscriptions.push(...data.data);
+    }
+
+    cursor = data.pagination?.cursor;
+  } while (cursor);
+
+  return allSubscriptions;
+}
+
+/**
+ * Check if a stream.offline subscription exists for a broadcaster.
+ */
+export async function hasEventSubSubscription(
+  broadcasterUserId: string,
+): Promise<{ exists: boolean; subscription_id: string | null }> {
+  const subscriptions = await listEventSubSubscriptions({
+    type: "stream.offline",
+    user_id: broadcasterUserId,
+  });
+
+  const matching = subscriptions.find(
+    (sub) =>
+      sub.condition.broadcaster_user_id === broadcasterUserId &&
+      sub.type === "stream.offline",
+  );
+
+  return {
+    exists: !!matching,
+    subscription_id: matching?.id || null,
+  };
+}
