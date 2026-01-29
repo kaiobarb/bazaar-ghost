@@ -29,7 +29,7 @@ from frame_processor import FrameProcessor
 from supabase_client import SupabaseClient
 from json_logger import JSONFormatter
 from telemetry import (
-    init_telemetry, create_span, record_counter, record_histogram,
+    init_telemetry, create_span, record_counter, record_histogram, record_gauge,
     extract_trace_context, set_span_attribute, add_span_event,
     shutdown_telemetry
 )
@@ -76,6 +76,9 @@ class SFOTProcessor:
         self.streamer = chunk_details.get('streamer')
         self.initial_status = chunk_details.get('status')  # Store for later use
 
+        # Set streamer on supabase client for metric attribution
+        self.supabase.set_streamer(self.streamer)
+
         # Initialize components
         self.frame_queue = queue.Queue(maxsize=self.config['processing']['queue_size'])
         self.result_queue = queue.Queue()
@@ -90,7 +93,7 @@ class SFOTProcessor:
         self.all_detections = []  # All detections for summary export
 
         # Initialize frame processor with quality information and template selection
-        self.frame_processor = FrameProcessor(self.config, quality=self.quality, old_templates=self.old_templates, profile=self.profile)
+        self.frame_processor = FrameProcessor(self.config, quality=self.quality, old_templates=self.old_templates, profile=self.profile, streamer=self.streamer)
 
         # Setup logging
         self._setup_logging()
@@ -306,6 +309,7 @@ class SFOTProcessor:
                 }))
                 metric_attrs = {
                     "streamer": self.streamer or "unknown",
+                    "quality": self.formatted_quality,
                 }
 
                 if status == 'completed':
@@ -382,252 +386,273 @@ class SFOTProcessor:
                 self.cleanup()
     
     def streamlink_worker(self):
-        """Worker to run streamlink and pipe output to FFmpeg"""
-        try:
-            # Skip streamlink in test mode - FFmpeg will read directly from file
-            if self.test_mode:
-                self.logger.info("Test mode enabled, skipping streamlink")
-                return
+        """Worker to run streamlink and pipe HLS stream to FFmpeg"""
+        metric_attrs = {"streamer": self.streamer or "unknown", "quality": self.formatted_quality}
 
-            # Calculate duration
-            duration = self.end_time - self.start_time
+        # Span for tracing - runs in parallel with ffmpeg/opencv workers
+        with create_span("streamlink_stream", attributes=self.span_attributes) as span:
+            try:
+                # Skip streamlink in test mode - FFmpeg will read directly from file
+                if self.test_mode:
+                    self.logger.info("Test mode enabled, skipping streamlink")
+                    return
 
-            # Build streamlink command with quality preference
-            quality_stream = self.quality if self.quality in ['360p', '360p60', '480p', '480p60', '720p', '720p60', '1080p', '1080p60', 'worst', 'best'] else '480p'
-            cmd = [
-                'streamlink',
-                '--stream-segment-threads', '1',  # Consistent delivery
-                '--hls-segment-stream-data',      # Immediate segment write
-                '--hls-start-offset', f"{self.start_time // 3600}:{(self.start_time % 3600) // 60:02d}:{self.start_time % 60:02d}",
-                '--stream-segmented-duration', str(duration),  # Use segmented duration
-                f'https://twitch.tv/videos/{self.vod_id}',
-                quality_stream + ',360p60,480p60,720p60,1080p60',
-                '-O'  # Output to stdout
-            ]
-            
-            self.logger.info(f"Starting streamlink: {' '.join(cmd)}")
-            
-            # Start streamlink process
-            self.streamlink_proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                bufsize=65536
-            )
-            
-            # Monitor streamlink process
-            self.logger.info("Streamlink process started, monitoring...")
-            while not self.shutdown.is_set():
-                if self.streamlink_proc.poll() is not None:
-                    # Process ended
-                    stderr = self.streamlink_proc.stderr.read().decode('utf-8', errors='ignore')
-                    if self.streamlink_proc.returncode != 0:
-                        self.logger.error(f"Streamlink failed with code {self.streamlink_proc.returncode}: {stderr}")
-                        self.shutdown.set()  # Signal shutdown on streamlink failure
-                    else:
-                        self.logger.info(f"Streamlink completed successfully.")
-                    break
-                time.sleep(1)
-                
-        except Exception as e:
-            self.logger.error(f"Streamlink worker failed: {e}")
-            self.shutdown.set()
+                # Calculate duration
+                duration = self.end_time - self.start_time
+
+                # Build streamlink command with quality preference
+                quality_stream = self.quality if self.quality in ['360p', '360p60', '480p', '480p60', '720p', '720p60', '1080p', '1080p60', 'worst', 'best'] else '480p'
+                cmd = [
+                    'streamlink',
+                    '--stream-segment-threads', '1',  # Consistent delivery
+                    '--hls-segment-stream-data',      # Immediate segment write
+                    '--hls-start-offset', f"{self.start_time // 3600}:{(self.start_time % 3600) // 60:02d}:{self.start_time % 60:02d}",
+                    '--stream-segmented-duration', str(duration),  # Use segmented duration
+                    f'https://twitch.tv/videos/{self.vod_id}',
+                    quality_stream + ',360p60,480p60,720p60,1080p60',
+                    '-O'  # Output to stdout
+                ]
+
+                self.logger.info(f"Starting streamlink: {' '.join(cmd)}")
+
+                # Start streamlink process
+                self.streamlink_proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    bufsize=65536
+                )
+
+                # Monitor streamlink process (runs in parallel with ffmpeg consuming stdout)
+                self.logger.info("Streamlink process started, piping to FFmpeg...")
+                while not self.shutdown.is_set():
+                    if self.streamlink_proc.poll() is not None:
+                        # Process ended
+                        stderr = self.streamlink_proc.stderr.read().decode('utf-8', errors='ignore')
+                        if self.streamlink_proc.returncode != 0:
+                            self.logger.error(f"Streamlink failed with code {self.streamlink_proc.returncode}: {stderr}")
+                            self.shutdown.set()  # Signal shutdown on streamlink failure
+                            record_counter("errors", 1, {**metric_attrs, "component": "streamlink", "error_type": "exit_code"})
+                        else:
+                            self.logger.info(f"Streamlink completed successfully.")
+                        break
+                    time.sleep(1)
+
+            except Exception as e:
+                self.logger.error(f"Streamlink worker failed: {e}")
+                record_counter("errors", 1, {**metric_attrs, "component": "streamlink", "error_type": type(e).__name__})
+                self.shutdown.set()
     
     def ffmpeg_worker(self):
-        """Worker to process streamlink output through FFmpeg"""
-        try:
-            # In test mode, read directly from file
-            if self.test_mode:
-                # Determine input file path
-                quality_config = QUALITY_CONFIGS.get(self.quality, QUALITY_CONFIGS['480p'])
-                test_data_dir = self.config.get('test_mode', {}).get('data_directory', 'test_data')
-                video_filename = quality_config['file_suffix']
+        """Worker to decode frames from streamlink stream (runs in parallel with opencv_worker)"""
+        metric_attrs = {"streamer": self.streamer or "unknown", "quality": self.formatted_quality}
 
-                # Log which quality file we're using
-                self.logger.info(f"Test mode enabled - using video file: {video_filename} for quality: {self.quality}")
+        with create_span("ffmpeg_decode", attributes=self.span_attributes) as span:
+            try:
+                # In test mode, read directly from file
+                if self.test_mode:
+                    # Determine input file path
+                    quality_config = QUALITY_CONFIGS.get(self.quality, QUALITY_CONFIGS['480p'])
+                    test_data_dir = self.config.get('test_mode', {}).get('data_directory', 'test_data')
+                    video_filename = quality_config['file_suffix']
 
-                # Check if running in Docker container (test_data mounted at /app/test_data)
-                docker_test_path = f'/app/{test_data_dir}'
-                if os.path.exists(docker_test_path):
-                    # Running in Docker container
-                    input_file = os.path.join(docker_test_path, self.vod_id, video_filename)
-                    self.logger.info(f"Running in Docker container - test data path: {docker_test_path}")
+                    # Log which quality file we're using
+                    self.logger.info(f"Test mode enabled - using video file: {video_filename} for quality: {self.quality}")
+
+                    # Check if running in Docker container (test_data mounted at /app/test_data)
+                    docker_test_path = f'/app/{test_data_dir}'
+                    if os.path.exists(docker_test_path):
+                        # Running in Docker container
+                        input_file = os.path.join(docker_test_path, self.vod_id, video_filename)
+                        self.logger.info(f"Running in Docker container - test data path: {docker_test_path}")
+                    else:
+                        # Running locally
+                        input_file = os.path.join(os.path.dirname(__file__), '..', '..', test_data_dir,
+                                                 self.vod_id, video_filename)
+                        self.logger.info(f"Running locally - test data path: {test_data_dir}")
+
+                    if not os.path.exists(input_file):
+                        self.logger.error(f"Test file not found: {input_file}")
+                        self.logger.error(f"Expected video file '{video_filename}' in directory: {os.path.dirname(input_file)}")
+                        self.shutdown.set()
+                        return
+
+                    self.logger.info(f"Test video file located: {input_file}")
+                    self.logger.info(f"Video resolution for processing: {quality_config['resolution'][0]}x{quality_config['resolution'][1]}")
+
+                    # Get frame dimensions from quality config for crop calculation
+                    frame_width, frame_height = quality_config['resolution']
                 else:
-                    # Running locally
-                    input_file = os.path.join(os.path.dirname(__file__), '..', '..', test_data_dir,
-                                             self.vod_id, video_filename)
-                    self.logger.info(f"Running locally - test data path: {test_data_dir}")
+                    # Wait for streamlink to start
+                    time.sleep(2)
+                    if not self.streamlink_proc or self.streamlink_proc.poll() is not None:
+                        self.logger.error("Streamlink not running when FFmpeg tried to start")
+                        return
 
-                if not os.path.exists(input_file):
-                    self.logger.error(f"Test file not found: {input_file}")
-                    self.logger.error(f"Expected video file '{video_filename}' in directory: {os.path.dirname(input_file)}")
+                    self.logger.info("Streamlink confirmed running, starting FFmpeg...")
+                    # Determine resolution based on quality for streamlink mode
+                    quality_resolutions = {
+                        '360p': (640, 360),
+                        '480p': (854, 480),
+                        '720p': (1280, 720),
+                        '1080p': (1920, 1080)
+                    }
+                    frame_width, frame_height = quality_resolutions.get(self.quality, (854, 480))
+
+                # Build video filter chain
+                vf_filters = [f'fps={self.config["processing"]["frame_rate"]}']
+
+                # Use crop region from SFOT profile
+                crop_pixels = self.percent_to_pixels(
+                    self.profile['crop_region'],
+                    frame_width,
+                    frame_height
+                )
+                w, h, x, y = crop_pixels
+                vf_filters.append(f'crop={w}:{h}:{x}:{y}')
+                self.logger.info(f"Applied profile crop: [x={x}, y={y}, w={w}, h={h}] for {frame_width}x{frame_height} video")
+                self.logger.info(f"Cropped frame dimensions will be: {w}x{h} pixels")
+
+                vf_chain = ','.join(vf_filters)
+
+                # Build FFmpeg command
+                if self.test_mode:
+                    # Read from file with seeking support
+                    ffmpeg_cmd = [
+                        'ffmpeg',
+                        '-ss', str(self.start_time),  # Seek to start time
+                        '-i', input_file,  # Input from file
+                        '-t', str(self.end_time - self.start_time),  # Duration
+                        '-vf', vf_chain,
+                        '-f', 'image2pipe',
+                        '-vcodec', 'mjpeg',
+                        '-loglevel', self.config['ffmpeg']['loglevel'],
+                        'pipe:1'  # Output to stdout
+                    ]
+                else:
+                    # Read from pipe (streamlink)
+                    ffmpeg_cmd = [
+                        'ffmpeg',
+                        '-i', 'pipe:0',  # Input from stdin
+                        '-vf', vf_chain,
+                        '-f', 'image2pipe',
+                        '-vcodec', 'mjpeg',
+                        '-loglevel', self.config['ffmpeg']['loglevel'],
+                        'pipe:1'  # Output to stdout
+                    ]
+
+                if self.config['ffmpeg']['keyframes_only'] and not self.test_mode:
+                    # Insert input options before -i (only for pipe input)
+                    ffmpeg_cmd.insert(1, '-skip_frame')
+                    ffmpeg_cmd.insert(2, 'nokey')
+
+                self.logger.info("Starting FFmpeg pipeline")
+
+                # Start FFmpeg process
+                if self.test_mode:
+                    # No stdin needed when reading from file
+                    self.ffmpeg_proc = subprocess.Popen(
+                        ffmpeg_cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        bufsize=65536
+                    )
+                else:
+                    # Connect to streamlink's stdout
+                    self.ffmpeg_proc = subprocess.Popen(
+                        ffmpeg_cmd,
+                        stdin=self.streamlink_proc.stdout,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        bufsize=65536
+                    )
+
+                # Check if FFmpeg started successfully
+                time.sleep(0.5)  # Give FFmpeg a moment to start
+                if self.ffmpeg_proc.poll() is not None:
+                    stderr = self.ffmpeg_proc.stderr.read().decode('utf-8', errors='ignore')
+                    self.logger.error(f"FFmpeg failed to start. Exit code: {self.ffmpeg_proc.returncode}, stderr: {stderr}")
+                    record_counter("errors", 1, {**metric_attrs, "component": "ffmpeg", "error_type": "start_failed"})
+                    return
+                else:
+                    self.logger.info("FFmpeg process started successfully")
+
+                # Read frames from FFmpeg
+                frame_buffer = b''
+                frames_extracted = 0
+                bytes_read = 0
+                self.logger.info("Starting to read frames from FFmpeg...")
+
+                while not self.shutdown.is_set():
+                    chunk = self.ffmpeg_proc.stdout.read(4096)
+                    if not chunk:
+                        # Check FFmpeg stderr for any error messages
+                        stderr_data = b''
+                        try:
+                            stderr_data = self.ffmpeg_proc.stderr.read()
+                            stderr_text = stderr_data.decode('utf-8', errors='ignore') if stderr_data else "No stderr output"
+                        except:
+                            stderr_text = "Could not read stderr"
+
+                        self.logger.info(f"FFmpeg stream ended. Total bytes read: {bytes_read}, frames extracted: {frames_extracted}")
+                        break
+
+                    bytes_read += len(chunk)
+                    frame_buffer += chunk
+
+                    # Look for JPEG markers
+                    while True:
+                        start = frame_buffer.find(b'\xff\xd8')  # JPEG start
+                        if start == -1:
+                            break
+
+                        end = frame_buffer.find(b'\xff\xd9', start)  # JPEG end
+                        if end == -1:
+                            break
+
+                        # Extract complete frame
+                        frame_data = frame_buffer[start:end+2]
+                        frame_buffer = frame_buffer[end+2:]
+                        frames_extracted += 1
+                        # Add to queue if not full
+                        try:
+                            self.frame_queue.put(frame_data, timeout=0.1)
+                            record_gauge("queue_depth", 1, metric_attrs)
+                        except queue.Full:
+                            self.logger.warning("Frame queue full, dropping frame")
+                            record_counter("frames_skipped", 1, {**metric_attrs, "reason": "queue_full"})
+                            record_counter("queue_overflow", 1, metric_attrs)
+
+                self.logger.info(f"FFmpeg worker finished. Final stats: {bytes_read} bytes read, {frames_extracted} frames extracted")
+
+                # Signal shutdown when FFmpeg finishes normally (not due to error)
+                if not self.shutdown.is_set():
+                    self.logger.info("FFmpeg completed successfully, signaling shutdown")
                     self.shutdown.set()
-                    return
 
-                self.logger.info(f"Test video file located: {input_file}")
-                self.logger.info(f"Video resolution for processing: {quality_config['resolution'][0]}x{quality_config['resolution'][1]}")
+                # Set span attributes for frames extracted
+                if span:
+                    span.set_attribute("frames.extracted", frames_extracted)
+                    span.set_attribute("bytes.read", bytes_read)
 
-                # Get frame dimensions from quality config for crop calculation
-                frame_width, frame_height = quality_config['resolution']
-            else:
-                # Wait for streamlink to start
-                time.sleep(2)
-                if not self.streamlink_proc or self.streamlink_proc.poll() is not None:
-                    self.logger.error("Streamlink not running when FFmpeg tried to start")
-                    return
-
-                self.logger.info("Streamlink confirmed running, starting FFmpeg...")
-                # Determine resolution based on quality for streamlink mode
-                quality_resolutions = {
-                    '360p': (640, 360),
-                    '480p': (854, 480),
-                    '720p': (1280, 720),
-                    '1080p': (1920, 1080)
-                }
-                frame_width, frame_height = quality_resolutions.get(self.quality, (854, 480))
-
-            # Build video filter chain
-            vf_filters = [f'fps={self.config["processing"]["frame_rate"]}']
-
-            # Use crop region from SFOT profile
-            crop_pixels = self.percent_to_pixels(
-                self.profile['crop_region'],
-                frame_width,
-                frame_height
-            )
-            w, h, x, y = crop_pixels
-            vf_filters.append(f'crop={w}:{h}:{x}:{y}')
-            self.logger.info(f"Applied profile crop: [x={x}, y={y}, w={w}, h={h}] for {frame_width}x{frame_height} video")
-            self.logger.info(f"Cropped frame dimensions will be: {w}x{h} pixels")
-
-            vf_chain = ','.join(vf_filters)
-
-            # Build FFmpeg command
-            if self.test_mode:
-                # Read from file with seeking support
-                ffmpeg_cmd = [
-                    'ffmpeg',
-                    '-ss', str(self.start_time),  # Seek to start time
-                    '-i', input_file,  # Input from file
-                    '-t', str(self.end_time - self.start_time),  # Duration
-                    '-vf', vf_chain,
-                    '-f', 'image2pipe',
-                    '-vcodec', 'mjpeg',
-                    '-loglevel', self.config['ffmpeg']['loglevel'],
-                    'pipe:1'  # Output to stdout
-                ]
-            else:
-                # Read from pipe (streamlink)
-                ffmpeg_cmd = [
-                    'ffmpeg',
-                    '-i', 'pipe:0',  # Input from stdin
-                    '-vf', vf_chain,
-                    '-f', 'image2pipe',
-                    '-vcodec', 'mjpeg',
-                    '-loglevel', self.config['ffmpeg']['loglevel'],
-                    'pipe:1'  # Output to stdout
-                ]
-
-            if self.config['ffmpeg']['keyframes_only'] and not self.test_mode:
-                # Insert input options before -i (only for pipe input)
-                ffmpeg_cmd.insert(1, '-skip_frame')
-                ffmpeg_cmd.insert(2, 'nokey')
-            
-            self.logger.info("Starting FFmpeg pipeline")
-
-            # Start FFmpeg process
-            if self.test_mode:
-                # No stdin needed when reading from file
-                self.ffmpeg_proc = subprocess.Popen(
-                    ffmpeg_cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    bufsize=65536
-                )
-            else:
-                # Connect to streamlink's stdout
-                self.ffmpeg_proc = subprocess.Popen(
-                    ffmpeg_cmd,
-                    stdin=self.streamlink_proc.stdout,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    bufsize=65536
-                )
-
-            # Check if FFmpeg started successfully
-            time.sleep(0.5)  # Give FFmpeg a moment to start
-            if self.ffmpeg_proc.poll() is not None:
-                stderr = self.ffmpeg_proc.stderr.read().decode('utf-8', errors='ignore')
-                self.logger.error(f"FFmpeg failed to start. Exit code: {self.ffmpeg_proc.returncode}, stderr: {stderr}")
-                return
-            else:
-                self.logger.info("FFmpeg process started successfully")
-            
-            # Read frames from FFmpeg
-            frame_buffer = b''
-            frames_extracted = 0
-            bytes_read = 0
-            self.logger.info("Starting to read frames from FFmpeg...")
-
-            while not self.shutdown.is_set():
-                chunk = self.ffmpeg_proc.stdout.read(4096)
-                if not chunk:
-                    # Check FFmpeg stderr for any error messages
-                    stderr_data = b''
-                    try:
-                        stderr_data = self.ffmpeg_proc.stderr.read()
-                        stderr_text = stderr_data.decode('utf-8', errors='ignore') if stderr_data else "No stderr output"
-                    except:
-                        stderr_text = "Could not read stderr"
-
-                    self.logger.info(f"FFmpeg stream ended. Total bytes read: {bytes_read}, frames extracted: {frames_extracted}")
-                    break
-
-                bytes_read += len(chunk)
-                frame_buffer += chunk
-
-                # Look for JPEG markers
-                while True:
-                    start = frame_buffer.find(b'\xff\xd8')  # JPEG start
-                    if start == -1:
-                        break
-
-                    end = frame_buffer.find(b'\xff\xd9', start)  # JPEG end
-                    if end == -1:
-                        break
-
-                    # Extract complete frame
-                    frame_data = frame_buffer[start:end+2]
-                    frame_buffer = frame_buffer[end+2:]
-                    frames_extracted += 1
-                    # Add to queue if not full
-                    try:
-                        self.frame_queue.put(frame_data, timeout=0.1)
-                    except queue.Full:
-                        self.logger.warning("Frame queue full, dropping frame")
-
-            self.logger.info(f"FFmpeg worker finished. Final stats: {bytes_read} bytes read, {frames_extracted} frames extracted")
-
-            # Signal shutdown when FFmpeg finishes normally (not due to error)
-            if not self.shutdown.is_set():
-                self.logger.info("FFmpeg completed successfully, signaling shutdown")
+            except Exception as e:
+                self.logger.error(f"FFmpeg worker failed: {e}")
+                record_counter("errors", 1, {**metric_attrs, "component": "ffmpeg", "error_type": type(e).__name__})
                 self.shutdown.set()
-                        
-        except Exception as e:
-            self.logger.error(f"FFmpeg worker failed: {e}")
-            self.shutdown.set()
     
     def opencv_worker(self):
-        """Worker to process frames with OpenCV"""
+        """Worker to process frames with OpenCV (runs in parallel, consumes from frame queue)"""
         self.logger.info("OpenCV worker starting...")
         metric_attrs = {
             "streamer": self.streamer or "unknown",
+            "quality": self.formatted_quality,
         }
         try:
             while not self.shutdown.is_set():
                 try:
                     # Get frame from queue
                     frame_data = self.frame_queue.get(timeout=1)
+                    record_gauge("queue_depth", -1, metric_attrs)
 
                     # Calculate timestamp based on frame rate
                     sampling_rate = self.config["processing"]["frame_rate"]
