@@ -10,17 +10,19 @@ from supabase import create_client, Client
 from supabase.client import ClientOptions
 import requests
 from datetime import datetime, timedelta
+from telemetry import create_span, record_histogram, record_counter
 
 class SupabaseClient:
     """Handle Supabase operations for SFOT processor"""
 
-    def __init__(self, config: Dict[str, Any], test_mode: bool = False, quality: str = '480p'):
+    def __init__(self, config: Dict[str, Any], test_mode: bool = False, quality: str = '480p', streamer: str = None):
         """Initialize Supabase client with optional test mode and quality"""
         self.config = config
         self.logger = logging.getLogger('sfot.supabase')
         self.test_mode = test_mode
         self.quality = quality
         self.schema = 'test' if test_mode else 'public'
+        self.streamer = streamer  # Set later via set_streamer() after chunk details are fetched
 
         # Get credentials from environment
         url = os.getenv('SUPABASE_URL', config.get('supabase', {}).get('url'))
@@ -44,7 +46,11 @@ class SupabaseClient:
         self.retry_attempts = config['supabase']['retry_attempts']
 
         self.logger.info(f"Supabase client initialized (schema: {self.schema})")
-    
+
+    def set_streamer(self, streamer: str):
+        """Set the streamer name for metric attribution"""
+        self.streamer = streamer
+
     def get_chunk_details(self, chunk_id: str) -> Optional[Dict[str, Any]]:
         """Get chunk details with VOD and streamer information"""
         try:
@@ -140,111 +146,125 @@ class SupabaseClient:
     
     def upload_batch(self, matchups: List[Dict[str, Any]]):
         """Upload batch of detection results"""
-        for attempt in range(self.retry_attempts):
-            try:
-                # Prepare batch data
-                batch_data = []
-                image_uploads = []
-                text_logs = []
+        start_time_ms = time.time() * 1000
+        metric_attrs = {"streamer": self.streamer or "unknown", "quality": self.quality}
 
-                # Cache for VOD ID lookups
-                vod_id_cache = {}
-                
-                for matchup in matchups:
-                    # Look up the actual database vod_id from source_id if not cached
-                    source_id = str(matchup['vod_id'])
-                    if source_id not in vod_id_cache:
-                        try:
-                            vod_response = self.client.table('vods').select('id').eq('source_id', source_id).single().execute()
-                            vod_id_cache[source_id] = vod_response.data['id']
-                        except Exception as e:
-                            self.logger.error(f"Failed to find VOD with source_id {source_id}: {e}")
-                            continue
+        with create_span("supabase_upload", attributes={"batch.size": len(matchups)}) as span:
+            for attempt in range(self.retry_attempts):
+                try:
+                    # Prepare batch data
+                    batch_data = []
+                    image_uploads = []
+                    text_logs = []
 
-                    actual_vod_id = vod_id_cache[source_id]
+                    # Cache for VOD ID lookups
+                    vod_id_cache = {}
 
-                    # Create detection record if username was extracted
-                    if matchup.get('username'):
-                        # Generate storage path for the detection image
-                        if self.test_mode:
-                            storage_path = f"/detections/test/{self.quality}/{source_id}/{matchup['timestamp']}.jpg" if 'frame_base64' in matchup else None
+                    for matchup in matchups:
+                        # Look up the actual database vod_id from source_id if not cached
+                        source_id = str(matchup['vod_id'])
+                        if source_id not in vod_id_cache:
+                            try:
+                                vod_response = self.client.table('vods').select('id').eq('source_id', source_id).single().execute()
+                                vod_id_cache[source_id] = vod_response.data['id']
+                            except Exception as e:
+                                self.logger.error(f"Failed to find VOD with source_id {source_id}: {e}")
+                                continue
+
+                        actual_vod_id = vod_id_cache[source_id]
+
+                        # Create detection record if username was extracted
+                        if matchup.get('username'):
+                            # Generate storage path for the detection image
+                            if self.test_mode:
+                                storage_path = f"/detections/test/{self.quality}/{source_id}/{matchup['timestamp']}.jpg" if 'frame_base64' in matchup else None
+                            else:
+                                storage_path = f"/detections/{source_id}/{matchup['timestamp']}.jpg" if 'frame_base64' in matchup else None
+
+                            record = {
+                                'vod_id': actual_vod_id,  # Use the database ID
+                                'frame_time_seconds': matchup['timestamp'],
+                                'username': matchup['username'],
+                                'confidence': matchup.get('confidence', 0),
+                                'rank': matchup.get('detected_rank'),
+                                'chunk_id': matchup.get('chunk_id'),
+                                'storage_path': storage_path,
+                                'no_right_edge': matchup.get('no_right_edge', False),
+                                'truncated': matchup.get('truncated', False),  # Track if custom edge was used
+                            }
+                            batch_data.append(record)
+
+                            # Queue image uploads ONLY if we have a valid detection record
+                            # This prevents storing frames for false positives with empty usernames
+
+                            # Upload detection frame
+                            if 'frame_base64' in matchup:
+                                image_uploads.append({
+                                    'vod_id': matchup['vod_id'],
+                                    'timestamp': matchup['timestamp'],
+                                    'data': matchup['frame_base64'],
+                                    'type': 'detection'
+                                })
+
+                            # Upload OCR debug frame
+                            if 'ocr_debug_frame' in matchup:
+                                image_uploads.append({
+                                    'vod_id': matchup['vod_id'],
+                                    'timestamp': matchup['timestamp'],
+                                    'data': matchup['ocr_debug_frame'],
+                                    'type': 'ocr_debug'
+                                })
+
+                            # Upload emblem bounding box frame
+                            if 'emblem_boxes_frame' in matchup:
+                                image_uploads.append({
+                                    'vod_id': matchup['vod_id'],
+                                    'timestamp': matchup['timestamp'],
+                                    'data': matchup['emblem_boxes_frame'],
+                                    'type': 'emblem_boxes'
+                                })
+
+                            # Upload OCR text log
+                            if 'ocr_log_text' in matchup:
+                                text_logs.append({
+                                    'timestamp': matchup['timestamp'],
+                                    'data': matchup['ocr_log_text']
+                                })
                         else:
-                            storage_path = f"/detections/{source_id}/{matchup['timestamp']}.jpg" if 'frame_base64' in matchup else None
+                            # No valid username - skip this match entirely
+                            self.logger.debug(f"Skipping matchup at {matchup['timestamp']}: no valid username extracted")
 
-                        record = {
-                            'vod_id': actual_vod_id,  # Use the database ID
-                            'frame_time_seconds': matchup['timestamp'],
-                            'username': matchup['username'],
-                            'confidence': matchup.get('confidence', 0),
-                            'rank': matchup.get('detected_rank'),
-                            'chunk_id': matchup.get('chunk_id'),
-                            'storage_path': storage_path,
-                            'no_right_edge': matchup.get('no_right_edge', False),
-                            'truncated': matchup.get('truncated', False),  # Track if custom edge was used
-                        }
-                        batch_data.append(record)
+                    # Insert detection records
+                    if batch_data:
+                        response = self.client.table('detections').insert(batch_data).execute()
+                        self.logger.info(f"Uploaded {len(batch_data)} detections to {self.schema} schema")
+                        record_counter("detections_uploaded", len(batch_data), metric_attrs)
 
-                        # Queue image uploads ONLY if we have a valid detection record
-                        # This prevents storing frames for false positives with empty usernames
+                    # Upload images to storage
+                    for img in image_uploads:
+                        self._upload_image(img['vod_id'], img['timestamp'], img['data'], img.get('type', 'detection'))
 
-                        # Upload detection frame
-                        if 'frame_base64' in matchup:
-                            image_uploads.append({
-                                'vod_id': matchup['vod_id'],
-                                'timestamp': matchup['timestamp'],
-                                'data': matchup['frame_base64'],
-                                'type': 'detection'
-                            })
+                    # Upload text logs to logs bucket
+                    for log in text_logs:
+                        self._upload_text_log(log['timestamp'], log['data'])
 
-                        # Upload OCR debug frame
-                        if 'ocr_debug_frame' in matchup:
-                            image_uploads.append({
-                                'vod_id': matchup['vod_id'],
-                                'timestamp': matchup['timestamp'],
-                                'data': matchup['ocr_debug_frame'],
-                                'type': 'ocr_debug'
-                            })
+                    # Record upload duration on success
+                    duration_ms = time.time() * 1000 - start_time_ms
+                    record_histogram("upload_duration", duration_ms, metric_attrs)
+                    if span:
+                        span.set_attribute("duration.ms", duration_ms)
+                        span.set_attribute("detections.count", len(batch_data))
+                        span.set_attribute("images.count", len(image_uploads))
 
-                        # Upload emblem bounding box frame
-                        if 'emblem_boxes_frame' in matchup:
-                            image_uploads.append({
-                                'vod_id': matchup['vod_id'],
-                                'timestamp': matchup['timestamp'],
-                                'data': matchup['emblem_boxes_frame'],
-                                'type': 'emblem_boxes'
-                            })
+                    return True
 
-                        # Upload OCR text log
-                        if 'ocr_log_text' in matchup:
-                            text_logs.append({
-                                'timestamp': matchup['timestamp'],
-                                'data': matchup['ocr_log_text']
-                            })
+                except Exception as e:
+                    self.logger.error(f"Batch upload attempt {attempt + 1} failed: {e}")
+                    if attempt < self.retry_attempts - 1:
+                        time.sleep(2 ** attempt)  # Exponential backoff
                     else:
-                        # No valid username - skip this match entirely
-                        self.logger.debug(f"Skipping matchup at {matchup['timestamp']}: no valid username extracted")
-
-                # Insert detection records
-                if batch_data:
-                    response = self.client.table('detections').insert(batch_data).execute()
-                    self.logger.info(f"Uploaded {len(batch_data)} detections to {self.schema} schema")
-
-                # Upload images to storage
-                for img in image_uploads:
-                    self._upload_image(img['vod_id'], img['timestamp'], img['data'], img.get('type', 'detection'))
-
-                # Upload text logs to logs bucket
-                for log in text_logs:
-                    self._upload_text_log(log['timestamp'], log['data'])
-                
-                return True
-                
-            except Exception as e:
-                self.logger.error(f"Batch upload attempt {attempt + 1} failed: {e}")
-                if attempt < self.retry_attempts - 1:
-                    time.sleep(2 ** attempt)  # Exponential backoff
-                else:
-                    raise
+                        record_counter("errors", 1, {**metric_attrs, "component": "supabase", "error_type": type(e).__name__})
+                        raise
     
     def _upload_image(self, vod_id: str, timestamp: int, base64_data: str, image_type: str = 'detection'):
         """Upload matchup screenshot to storage"""

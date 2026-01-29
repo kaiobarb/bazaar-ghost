@@ -143,6 +143,49 @@ def _create_metrics():
         unit="1"
     )
 
+    # Detection funnel counters
+    _metrics["emblem_not_found"] = _meter.create_counter(
+        "sfot.emblem.not_found",
+        description="Frames where no emblem was detected",
+        unit="1"
+    )
+
+    _metrics["right_edge_failed"] = _meter.create_counter(
+        "sfot.right_edge.failed",
+        description="Frames where right edge detection failed",
+        unit="1"
+    )
+
+    _metrics["ocr_empty"] = _meter.create_counter(
+        "sfot.ocr.empty",
+        description="OCR extractions that returned no text",
+        unit="1"
+    )
+
+    _metrics["ocr_invalid_username"] = _meter.create_counter(
+        "sfot.ocr.invalid_username",
+        description="OCR extractions rejected by username validation",
+        unit="1"
+    )
+
+    _metrics["frames_skipped"] = _meter.create_counter(
+        "sfot.frames.skipped",
+        description="Frames skipped (queue full or interval)",
+        unit="1"
+    )
+
+    _metrics["queue_overflow"] = _meter.create_counter(
+        "sfot.queue.overflow",
+        description="Frame queue overflow events",
+        unit="1"
+    )
+
+    _metrics["errors"] = _meter.create_counter(
+        "sfot.errors",
+        description="Categorized errors by component and type",
+        unit="1"
+    )
+
     # Histograms
     _metrics["ocr_confidence"] = _meter.create_histogram(
         "sfot.ocr.confidence",
@@ -172,6 +215,13 @@ def _create_metrics():
         "sfot.frames.rate",
         description="Frame processing rate (FPS)",
         unit="1/s"
+    )
+
+    # Upload duration histogram (meaningful because it's a discrete operation)
+    _metrics["upload_duration"] = _meter.create_histogram(
+        "sfot.upload.duration",
+        description="Supabase batch upload duration",
+        unit="ms"
     )
 
     # Gauges (using UpDownCounter as proxy)
