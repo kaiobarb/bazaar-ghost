@@ -12,11 +12,11 @@ from PIL import Image
 import io
 from emblem_detector import EmblemDetector
 from right_edge_detector import RightEdgeDetector
-from telemetry import create_span, record_histogram
+from telemetry import create_span, record_histogram, record_counter
 class FrameProcessor:
     """Process frames for matchup detection and OCR"""
     
-    def __init__(self, config: Dict[str, Any], quality: str = "480p", old_templates: bool = False, profile: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: Dict[str, Any], quality: str = "480p", old_templates: bool = False, profile: Optional[Dict[str, Any]] = None, streamer: Optional[str] = None):
         """Initialize frame processor with configuration
 
         Args:
@@ -24,10 +24,12 @@ class FrameProcessor:
             quality: Video quality being processed (360p, 480p, 720p, 1080p)
             old_templates: Whether to use underscore-prefixed templates for older VODs
             profile: SFOT profile containing custom_edge and opaque_edge settings
+            streamer: Streamer login name for metric labeling
         """
         self.config = config
         self.quality = quality
         self.old_templates = old_templates
+        self.streamer = streamer or "unknown"
         self.logger = logging.getLogger('sfot.frame_processor')
 
         # Store profile settings for custom edge detection
@@ -150,6 +152,7 @@ class FrameProcessor:
 
             if detected_rank is None:
                 # No emblem found, no matchup
+                record_counter("emblem_not_found", 1, {"streamer": self.streamer, "quality": self.quality})
                 return None
 
             # Reject if bbox is None (detection without valid bounding box)
@@ -204,10 +207,11 @@ class FrameProcessor:
                             f"No right edge detected (conf: {right_conf:.3f}) - "
                             f"possible streamer cam occlusion"
                         )
+                        record_counter("right_edge_failed", 1, {"streamer": self.streamer, "quality": self.quality})
                 else:
                     self.logger.debug(f"Right edge detected at {timestamp}s, x={right_edge_x} (conf: {right_conf:.3f})")
                     # Record right edge confidence metric
-                    record_histogram("right_edge_confidence", right_conf, {})
+                    record_histogram("right_edge_confidence", right_conf, {"streamer": self.streamer, "quality": self.quality})
 
             # Remove emblem from frame for better OCR
             processed_frame = frame.copy()
@@ -349,7 +353,7 @@ class FrameProcessor:
                         span.set_attribute("emblem.confidence", confidence)
                         span.set_attribute("emblem.detected", True)
                     # Record emblem confidence histogram
-                    record_histogram("emblem_confidence", confidence, {"rank": rank})
+                    record_histogram("emblem_confidence", confidence, {"rank": rank, "streamer": self.streamer, "quality": self.quality})
                     return rank, bbox, confidence
 
                 if span:
@@ -427,6 +431,7 @@ class FrameProcessor:
                         span.set_attribute("ocr.text", "")
                         span.set_attribute("ocr.confidence", 0.0)
                         span.set_attribute("ocr.detection_count", 0)
+                    record_counter("ocr_empty", 1, {"streamer": self.streamer, "quality": self.quality})
                     return None, 0.0, {"detections": []}
 
                 # Extract result data
@@ -439,6 +444,7 @@ class FrameProcessor:
                         span.set_attribute("ocr.text", "")
                         span.set_attribute("ocr.confidence", 0.0)
                         span.set_attribute("ocr.detection_count", 0)
+                    record_counter("ocr_empty", 1, {"streamer": self.streamer, "quality": self.quality})
                     return None, 0.0, {"detections": []}
 
                 # Extract recognition results from res_data
@@ -452,6 +458,7 @@ class FrameProcessor:
                         span.set_attribute("ocr.text", "")
                         span.set_attribute("ocr.confidence", 0.0)
                         span.set_attribute("ocr.detection_count", 0)
+                    record_counter("ocr_empty", 1, {"streamer": self.streamer, "quality": self.quality})
                     return None, 0.0, {"detections": []}
 
                 # Find text with highest confidence
@@ -461,6 +468,10 @@ class FrameProcessor:
 
                 # Clean up text
                 cleaned = self._clean_username(text)
+
+                # Track invalid username rejections
+                if cleaned is None and text:
+                    record_counter("ocr_invalid_username", 1, {"streamer": self.streamer, "quality": self.quality})
 
                 # Build debug data structure (convert numpy arrays to lists)
                 ocr_data = {"detections": []}
