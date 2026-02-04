@@ -73,9 +73,10 @@ def init_telemetry(
         _tracer = trace.get_tracer(service_name, service_version)
 
         # Setup metrics
+ 
         metric_reader = PeriodicExportingMetricReader(
             OTLPMetricExporter(),
-            export_interval_millis=60000  # Export every 60s
+            export_interval_millis=10000  # Export every 10s
         )
         meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
         metrics.set_meter_provider(meter_provider)
@@ -359,6 +360,12 @@ def shutdown_telemetry(timeout_millis: int = 30000):
         return
 
     try:
+        # Wait for one more metric collection cycle before flushing.
+        # PeriodicExportingMetricReader collects on a schedule (every 10s).
+        # Metrics recorded just before shutdown won't be in the buffer yet,
+        # so we sleep to ensure at least one collection captures final metrics.
+        import time
+        time.sleep(11)
         # Flush and shutdown logger provider FIRST (so final logs are captured)
         if _logger_provider:
             if hasattr(_logger_provider, 'force_flush'):
