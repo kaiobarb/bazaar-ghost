@@ -76,7 +76,7 @@ class RightEdgeDetector:
 
         # Ensure template fits in frame
         if self.template.shape[0] > frame.shape[0] or self.template.shape[1] > frame.shape[1]:
-            self.logger.debug("Template larger than frame, skipping detection")
+            self.logger.info("Template larger than frame, skipping detection")
             return None, 0.0
 
         try:
@@ -100,13 +100,13 @@ class RightEdgeDetector:
                 template_width = self.template.shape[1]
                 right_edge_x = min_loc[0] + template_width  # Use min_loc for TM_SQDIFF
 
-                self.logger.debug(
+                self.logger.info(
                     f"Right edge detected at x={right_edge_x} "
                     f"(template at {min_loc[0]}), confidence={confidence:.3f}"
                 )
                 return right_edge_x, confidence
             else:
-                self.logger.debug(f"No right edge match (best confidence: {confidence:.3f}, threshold: {threshold:.2f})")
+                self.logger.info(f"No right edge match (best confidence: {confidence:.3f}, threshold: {threshold:.2f})")
                 return None, confidence  # Return best confidence even when no match
 
         except Exception as e:
