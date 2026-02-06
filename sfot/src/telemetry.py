@@ -14,6 +14,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.sdk.metrics.view import View, ExplicitBucketHistogramAggregation
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.sdk.resources import Resource, SERVICE_NAME, SERVICE_VERSION
@@ -78,7 +79,23 @@ def init_telemetry(
             OTLPMetricExporter(),
             export_interval_millis=10000  # Export every 10s
         )
-        meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+
+        # Custom bucket boundaries for confidence scores (0-1 range)
+        confidence_buckets = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95, 1.0]
+        confidence_view = lambda name: View(
+            instrument_name=name,
+            aggregation=ExplicitBucketHistogramAggregation(boundaries=confidence_buckets),
+        )
+
+        meter_provider = MeterProvider(
+            resource=resource,
+            metric_readers=[metric_reader],
+            views=[
+                confidence_view("sfot.emblem.confidence"),
+                confidence_view("sfot.ocr.confidence"),
+                confidence_view("sfot.right_edge.confidence"),
+            ],
+        )
         metrics.set_meter_provider(meter_provider)
         _meter = metrics.get_meter(service_name, service_version)
 
