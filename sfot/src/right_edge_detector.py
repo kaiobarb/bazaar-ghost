@@ -10,10 +10,15 @@ from pathlib import Path
 from typing import Tuple, Optional
 import logging
 
+
 class RightEdgeDetector:
     """Detect right edge boundaries in nameplate frames"""
 
-    def __init__(self, templates_dir: str = "/home/kaio/Dev/bazaar-ghost/sfot/templates", resolution: str = "480p"):
+    def __init__(
+        self,
+        templates_dir: str = "/home/kaio/Dev/bazaar-ghost/sfot/templates",
+        resolution: str = "480p",
+    ):
         """Initialize with right edge template for specified resolution
 
         Args:
@@ -24,96 +29,184 @@ class RightEdgeDetector:
         self.resolution = resolution
         self.template = None
         self.mask = None  # Store alpha mask for template
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger("sfot.right_edge_detector")
 
         # Load resolution-specific template
         self._load_template()
 
     def _load_template(self):
-        """Load the right edge template for the specified resolution"""
-        template_path = self.templates_dir / f"right_edge_{self.resolution}.png"
+        """Load right edge templates for the specified resolution"""
+        self.templates = {}  # name -> {template, mask}
 
-        if template_path.exists():
-            # Load template WITH alpha channel for transparency support
-            template_bgra = cv2.imread(str(template_path), cv2.IMREAD_UNCHANGED)
-            if template_bgra is not None:
-                # If template has alpha channel, extract BGR and create mask
-                if len(template_bgra.shape) == 3 and template_bgra.shape[2] == 4:
-                    # Has alpha channel - extract BGR and alpha mask
-                    self.template = template_bgra[:,:,:3]  # BGR channels only
-                    alpha = template_bgra[:,:,3]           # Alpha channel
-                    # Create binary mask: pixels with alpha > 0 are valid
-                    self.mask = (alpha > 0).astype(np.uint8)
-                    self.logger.info(f"Loaded right edge template from {template_path.name} with mask")
-                else:
-                    # No alpha channel, use as-is with no mask
-                    self.template = template_bgra
-                    self.mask = None
-                    self.logger.info(f"Loaded right edge template from {template_path.name} without mask")
+        # Load original template (with alpha/mask)
+        orig_path = self.templates_dir / f"right_edge_{self.resolution}.png"
+        if orig_path.exists():
+            bgra = cv2.imread(str(orig_path), cv2.IMREAD_UNCHANGED)
+            if bgra is not None and len(bgra.shape) == 3 and bgra.shape[2] == 4:
+                tmpl = bgra[:, :, :3]
+                alpha = bgra[:, :, 3]
+                mask = (alpha > 0).astype(np.uint8)
+                self.templates["orig"] = {"template": tmpl, "mask": mask}
+                # Also store without mask variant
+                self.templates["orig_nomask"] = {"template": tmpl, "mask": None}
+                self.logger.info(
+                    f"Loaded orig template {orig_path.name} ({tmpl.shape[1]}x{tmpl.shape[0]})"
+                )
 
-                h, w = self.template.shape[:2]
-                self.logger.debug(f"Template dimensions: {w}x{h}")
-            else:
-                self.logger.error(f"Failed to load template from {template_path}")
+        # Load new template (no alpha)
+        new_path = self.templates_dir / f"right_edge_{self.resolution}_new.png"
+        if new_path.exists():
+            tmpl = cv2.imread(str(new_path), cv2.IMREAD_COLOR)
+            if tmpl is not None:
+                self.templates["new"] = {"template": tmpl, "mask": None}
+                self.logger.info(
+                    f"Loaded new template {new_path.name} ({tmpl.shape[1]}x{tmpl.shape[0]})"
+                )
+
+        # Set self.template for backward compat (use first available)
+        if self.templates:
+            first = next(iter(self.templates.values()))
+            self.template = first["template"]
+            self.mask = first["mask"]
         else:
-            self.logger.warning(f"Right edge template not found: {template_path}")
+            self.logger.warning(f"No right edge templates found for {self.resolution}")
 
-    def detect_right_edge(self, frame: np.ndarray, threshold: float = 0.7) -> Tuple[Optional[int], float]:
-        """
-        Detect the right edge boundary in the frame
+    def _binarize(self, image: np.ndarray) -> np.ndarray:
+        """Convert image to binary using Otsu's thresholding
 
         Args:
-            frame: Input frame (color)
-            threshold: Matching threshold (0-1)
+            image: BGR or grayscale image
 
         Returns:
-            (right_edge_x, confidence) or (None, 0.0) if no match
-            right_edge_x is the x-coordinate of the right edge of the template
+            Binary (single-channel) image
         """
-        if self.template is None:
-            self.logger.warning("No template loaded for right edge detection")
-            return None, 0.0
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        return binary
 
-        # Ensure template fits in frame
-        if self.template.shape[0] > frame.shape[0] or self.template.shape[1] > frame.shape[1]:
-            self.logger.info("Template larger than frame, skipping detection")
-            return None, 0.0
+    def _run_bench_pass(
+        self,
+        frame: np.ndarray,
+        templates: dict,
+        methods: list,
+        mask_methods: set,
+        pass_label: str,
+    ) -> list:
+        """Run all method/template combos for a single benchmark pass
 
-        try:
-            # Perform template matching with mask if available
-            if self.mask is not None:
-                result = cv2.matchTemplate(frame, self.template, cv2.TM_SQDIFF, mask=self.mask)
-            else:
-                # No mask, use regular matching
-                result = cv2.matchTemplate(frame, self.template, cv2.TM_SQDIFF)
+        Args:
+            frame: The frame to match against (BGR or binary)
+            templates: Dict of name -> {template, mask} to test
+            methods: List of (method_name, method_flag, use_min) tuples
+            mask_methods: Set of method flags that support mask parameter
+            pass_label: Label prefix for log lines (e.g. 'color' or 'binary')
 
-            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+        Returns:
+            List of formatted result strings
+        """
+        results = []
 
-            template_pixels = self.template.shape[0] * self.template.shape[1] * self.template.shape[2]
-            max_possible_diff = template_pixels * 255 * 255 
-            normalized_score = min_val / max_possible_diff
-            confidence = 1.0 - min(normalized_score, 1.0)  # Clamp to [0, 1]
+        for tmpl_name, tmpl_data in templates.items():
+            template = tmpl_data["template"]
+            mask = tmpl_data["mask"]
 
-            # Check if match exceeds threshold
-            if confidence >= threshold:
-                # Calculate right edge x-coordinate
-                template_width = self.template.shape[1]
-                right_edge_x = min_loc[0] + template_width  # Use min_loc for TM_SQDIFF
-
-                self.logger.info(
-                    f"Right edge detected at x={right_edge_x} "
-                    f"(template at {min_loc[0]}), confidence={confidence:.3f}"
+            # Skip if template doesn't fit
+            if template.shape[0] > frame.shape[0] or template.shape[1] > frame.shape[1]:
+                results.append(
+                    f"  [{pass_label}] {tmpl_name}: SKIP (template larger than frame)"
                 )
-                return right_edge_x, confidence
-            else:
-                self.logger.info(f"No right edge match (best confidence: {confidence:.3f}, threshold: {threshold:.2f})")
-                return None, confidence  # Return best confidence even when no match
+                continue
 
-        except Exception as e:
-            self.logger.error(f"Right edge detection error: {e}")
+            for method_name, method_flag, use_min in methods:
+                try:
+                    # Only pass mask for methods that support it, and only if mask exists
+                    use_mask = mask is not None and method_flag in mask_methods
+                    if use_mask:
+                        result = cv2.matchTemplate(
+                            frame, template, method_flag, mask=mask
+                        )
+                    else:
+                        result = cv2.matchTemplate(frame, template, method_flag)
+
+                    min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+
+                    if use_min:
+                        best_val = min_val
+                        best_loc = min_loc
+                    else:
+                        best_val = max_val
+                        best_loc = max_loc
+
+                    template_width = template.shape[1]
+                    right_edge_x = best_loc[0] + template_width
+                    mask_str = "+mask" if use_mask else ""
+
+                    results.append(
+                        f"  [{pass_label}] {tmpl_name}/{method_name}{mask_str}: "
+                        f"val={best_val:.4f} x={right_edge_x} (at {best_loc[0]},{best_loc[1]})"
+                    )
+                except Exception as e:
+                    results.append(
+                        f"  [{pass_label}] {tmpl_name}/{method_name}: ERROR {e}"
+                    )
+
+        return results
+
+    def detect_right_edge(
+        self, frame: np.ndarray, threshold: float = 0.7
+    ) -> Tuple[Optional[int], float]:
+        """
+        Try all template matching methods across all loaded templates and log results.
+        Runs two passes: color (original) and binary (Otsu thresholded).
+        Returns (None, 0.0) — this is a benchmarking mode, not production detection.
+        """
+        if not self.templates:
+            self.logger.warning("No templates loaded for right edge detection")
             return None, 0.0
 
-    def create_debug_visualization(self, frame: np.ndarray, threshold: float = 0.7) -> np.ndarray:
+        methods = [
+            ("SQDIFF", cv2.TM_SQDIFF, True),  # (name, flag, use_min)
+            ("SQDIFF_NORMED", cv2.TM_SQDIFF_NORMED, True),
+            ("CCORR", cv2.TM_CCORR, False),
+            ("CCORR_NORMED", cv2.TM_CCORR_NORMED, False),
+            ("CCOEFF", cv2.TM_CCOEFF, False),
+            ("CCOEFF_NORMED", cv2.TM_CCOEFF_NORMED, False),
+        ]
+
+        # Methods that support mask parameter
+        mask_methods = {cv2.TM_SQDIFF, cv2.TM_CCORR_NORMED, cv2.TM_CCOEFF_NORMED}
+
+        results = []
+
+        # Pass 1: Color (original BGR templates against BGR frame)
+        results.extend(
+            self._run_bench_pass(frame, self.templates, methods, mask_methods, "color")
+        )
+
+        # Pass 2: Binary (Otsu thresholded frame and templates)
+        binary_frame = self._binarize(frame)
+        binary_templates = {}
+        for tmpl_name, tmpl_data in self.templates.items():
+            binary_tmpl = self._binarize(tmpl_data["template"])
+            # Binarize mask too if present (threshold at 0 since mask is already 0/1)
+            binary_mask = tmpl_data["mask"]
+            binary_templates[tmpl_name] = {"template": binary_tmpl, "mask": binary_mask}
+
+        results.extend(
+            self._run_bench_pass(
+                binary_frame, binary_templates, methods, mask_methods, "binary"
+            )
+        )
+
+        self.logger.info("RIGHT_EDGE_BENCH:\n" + "\n".join(results))
+        return None, 0.0
+
+    def create_debug_visualization(
+        self, frame: np.ndarray, threshold: float = 0.7
+    ) -> np.ndarray:
         """
         Create a visualization showing detected right edge
 
@@ -143,20 +236,32 @@ class RightEdgeDetector:
 
             # Find the y position (from the match location)
             if self.mask is not None:
-                result = cv2.matchTemplate(frame, self.template, cv2.TM_SQDIFF, mask=self.mask)
+                result = cv2.matchTemplate(
+                    frame, self.template, cv2.TM_SQDIFF, mask=self.mask
+                )
             else:
                 result = cv2.matchTemplate(frame, self.template, cv2.TM_SQDIFF)
             _, _, min_loc, _ = cv2.minMaxLoc(result)
 
-            cv2.rectangle(vis,
-                         (template_x, min_loc[1]),
-                         (right_edge_x, min_loc[1] + template_h),
-                         (0, 255, 0), 2)
+            cv2.rectangle(
+                vis,
+                (template_x, min_loc[1]),
+                (right_edge_x, min_loc[1] + template_h),
+                (0, 255, 0),
+                2,
+            )
 
             # Add text label
             label = f"Right Edge ({confidence:.2f})"
-            cv2.putText(vis, label, (template_x, min_loc[1] - 5),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            cv2.putText(
+                vis,
+                label,
+                (template_x, min_loc[1] - 5),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 255, 0),
+                1,
+            )
 
         return vis
 
@@ -166,13 +271,14 @@ def test_right_edge_detector():
     import sys
 
     # Configure logging to see debug output
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format='%(levelname)s - %(message)s'
-    )
+    logging.basicConfig(level=logging.DEBUG, format="%(levelname)s - %(message)s")
 
     # Get image path from command line or use default
-    img_path = sys.argv[1] if len(sys.argv) > 1 else "/home/kaio/Dev/bazaar-ghost/.ignore/375(1).jpg"
+    img_path = (
+        sys.argv[1]
+        if len(sys.argv) > 1
+        else "/home/kaio/Dev/bazaar-ghost/.ignore/375(1).jpg"
+    )
     resolution = sys.argv[2] if len(sys.argv) > 2 else "480p"
 
     # Initialize detector
