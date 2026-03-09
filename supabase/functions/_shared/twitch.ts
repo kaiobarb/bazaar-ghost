@@ -357,8 +357,6 @@ export async function twitchGraphQLCall<T = any>(
     body.operationName = operationName;
   }
 
-  console.log(`Twitch GraphQL call: ${operationName || "query"}`);
-
   const response = await fetch(TWITCH_GQL_URL, {
     method: "POST",
     headers: {
@@ -388,8 +386,6 @@ export async function twitchGraphQLCall<T = any>(
         `GraphQL error with no data: ${result.errors[0].message}`,
       );
     }
-
-    console.log("Proceeding with partial data despite errors");
   }
 
   return result;

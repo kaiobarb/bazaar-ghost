@@ -174,24 +174,36 @@ export async function recordHistogram(
 
 type LogLevel = "info" | "warn" | "error";
 
+// Map log levels to OTLP severity numbers
+const SEVERITY_MAP: Record<LogLevel, { text: string; number: number }> = {
+  info: { text: "INFO", number: 9 },
+  warn: { text: "WARN", number: 13 },
+  error: { text: "ERROR", number: 17 },
+};
+
 /**
- * Structured JSON logging for Grafana Loki.
- * Output format is compatible with Loki's JSON parser.
+ * Structured JSON logging for Grafana Loki via OTLP.
+ * Pushes logs directly to Grafana Cloud OTLP endpoint AND writes to console.
+ * The service name defaults to "process-vod" but can be overridden via attributes.
  */
-export function log(
+export async function log(
   level: LogLevel,
   message: string,
   attributes: Record<string, unknown> = {},
-): void {
+): Promise<void> {
+  const serviceName = typeof attributes.service === "string"
+    ? attributes.service
+    : "process-vod";
+
   const logEntry = {
     timestamp: new Date().toISOString(),
     level,
-    service: "process-vod",
+    service: serviceName,
     message,
     ...attributes,
   };
 
-  // Use appropriate console method based on level
+  // Always write to console (Supabase function logs)
   switch (level) {
     case "error":
       console.error(JSON.stringify(logEntry));
@@ -201,5 +213,65 @@ export function log(
       break;
     default:
       console.log(JSON.stringify(logEntry));
+  }
+
+  // Push to Grafana Loki via OTLP
+  if (!OTEL_ENDPOINT) return;
+
+  const now = Date.now() * 1_000_000; // nanoseconds
+  const severity = SEVERITY_MAP[level];
+
+  // Build OTLP log attributes from all non-reserved keys
+  const otlpAttributes = Object.entries(attributes)
+    .filter(([key]) => key !== "service")
+    .map(([key, val]) => ({
+      key,
+      value: { stringValue: String(val) },
+    }));
+
+  const payload = {
+    resourceLogs: [
+      {
+        resource: {
+          attributes: [
+            { key: "service.name", value: { stringValue: serviceName } },
+          ],
+        },
+        scopeLogs: [
+          {
+            scope: { name: serviceName },
+            logRecords: [
+              {
+                timeUnixNano: now.toString(),
+                observedTimeUnixNano: now.toString(),
+                severityNumber: severity.number,
+                severityText: severity.text,
+                body: { stringValue: message },
+                attributes: otlpAttributes,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+
+  try {
+    const headers = parseOtelHeaders();
+    const response = await fetch(`${OTEL_ENDPOINT}/v1/logs`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...headers,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[telemetry] Failed to push log: ${response.status} ${errorText}`);
+    }
+  } catch (error) {
+    console.error("[telemetry] Error pushing log:", error);
   }
 }

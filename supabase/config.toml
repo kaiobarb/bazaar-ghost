@@ -426,4 +426,10 @@ entrypoint = "./functions/ghost-bot/index.ts"
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/ghost-bot/*.html" ]
 
+[functions.search-chat-mentions]
+enabled = true
+verify_jwt = false
+import_map = "./functions/search-chat-mentions/deno.json"
+entrypoint = "./functions/search-chat-mentions/index.ts"
+
 # [functions.eventsub-webhook] - REMOVED: EventSub webhook handling merged into process-vod
