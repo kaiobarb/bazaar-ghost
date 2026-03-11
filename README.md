@@ -71,7 +71,6 @@ supabase/
     insert-new-streamers/       # Discovers streamers from recent Bazaar VODs
     update-vods/                # Fetches VODs with chapter data for a streamer
     process-vod/                # Handles EventSub webhooks, triggers GitHub Actions
-    trigger-github-processing/  # Dispatches GitHub Actions workflows
     check_vod_availability/     # Checks if a Twitch VOD is still accessible
     get_vods_from_streamer/     # Returns VODs for a given streamer
     schedule-vod-processing/    # Schedules VOD processing runs
@@ -101,7 +100,6 @@ scripts/
   clear-detections-bucket.ts    # Clear Supabase storage bucket (Deno)
 .github/workflows/
   process-vod.yml               # Main: fetches chunks, runs SFDE matrix over them
-  process-chunk.yml             # Single chunk processing
   deploy-functions.yml          # Auto-deploy Edge Functions on push to main/dev
   deploy-migrations.yml         # Auto-deploy migrations on push to main/dev
   sync-discord-commands.yml     # Sync Discord bot slash commands
