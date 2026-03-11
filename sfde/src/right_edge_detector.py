@@ -10,10 +10,15 @@ from pathlib import Path
 from typing import Tuple, Optional
 import logging
 
+
 class RightEdgeDetector:
     """Detect right edge boundaries in nameplate frames"""
 
-    def __init__(self, templates_dir: str = "/home/kaio/Dev/bazaar-ghost/sfot/templates", resolution: str = "480p"):
+    def __init__(
+        self,
+        templates_dir: str = "/home/kaio/Dev/bazaar-ghost/sfde/templates",
+        resolution: str = "480p",
+    ):
         """Initialize with right edge template for specified resolution
 
         Args:
@@ -40,16 +45,20 @@ class RightEdgeDetector:
                 # If template has alpha channel, extract BGR and create mask
                 if len(template_bgra.shape) == 3 and template_bgra.shape[2] == 4:
                     # Has alpha channel - extract BGR and alpha mask
-                    self.template = template_bgra[:,:,:3]  # BGR channels only
-                    alpha = template_bgra[:,:,3]           # Alpha channel
+                    self.template = template_bgra[:, :, :3]  # BGR channels only
+                    alpha = template_bgra[:, :, 3]  # Alpha channel
                     # Create binary mask: pixels with alpha > 0 are valid
                     self.mask = (alpha > 0).astype(np.uint8)
-                    self.logger.info(f"Loaded right edge template from {template_path.name} with mask")
+                    self.logger.info(
+                        f"Loaded right edge template from {template_path.name} with mask"
+                    )
                 else:
                     # No alpha channel, use as-is with no mask
                     self.template = template_bgra
                     self.mask = None
-                    self.logger.info(f"Loaded right edge template from {template_path.name} without mask")
+                    self.logger.info(
+                        f"Loaded right edge template from {template_path.name} without mask"
+                    )
 
                 h, w = self.template.shape[:2]
                 self.logger.debug(f"Template dimensions: {w}x{h}")
@@ -58,7 +67,9 @@ class RightEdgeDetector:
         else:
             self.logger.warning(f"Right edge template not found: {template_path}")
 
-    def detect_right_edge(self, frame: np.ndarray, threshold: float = 0.7) -> Tuple[Optional[int], float]:
+    def detect_right_edge(
+        self, frame: np.ndarray, threshold: float = 0.7
+    ) -> Tuple[Optional[int], float]:
         """
         Detect the right edge boundary in the frame
 
@@ -75,22 +86,29 @@ class RightEdgeDetector:
             return None, 0.0
 
         # Ensure template fits in frame
-        if self.template.shape[0] > frame.shape[0] or self.template.shape[1] > frame.shape[1]:
+        if (
+            self.template.shape[0] > frame.shape[0]
+            or self.template.shape[1] > frame.shape[1]
+        ):
             self.logger.info("Template larger than frame, skipping detection")
             return None, 0.0
 
         try:
             # Perform template matching with mask if available
             if self.mask is not None:
-                result = cv2.matchTemplate(frame, self.template, cv2.TM_SQDIFF, mask=self.mask)
+                result = cv2.matchTemplate(
+                    frame, self.template, cv2.TM_SQDIFF, mask=self.mask
+                )
             else:
                 # No mask, use regular matching
                 result = cv2.matchTemplate(frame, self.template, cv2.TM_SQDIFF)
 
             min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
 
-            template_pixels = self.template.shape[0] * self.template.shape[1] * self.template.shape[2]
-            max_possible_diff = template_pixels * 255 * 255 
+            template_pixels = (
+                self.template.shape[0] * self.template.shape[1] * self.template.shape[2]
+            )
+            max_possible_diff = template_pixels * 255 * 255
             normalized_score = min_val / max_possible_diff
             confidence = 1.0 - min(normalized_score, 1.0)  # Clamp to [0, 1]
 
@@ -106,14 +124,18 @@ class RightEdgeDetector:
                 )
                 return right_edge_x, confidence
             else:
-                self.logger.info(f"No right edge match (best confidence: {confidence:.3f}, threshold: {threshold:.2f})")
+                self.logger.info(
+                    f"No right edge match (best confidence: {confidence:.3f}, threshold: {threshold:.2f})"
+                )
                 return None, confidence  # Return best confidence even when no match
 
         except Exception as e:
             self.logger.error(f"Right edge detection error: {e}")
             return None, 0.0
 
-    def create_debug_visualization(self, frame: np.ndarray, threshold: float = 0.7) -> np.ndarray:
+    def create_debug_visualization(
+        self, frame: np.ndarray, threshold: float = 0.7
+    ) -> np.ndarray:
         """
         Create a visualization showing detected right edge
 
@@ -143,20 +165,32 @@ class RightEdgeDetector:
 
             # Find the y position (from the match location)
             if self.mask is not None:
-                result = cv2.matchTemplate(frame, self.template, cv2.TM_SQDIFF, mask=self.mask)
+                result = cv2.matchTemplate(
+                    frame, self.template, cv2.TM_SQDIFF, mask=self.mask
+                )
             else:
                 result = cv2.matchTemplate(frame, self.template, cv2.TM_SQDIFF)
             _, _, min_loc, _ = cv2.minMaxLoc(result)
 
-            cv2.rectangle(vis,
-                         (template_x, min_loc[1]),
-                         (right_edge_x, min_loc[1] + template_h),
-                         (0, 255, 0), 2)
+            cv2.rectangle(
+                vis,
+                (template_x, min_loc[1]),
+                (right_edge_x, min_loc[1] + template_h),
+                (0, 255, 0),
+                2,
+            )
 
             # Add text label
             label = f"Right Edge ({confidence:.2f})"
-            cv2.putText(vis, label, (template_x, min_loc[1] - 5),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            cv2.putText(
+                vis,
+                label,
+                (template_x, min_loc[1] - 5),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 255, 0),
+                1,
+            )
 
         return vis
 
@@ -166,13 +200,14 @@ def test_right_edge_detector():
     import sys
 
     # Configure logging to see debug output
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format='%(levelname)s - %(message)s'
-    )
+    logging.basicConfig(level=logging.DEBUG, format="%(levelname)s - %(message)s")
 
     # Get image path from command line or use default
-    img_path = sys.argv[1] if len(sys.argv) > 1 else "/home/kaio/Dev/bazaar-ghost/.ignore/375(1).jpg"
+    img_path = (
+        sys.argv[1]
+        if len(sys.argv) > 1
+        else "/home/kaio/Dev/bazaar-ghost/.ignore/375(1).jpg"
+    )
     resolution = sys.argv[2] if len(sys.argv) > 2 else "480p"
 
     # Initialize detector

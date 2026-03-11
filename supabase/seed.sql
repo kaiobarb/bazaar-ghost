@@ -9,13 +9,13 @@ TRUNCATE TABLE public.detections CASCADE;
 TRUNCATE TABLE public.chunks CASCADE;
 TRUNCATE TABLE public.vods CASCADE;
 TRUNCATE TABLE public.streamers CASCADE;
-TRUNCATE TABLE public.sfot_profiles CASCADE;
+TRUNCATE TABLE public.sfde_profiles CASCADE;
 
 -- Disable triggers during seed to prevent chunk auto-creation and status recalc
 SET session_replication_role = replica;
 
--- SFOT Profiles
-INSERT INTO public.sfot_profiles (id, profile_name, crop_region, scale, custom_edge, opaque_edge, from_date, to_date, created_at, updated_at) OVERRIDING SYSTEM VALUE VALUES
+-- SFDE Profiles
+INSERT INTO public.sfde_profiles (id, profile_name, crop_region, scale, custom_edge, opaque_edge, from_date, to_date, created_at, updated_at) OVERRIDING SYSTEM VALUE VALUES
 (1, 'default', '{0.5726,0.7290,0.3500,0.1210}', 1.0, NULL, true, NULL, NULL, '2025-11-17 00:32:02.876521+00', '2026-01-10 04:22:16.55283+00'),
 (2, 'ChronosOutOfTime', '{0.5726,0.7620,0.3500,0.1125}', 1.0, NULL, true, NULL, NULL, '2025-11-17 00:32:02.876521+00', '2025-11-17 00:32:02.876521+00'),
 (3, 'PatoPapao', '{0.5726,0.7333,0.3500,0.1125}', 1.0, '0.6905', true, NULL, NULL, '2025-11-17 19:39:18.174423+00', '2025-11-17 19:39:18.174423+00'),
@@ -37,7 +37,7 @@ INSERT INTO public.sfot_profiles (id, profile_name, crop_region, scale, custom_e
 (25, 'veetoqc', '{0.5726,0.7290,0.3500,0.1210}', 1.0, NULL, false, NULL, NULL, '2026-01-10 04:35:56.084715+00', '2026-02-21 00:23:27.990587+00');
 
 -- Streamers (processing_enabled preserved from prod)
-INSERT INTO public.streamers (id, login, display_name, profile_image_url, processing_enabled, has_vods, oldest_vod, num_vods, num_bazaar_vods, sfot_profile_id, created_at, updated_at) VALUES
+INSERT INTO public.streamers (id, login, display_name, profile_image_url, processing_enabled, has_vods, oldest_vod, num_vods, num_bazaar_vods, sfde_profile_id, created_at, updated_at) VALUES
 (11694825, 'trolldaddytw', '廚爹', 'https://static-cdn.jtvnw.net/jtv_user_pictures/trolldaddytw-profile_image-46f4143bf95ccaa4-300x300.png', true, true, '2025-12-01 11:48:32+00', 21, 13, 1, '2025-12-30 00:00:08.719103+00', '2026-01-28 11:00:12.124+00'),
 (15054610, 'snnuy', 'Snnuy', 'https://static-cdn.jtvnw.net/jtv_user_pictures/181f3817-7dd7-4379-bebf-1e1244f65789-profile_image-300x300.png', true, true, '2025-12-03 17:56:24+00', 20, 1, 12, '2025-11-01 00:00:05.644449+00', '2026-01-28 00:00:11.641+00'),
 (15690274, 'hunting_mage', 'Hunting_Mage', 'https://static-cdn.jtvnw.net/jtv_user_pictures/6b654253-3de0-419a-a8b5-2def410bd8ea-profile_image-300x300.png', true, false, NULL, 1, 0, 1, '2025-10-27 19:21:54.661746+00', '2026-01-08 12:00:11.244+00'),
@@ -51942,7 +51942,7 @@ SET session_replication_role = DEFAULT;
 
 -- Reset sequences
 SELECT setval('public.vods_id_seq', (SELECT COALESCE(MAX(id), 1) FROM public.vods), true);
-SELECT setval('public.sfot_profiles_id_seq', (SELECT COALESCE(MAX(id), 1) FROM public.sfot_profiles), true);
+SELECT setval('public.sfde_profiles_id_seq', (SELECT COALESCE(MAX(id), 1) FROM public.sfde_profiles), true);
 
 -- Seed test schema (if it exists)
 DO $$

@@ -1,6 +1,7 @@
 """
 Frame processor module - Handles OpenCV detection and PaddleOCR
 """
+
 import os
 import cv2
 import numpy as np
@@ -13,82 +14,107 @@ import io
 from emblem_detector import EmblemDetector
 from right_edge_detector import RightEdgeDetector
 from telemetry import create_span, record_histogram, record_counter
+
+
 class FrameProcessor:
     """Process frames for matchup detection and OCR"""
-    
-    def __init__(self, config: Dict[str, Any], quality: str = "480p", old_templates: bool = False, profile: Optional[Dict[str, Any]] = None, streamer: Optional[str] = None):
+
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        quality: str = "480p",
+        old_templates: bool = False,
+        profile: Optional[Dict[str, Any]] = None,
+        streamer: Optional[str] = None,
+    ):
         """Initialize frame processor with configuration
 
         Args:
             config: Configuration dictionary
             quality: Video quality being processed (360p, 480p, 720p, 1080p)
             old_templates: Whether to use underscore-prefixed templates for older VODs
-            profile: SFOT profile containing custom_edge and opaque_edge settings
+            profile: SFDE profile containing custom_edge and opaque_edge settings
             streamer: Streamer login name for metric labeling
         """
         self.config = config
         self.quality = quality
         self.old_templates = old_templates
         self.streamer = streamer or "unknown"
-        self.logger = logging.getLogger('sfot.frame_processor')
+        self.logger = logging.getLogger("sfde.frame_processor")
 
         # Store profile settings for custom edge detection
         self.profile = profile or {}
         # Convert custom_edge to float if present (it may come as string from JSON)
-        custom_edge_value = self.profile.get('custom_edge')
-        self.custom_edge_percent = float(custom_edge_value) if custom_edge_value is not None else None
-        self.opaque_edge = self.profile.get('opaque_edge', False)  # Default False for backward compatibility
+        custom_edge_value = self.profile.get("custom_edge")
+        self.custom_edge_percent = (
+            float(custom_edge_value) if custom_edge_value is not None else None
+        )
+        self.opaque_edge = self.profile.get(
+            "opaque_edge", False
+        )  # Default False for backward compatibility
 
         # Log custom edge settings if present
         if self.custom_edge_percent is not None:
-            self.logger.info(f"Custom edge configured: {self.custom_edge_percent*100:.1f}% of crop width, opaque={self.opaque_edge}")
+            self.logger.info(
+                f"Custom edge configured: {self.custom_edge_percent * 100:.1f}% of crop width, opaque={self.opaque_edge}"
+            )
 
         # Load detection parameters
-        self.threshold = config['detection']['threshold']
+        self.threshold = config["detection"]["threshold"]
 
         # Load matchup template if specified
         self.matchup_template = None
-        if 'template_path' in config['detection']:
+        if "template_path" in config["detection"]:
             try:
-                self.matchup_template = cv2.imread(config['detection']['template_path'], 0)
-                self.logger.info(f"Loaded matchup template: {config['detection']['template_path']}")
+                self.matchup_template = cv2.imread(
+                    config["detection"]["template_path"], 0
+                )
+                self.logger.info(
+                    f"Loaded matchup template: {config['detection']['template_path']}"
+                )
             except Exception as e:
                 self.logger.warning(f"Could not load matchup template: {e}")
 
         # Map quality to resolution for templates
         resolution_map = {
-            '360p': '360p',
-            '480p': '480p',
-            '720p': '720p',
-            '1080p': '1080p',
-            '1080p60': '1080p'  # Use 1080p templates for 1080p60 too
+            "360p": "360p",
+            "480p": "480p",
+            "720p": "720p",
+            "1080p": "1080p",
+            "1080p60": "1080p",  # Use 1080p templates for 1080p60 too
         }
-        template_resolution = resolution_map.get(quality, '480p')
+        template_resolution = resolution_map.get(quality, "480p")
 
         # Initialize emblem detector
         self.emblem_detector = None
-        if config.get('emblem_detection', {}).get('enabled', False):
+        if config.get("emblem_detection", {}).get("enabled", False):
             try:
-                emblem_config = config['emblem_detection']
-                templates_dir = emblem_config.get('templates_dir', 'templates/')
-                template_method = emblem_config.get('template_method', 'TM_CCOEFF_NORMED')
-                self.emblem_threshold = emblem_config.get('template_threshold', 0.5)
+                emblem_config = config["emblem_detection"]
+                templates_dir = emblem_config.get("templates_dir", "templates/")
+                template_method = emblem_config.get(
+                    "template_method", "TM_CCOEFF_NORMED"
+                )
+                self.emblem_threshold = emblem_config.get("template_threshold", 0.5)
 
                 self.emblem_detector = EmblemDetector(
                     templates_dir,
                     resolution=template_resolution,
                     old_templates=self.old_templates,
-                    template_method=template_method
+                    template_method=template_method,
                 )
 
-                self.logger.info(f"Initialized emblem detector with {template_resolution} templates (threshold={self.emblem_threshold})")
+                self.logger.info(
+                    f"Initialized emblem detector with {template_resolution} templates (threshold={self.emblem_threshold})"
+                )
 
                 # Log template dimensions for debugging
-                if hasattr(self.emblem_detector, 'templates'):
+                if hasattr(self.emblem_detector, "templates"):
                     for rank, template in self.emblem_detector.templates.items():
                         if template is not None:
                             h, w = template.shape[:2]
-                            self.logger.info(f"Template '{rank}' dimensions: {w}x{h} pixels ({template_resolution})")
+                            self.logger.info(
+                                f"Template '{rank}' dimensions: {w}x{h} pixels ({template_resolution})"
+                            )
 
             except Exception as e:
                 self.logger.warning(f"Could not initialize emblem detector: {e}")
@@ -96,15 +122,30 @@ class FrameProcessor:
         # Initialize right edge detector
         self.right_edge_detector = None
         self.right_edge_crop_margin = 0.0
-        if config.get('right_edge_detection', {}).get('enabled', True):
+        if config.get("right_edge_detection", {}).get("enabled", True):
             try:
-                templates_dir = config.get('right_edge_detection', {}).get('templates_dir',
-                                          config.get('emblem_detection', {}).get('templates_dir', 'templates/'))
-                self.right_edge_detector = RightEdgeDetector(templates_dir, resolution=template_resolution)
-                self.right_edge_threshold = config.get('right_edge_detection', {}).get('threshold', 0.7)
+                templates_dir = config.get("right_edge_detection", {}).get(
+                    "templates_dir",
+                    config.get("emblem_detection", {}).get(
+                        "templates_dir", "templates/"
+                    ),
+                )
+                self.right_edge_detector = RightEdgeDetector(
+                    templates_dir, resolution=template_resolution
+                )
+                self.right_edge_threshold = config.get("right_edge_detection", {}).get(
+                    "threshold", 0.7
+                )
                 # Crop margin: crop this % more to avoid edge artifacts (e.g., 10% = crop at x=90 if edge at x=100)
-                self.right_edge_crop_margin = config.get('right_edge_detection', {}).get('crop_margin_percent', 10) / 100.0
-                self.logger.info(f"Initialized right edge detector with {template_resolution} template (crop margin: {self.right_edge_crop_margin*100:.0f}%)")
+                self.right_edge_crop_margin = (
+                    config.get("right_edge_detection", {}).get(
+                        "crop_margin_percent", 10
+                    )
+                    / 100.0
+                )
+                self.logger.info(
+                    f"Initialized right edge detector with {template_resolution} template (crop margin: {self.right_edge_crop_margin * 100:.0f}%)"
+                )
             except Exception as e:
                 self.logger.warning(f"Could not initialize right edge detector: {e}")
 
@@ -117,7 +158,7 @@ class FrameProcessor:
                 use_doc_orientation_classify=False,
                 use_doc_unwarping=False,
                 use_textline_orientation=False,
-                text_rec_score_thresh=self.ocr_confidence_threshold
+                text_rec_score_thresh=self.ocr_confidence_threshold,
             )
             self.logger.info("Initialized PaddleOCR (mobile models)")
         except Exception as e:
@@ -127,8 +168,10 @@ class FrameProcessor:
         # Cache for performance
         self.last_matchup_time = 0
         self.min_matchup_interval = 10  # Minimum seconds between matchups
-    
-    def process_frame(self, frame_data: bytes, timestamp: int, vod_id: str, chunk_id: str) -> Optional[Dict[str, Any]]:
+
+    def process_frame(
+        self, frame_data: bytes, timestamp: int, vod_id: str, chunk_id: str
+    ) -> Optional[Dict[str, Any]]:
         """
         Process a single frame for matchup detection
 
@@ -152,12 +195,18 @@ class FrameProcessor:
 
             if detected_rank is None:
                 # No emblem found, no matchup
-                record_counter("emblem_not_found", 1, {"streamer": self.streamer, "quality": self.quality})
+                record_counter(
+                    "emblem_not_found",
+                    1,
+                    {"streamer": self.streamer, "quality": self.quality},
+                )
                 return None
 
             # Reject if bbox is None (detection without valid bounding box)
             if emblem_bbox is None:
-                self.logger.info(f"Rejecting detection at {timestamp}s: emblem detected but bbox is None")
+                self.logger.info(
+                    f"Rejecting detection at {timestamp}s: emblem detected but bbox is None"
+                )
                 return None
 
             # Check minimum interval
@@ -182,7 +231,9 @@ class FrameProcessor:
                 # Calculate custom edge position based on frame width
                 right_edge_x = int(frame.shape[1] * self.custom_edge_percent)
                 truncated = True
-                self.logger.info(f"Using custom edge (opaque mode) at {right_edge_x}px ({self.custom_edge_percent*100:.1f}% of frame width)")
+                self.logger.info(
+                    f"Using custom edge (opaque mode) at {right_edge_x}px ({self.custom_edge_percent * 100:.1f}% of frame width)"
+                )
 
             elif self.right_edge_detector:
                 # Case 2: Try right edge detection
@@ -207,11 +258,21 @@ class FrameProcessor:
                             f"No right edge detected (conf: {right_conf:.3f}) - "
                             f"possible streamer cam occlusion"
                         )
-                        record_counter("right_edge_failed", 1, {"streamer": self.streamer, "quality": self.quality})
+                        record_counter(
+                            "right_edge_failed",
+                            1,
+                            {"streamer": self.streamer, "quality": self.quality},
+                        )
                 else:
-                    self.logger.debug(f"Right edge detected at {timestamp}s, x={right_edge_x} (conf: {right_conf:.3f})")
+                    self.logger.debug(
+                        f"Right edge detected at {timestamp}s, x={right_edge_x} (conf: {right_conf:.3f})"
+                    )
                     # Record right edge confidence metric
-                    record_histogram("right_edge_confidence", right_conf, {"streamer": self.streamer, "quality": self.quality})
+                    record_histogram(
+                        "right_edge_confidence",
+                        right_conf,
+                        {"streamer": self.streamer, "quality": self.quality},
+                    )
 
             # Remove emblem from frame for better OCR
             processed_frame = frame.copy()
@@ -224,7 +285,9 @@ class FrameProcessor:
             username, ocr_confidence, ocr_data = self._extract_usernames(cropped_frame)
 
             # Encode the original frame (already cropped by FFmpeg)
-            success, encoded = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            success, encoded = cv2.imencode(
+                ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85]
+            )
             frame_jpeg = encoded.tobytes() if success else None
 
             # Create OCR debug visualization (always on matchup frames)
@@ -239,8 +302,7 @@ class FrameProcessor:
                 try:
                     # Create visualization with emblem bounding box on original frame
                     boxes_vis = self.emblem_detector.create_debug_visualization(
-                        frame,
-                        threshold=self.emblem_threshold
+                        frame, threshold=self.emblem_threshold
                     )
 
                     # Add right edge visualization if detected
@@ -250,8 +312,13 @@ class FrameProcessor:
                         crop_position = right_edge_x - margin_pixels
 
                         # Draw vertical line at actual crop position (cyan)
-                        cv2.line(boxes_vis, (crop_position, 0), (crop_position, boxes_vis.shape[0]),
-                                (255, 255, 0), 2)  # Cyan color - shows where crop will happen
+                        cv2.line(
+                            boxes_vis,
+                            (crop_position, 0),
+                            (crop_position, boxes_vis.shape[0]),
+                            (255, 255, 0),
+                            2,
+                        )  # Cyan color - shows where crop will happen
 
                         # Draw right edge bounding box if we can find the match location
                         if self.right_edge_detector.template is not None:
@@ -260,59 +327,87 @@ class FrameProcessor:
                             mask = self.right_edge_detector.mask
 
                             if mask is not None:
-                                result = cv2.matchTemplate(frame, template, cv2.TM_SQDIFF, mask=mask)
+                                result = cv2.matchTemplate(
+                                    frame, template, cv2.TM_SQDIFF, mask=mask
+                                )
                             else:
-                                result = cv2.matchTemplate(frame, template, cv2.TM_SQDIFF)
+                                result = cv2.matchTemplate(
+                                    frame, template, cv2.TM_SQDIFF
+                                )
                             _, _, min_loc, _ = cv2.minMaxLoc(result)
 
                             template_h, template_w = template.shape[:2]
                             template_x = right_edge_x - template_w
 
                             # Draw bounding box around detected template (cyan)
-                            cv2.rectangle(boxes_vis,
-                                        (template_x, min_loc[1]),
-                                        (right_edge_x, min_loc[1] + template_h),
-                                        (255, 255, 0), 2)  # Cyan color
+                            cv2.rectangle(
+                                boxes_vis,
+                                (template_x, min_loc[1]),
+                                (right_edge_x, min_loc[1] + template_h),
+                                (255, 255, 0),
+                                2,
+                            )  # Cyan color
 
                             # Add text label showing detected position and crop position
-                            label = f"Right Edge: {right_edge_x} -> crop at {crop_position}"
-                            cv2.putText(boxes_vis, label, (template_x, min_loc[1] - 5),
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+                            label = (
+                                f"Right Edge: {right_edge_x} -> crop at {crop_position}"
+                            )
+                            cv2.putText(
+                                boxes_vis,
+                                label,
+                                (template_x, min_loc[1] - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
+                                (255, 255, 0),
+                                1,
+                            )
 
-                    success_boxes, encoded_boxes = cv2.imencode('.jpg', boxes_vis, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                    success_boxes, encoded_boxes = cv2.imencode(
+                        ".jpg", boxes_vis, [cv2.IMWRITE_JPEG_QUALITY, 90]
+                    )
                     boxes_jpeg = encoded_boxes.tobytes() if success_boxes else None
-                    self.logger.debug(f"Created bounding box visualization for timestamp {timestamp}")
+                    self.logger.debug(
+                        f"Created bounding box visualization for timestamp {timestamp}"
+                    )
                 except Exception as e:
-                    self.logger.warning(f"Failed to create bounding box visualization: {e}")
+                    self.logger.warning(
+                        f"Failed to create bounding box visualization: {e}"
+                    )
 
             # Prepare result
             result = {
-                'vod_id': vod_id,
-                'timestamp': timestamp,
-                'is_matchup': True,
-                'confidence': ocr_confidence,
-                'username': username,
-                'detected_rank': detected_rank,
-                'chunk_id': chunk_id,
-                'emblem_right_x': emblem_right_x,
-                'right_edge_x': right_edge_x,
-                'no_right_edge': no_right_edge,
-                'truncated': truncated,
-                'frame_base64': base64.b64encode(frame_jpeg).decode('utf-8') if frame_jpeg else None,
-                'ocr_debug_frame': base64.b64encode(debug_jpeg).decode('utf-8') if debug_jpeg else None
+                "vod_id": vod_id,
+                "timestamp": timestamp,
+                "is_matchup": True,
+                "confidence": ocr_confidence,
+                "username": username,
+                "detected_rank": detected_rank,
+                "chunk_id": chunk_id,
+                "emblem_right_x": emblem_right_x,
+                "right_edge_x": right_edge_x,
+                "no_right_edge": no_right_edge,
+                "truncated": truncated,
+                "frame_base64": base64.b64encode(frame_jpeg).decode("utf-8")
+                if frame_jpeg
+                else None,
+                "ocr_debug_frame": base64.b64encode(debug_jpeg).decode("utf-8")
+                if debug_jpeg
+                else None,
             }
 
             # Add bounding box frame if created
             if boxes_jpeg:
-                result['emblem_boxes_frame'] = base64.b64encode(boxes_jpeg).decode('utf-8')
+                result["emblem_boxes_frame"] = base64.b64encode(boxes_jpeg).decode(
+                    "utf-8"
+                )
 
             self.logger.debug(f"Detected matchup at {timestamp}s: {username}")
             return result
-            
+
         except Exception as e:
             self.logger.error(f"Frame processing error: {e}")
             return None
-    
+
     def _decode_frame(self, frame_data: bytes) -> Optional[np.ndarray]:
         """Decode JPEG frame data to numpy array"""
         try:
@@ -323,8 +418,10 @@ class FrameProcessor:
         except Exception as e:
             self.logger.error(f"Failed to decode frame: {e}")
             return None
-    
-    def _detect_emblem(self, frame: np.ndarray) -> Tuple[Optional[str], Optional[Tuple[int, int, int, int]], float]:
+
+    def _detect_emblem(
+        self, frame: np.ndarray
+    ) -> Tuple[Optional[str], Optional[Tuple[int, int, int, int]], float]:
         """
         Detect matchup by looking for rank emblems first (5 template scans)
 
@@ -335,25 +432,36 @@ class FrameProcessor:
             (detected_rank, emblem_bbox, confidence) or (None, None, 0.0) if no emblem found
         """
         if self.emblem_detector is None:
-            self.logger.warning("Emblem detector not initialized, cannot detect matchups")
+            self.logger.warning(
+                "Emblem detector not initialized, cannot detect matchups"
+            )
             return None, None, 0.0
 
         with create_span("emblem_detection") as span:
             try:
                 # Try to detect any of the 5 rank emblems
                 rank, bbox, confidence = self.emblem_detector.detect_emblem(
-                    frame,
-                    threshold=self.emblem_threshold
+                    frame, threshold=self.emblem_threshold
                 )
 
                 if rank is not None:
-                    self.logger.info(f"Matchup detected via {rank} emblem at {bbox}, confidence={confidence:.3f}")
+                    self.logger.info(
+                        f"Matchup detected via {rank} emblem at {bbox}, confidence={confidence:.3f}"
+                    )
                     if span:
                         span.set_attribute("emblem.rank", rank)
                         span.set_attribute("emblem.confidence", confidence)
                         span.set_attribute("emblem.detected", True)
                     # Record emblem confidence histogram
-                    record_histogram("emblem_confidence", confidence, {"rank": rank, "streamer": self.streamer, "quality": self.quality})
+                    record_histogram(
+                        "emblem_confidence",
+                        confidence,
+                        {
+                            "rank": rank,
+                            "streamer": self.streamer,
+                            "quality": self.quality,
+                        },
+                    )
                     return rank, bbox, confidence
 
                 if span:
@@ -363,8 +471,10 @@ class FrameProcessor:
             except Exception as e:
                 self.logger.error(f"Emblem detection error: {e}")
                 return None, None, 0.0
-    
-    def _crop(self, frame: np.ndarray, emblem_bbox: Optional[Tuple[int, int, int, int]] = None) -> np.ndarray:
+
+    def _crop(
+        self, frame: np.ndarray, emblem_bbox: Optional[Tuple[int, int, int, int]] = None
+    ) -> np.ndarray:
         """
         Crop frame to remove top/bottom borders and optionally the emblem
 
@@ -397,9 +507,7 @@ class FrameProcessor:
 
             # Validate minimum dimensions
             if cropped.shape[0] < 20 or cropped.shape[1] < 50:
-                self.logger.warning(
-                    f"Crop too small: {cropped.shape}, using original"
-                )
+                self.logger.warning(f"Crop too small: {cropped.shape}, using original")
                 return frame
 
             return cropped
@@ -408,8 +516,9 @@ class FrameProcessor:
             self.logger.error(f"Simple crop error: {e}")
             return frame
 
-
-    def _extract_usernames(self, frame: np.ndarray) -> Tuple[Optional[str], float, Optional[dict]]:
+    def _extract_usernames(
+        self, frame: np.ndarray
+    ) -> Tuple[Optional[str], float, Optional[dict]]:
         """
         Extract username from cropped nameplate frame using PaddleOCR
 
@@ -431,26 +540,34 @@ class FrameProcessor:
                         span.set_attribute("ocr.text", "")
                         span.set_attribute("ocr.confidence", 0.0)
                         span.set_attribute("ocr.detection_count", 0)
-                    record_counter("ocr_empty", 1, {"streamer": self.streamer, "quality": self.quality})
+                    record_counter(
+                        "ocr_empty",
+                        1,
+                        {"streamer": self.streamer, "quality": self.quality},
+                    )
                     return None, 0.0, {"detections": []}
 
                 # Extract result data
                 result = results[0]
                 result_json = result.json
-                res_data = result_json.get('res', None)
+                res_data = result_json.get("res", None)
 
                 if res_data is None or not res_data:
                     if span:
                         span.set_attribute("ocr.text", "")
                         span.set_attribute("ocr.confidence", 0.0)
                         span.set_attribute("ocr.detection_count", 0)
-                    record_counter("ocr_empty", 1, {"streamer": self.streamer, "quality": self.quality})
+                    record_counter(
+                        "ocr_empty",
+                        1,
+                        {"streamer": self.streamer, "quality": self.quality},
+                    )
                     return None, 0.0, {"detections": []}
 
                 # Extract recognition results from res_data
-                rec_texts = res_data.get('rec_texts', [])
-                rec_scores = res_data.get('rec_scores', [])
-                rec_polys = res_data.get('rec_polys', [])
+                rec_texts = res_data.get("rec_texts", [])
+                rec_scores = res_data.get("rec_scores", [])
+                rec_polys = res_data.get("rec_polys", [])
 
                 # Handle empty detections
                 if not rec_texts:
@@ -458,7 +575,11 @@ class FrameProcessor:
                         span.set_attribute("ocr.text", "")
                         span.set_attribute("ocr.confidence", 0.0)
                         span.set_attribute("ocr.detection_count", 0)
-                    record_counter("ocr_empty", 1, {"streamer": self.streamer, "quality": self.quality})
+                    record_counter(
+                        "ocr_empty",
+                        1,
+                        {"streamer": self.streamer, "quality": self.quality},
+                    )
                     return None, 0.0, {"detections": []}
 
                 # Find text with highest confidence
@@ -471,19 +592,20 @@ class FrameProcessor:
 
                 # Track invalid username rejections
                 if cleaned is None and text:
-                    record_counter("ocr_invalid_username", 1, {"streamer": self.streamer, "quality": self.quality})
+                    record_counter(
+                        "ocr_invalid_username",
+                        1,
+                        {"streamer": self.streamer, "quality": self.quality},
+                    )
 
                 # Build debug data structure (convert numpy arrays to lists)
                 ocr_data = {"detections": []}
                 for i in range(len(rec_texts)):
-                    detection = {
-                        "text": rec_texts[i],
-                        "confidence": rec_scores[i]
-                    }
+                    detection = {"text": rec_texts[i], "confidence": rec_scores[i]}
                     # Handle bbox - might be numpy array or list
                     if i < len(rec_polys):
                         bbox = rec_polys[i]
-                        if hasattr(bbox, 'tolist'):
+                        if hasattr(bbox, "tolist"):
                             detection["bbox"] = bbox.tolist()
                         else:
                             detection["bbox"] = bbox
@@ -513,7 +635,9 @@ class FrameProcessor:
                     span.set_attribute("ocr.error", str(e))
                 return None, 0.0, None
 
-    def _create_ocr_visualization(self, frame: np.ndarray, ocr_data: dict) -> Optional[bytes]:
+    def _create_ocr_visualization(
+        self, frame: np.ndarray, ocr_data: dict
+    ) -> Optional[bytes]:
         """
         Create visualization showing PaddleOCR bounding boxes
 
@@ -532,10 +656,10 @@ class FrameProcessor:
                 vis = frame.copy()
 
             # Draw bounding boxes for each detection
-            for detection in ocr_data.get('detections', []):
-                bbox = detection['bbox']  # [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
-                text = detection['text']
-                conf = detection['confidence']
+            for detection in ocr_data.get("detections", []):
+                bbox = detection["bbox"]  # [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+                text = detection["text"]
+                conf = detection["confidence"]
 
                 # Convert bbox to numpy array
                 points = np.array(bbox, dtype=np.int32)
@@ -554,19 +678,26 @@ class FrameProcessor:
                 # Draw text label
                 label = f"{text} ({conf:.2f})"
                 cv2.putText(
-                    vis, label, tuple(points[0]),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1
+                    vis,
+                    label,
+                    tuple(points[0]),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    color,
+                    1,
                 )
 
             # Encode to JPEG
-            success, encoded = cv2.imencode('.jpg', vis, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            success, encoded = cv2.imencode(".jpg", vis, [cv2.IMWRITE_JPEG_QUALITY, 90])
             return encoded.tobytes() if success else None
 
         except Exception as e:
             self.logger.error(f"OCR visualization error: {e}")
             return None
 
-    def _generate_ocr_log(self, ocr_data: dict, timestamp: int, username: Optional[str], confidence: float) -> str:
+    def _generate_ocr_log(
+        self, ocr_data: dict, timestamp: int, username: Optional[str], confidence: float
+    ) -> str:
         """
         Generate human-readable OCR debug log for PaddleOCR
 
@@ -595,9 +726,9 @@ class FrameProcessor:
             lines.append(f"{'Text':<30} {'Confidence':<12}")
             lines.append("-" * 60)
 
-            for detection in ocr_data.get('detections', []):
-                text = detection['text']
-                conf = detection['confidence']
+            for detection in ocr_data.get("detections", []):
+                text = detection["text"]
+                conf = detection["confidence"]
                 lines.append(f"{text:<30} {conf:.3f}")
 
             lines.append("")
@@ -609,7 +740,7 @@ class FrameProcessor:
         except Exception as e:
             self.logger.error(f"OCR log generation error: {e}")
             return f"Error generating OCR log: {e}"
-    
+
     def _clean_username(self, text: str) -> Optional[str]:
         """
         Clean and validate extracted username
@@ -620,7 +751,8 @@ class FrameProcessor:
 
         # Remove non-alphanumeric characters except underscore, dash, and dot
         import re
-        cleaned = re.sub(r'[^a-zA-Z0-9_\-.]', '', text)
+
+        cleaned = re.sub(r"[^a-zA-Z0-9_\-.]", "", text)
 
         # Additional validation: Twitch username rules
         # - 4-25 characters
@@ -632,4 +764,3 @@ class FrameProcessor:
             return None
 
         return cleaned if cleaned else None
-    

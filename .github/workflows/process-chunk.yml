@@ -34,11 +34,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build SFOT container
+      - name: Build SFDE container
         run: |
-          docker build -t bazaar-ghost-sfot ./sfot
+          docker build -t bazaar-ghost-sfde ./sfde
 
-      - name: Process chunk with SFOT
+      - name: Process chunk with SFDE
         run: |
           # Create output directory
           mkdir -p ./output
@@ -46,7 +46,7 @@ jobs:
           echo "Processing chunk ${{ inputs.chunk_id }} with test mode: ${{ inputs.test }}"
           echo "Using old templates: ${{ inputs.old_templates }}"
 
-          # Run SFOT container to process the chunk
+          # Run SFDE container to process the chunk
           # Container will fetch chunk details and update status internally
           timeout 2420 docker run --rm \
             --network="host" \
@@ -58,7 +58,7 @@ jobs:
             -e TEST_MODE="${{ inputs.test }}" \
             -e QUALITY="${{ inputs.quality }}" \
             -e OLD_TEMPLATES="${{ inputs.old_templates }}" \
-            bazaar-ghost-sfot
+            bazaar-ghost-sfde
 
           DOCKER_EXIT_CODE=$?
 

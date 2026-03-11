@@ -8,7 +8,7 @@ When a streamer goes offline on Twitch, Bazaar Ghost automatically:
 
 1. **Discovers streamers** playing The Bazaar via Twitch chapter metadata
 2. **Splits VODs** into 30-minute chunks for parallel processing
-3. **Runs SFOT** (Streamlink -> FFmpeg -> OpenCV -> PaddleOCR) on each chunk to detect matchup screens and extract opponent usernames
+3. **Runs SFDE** (Stream Filter Detect Extract) on each chunk to detect matchup screens and extract opponent usernames
 4. **Stores results** in a searchable database with frame screenshots
 
 Users can then search for their username on [bazaarghost.stream](https://bazaarghost.stream) to find VODs where they appeared as an opponent.
@@ -36,7 +36,7 @@ Users can then search for their username on [bazaarghost.stream](https://bazaarg
                          |
                          v
               +---------------------+
-              |   SFOT Container    |
+              |   SFDE Container    |
               |  Streamlink->FFmpeg |
               |  ->OpenCV->PaddleOCR|
               +---------------------+
@@ -56,11 +56,11 @@ Users can then search for their username on [bazaarghost.stream](https://bazaarg
 
 **Control Plane** -- Supabase Edge Functions (Deno/TypeScript) in `supabase/functions/` handle streamer discovery, VOD cataloging, Twitch EventSub webhooks, Discord bot commands, and GitHub Actions orchestration.
 
-**Data Plane** -- The SFOT Python container in `sfot/` processes individual 30-minute VOD chunks: downloads the stream segment via Streamlink, extracts frames with FFmpeg, detects matchup screens with OpenCV template matching, and reads usernames with PaddleOCR.
+**Data Plane** -- The SFDE Python container in `sfde/` processes individual 30-minute VOD chunks: downloads the stream segment via Streamlink, extracts frames with FFmpeg, detects matchup screens with OpenCV template matching, and reads usernames with PaddleOCR.
 
 **Database** -- Supabase PostgreSQL stores streamers, VODs, chunks, detections, and user notification subscriptions. Migrations live in `supabase/migrations/`.
 
-**Observability** -- OpenTelemetry traces, metrics, and logs ship to Grafana Cloud from both Edge Functions and the SFOT container.
+**Observability** -- OpenTelemetry traces, metrics, and logs ship to Grafana Cloud from both Edge Functions and the SFDE container.
 
 ## Project Structure
 
@@ -81,9 +81,9 @@ supabase/
     generate-seed-data/         # Generates seed data
   migrations/                   # PostgreSQL migrations
   config.toml                   # Supabase project config
-sfot/
+sfde/
   src/
-    sfot.py                     # Main orchestrator (4 parallel threads)
+    sfde.py                     # Main orchestrator (4 parallel threads)
     frame_processor.py          # PaddleOCR + emblem detection + right edge detection
     emblem_detector.py          # Template-matching rank emblem detection
     right_edge_detector.py      # Right edge detection for nameplate boundaries
@@ -92,7 +92,7 @@ sfot/
     json_logger.py              # JSON structured logging
   templates/                    # ~38 template images (rank emblems + right edges)
   config.yaml                   # Processing parameters
-  Dockerfile                    # SFOT container definition
+  Dockerfile                    # SFDE container definition
   docker-compose.yml            # Local Docker Compose config
   build.sh                      # Build + tag for GHCR
   requirements.txt              # Python dependencies
@@ -101,7 +101,7 @@ scripts/
   sync-prod-to-dev.sh           # Full prod-to-dev database sync
   clear-detections-bucket.ts    # Clear Supabase storage bucket (Deno)
 .github/workflows/
-  process-vod.yml               # Main: fetches chunks, runs SFOT matrix over them
+  process-vod.yml               # Main: fetches chunks, runs SFDE matrix over them
   process-chunk.yml             # Single chunk processing
   deploy-functions.yml          # Auto-deploy Edge Functions on push to main/dev
   deploy-migrations.yml         # Auto-deploy migrations on push to main/dev
@@ -111,7 +111,7 @@ scripts/
 ## Prerequisites
 
 - [Supabase CLI](https://supabase.com/docs/guides/cli/getting-started) (v2+)
-- [Docker](https://docs.docker.com/get-docker/) (for running SFOT locally)
+- [Docker](https://docs.docker.com/get-docker/) (for running SFDE locally)
 - [Deno](https://deno.land/) (for Edge Function development -- installed automatically by Supabase CLI)
 - A Twitch developer application ([dev.twitch.tv](https://dev.twitch.tv/console/apps)) for API access
 
@@ -162,23 +162,23 @@ curl -i --location --request POST 'http://localhost:54321/functions/v1/<function
   --data '{"key": "value"}'
 ```
 
-### 5. Run SFOT locally
+### 5. Run SFDE locally
 
-See `sfot/README.md` for full details. The quick version:
+See `sfde/README.md` for full details. The quick version:
 
 ```bash
-# Build the SFOT container
-docker build -t sfot:dev sfot/
+# Build the SFDE container
+docker build -t sfde:dev sfde/
 
 # Run a chunk (requires a valid chunk_id in the database)
 docker run --rm --network host \
   --env-file .env.dev \
   -e CHUNK_ID=<chunk-uuid> \
   -e QUALITY=480p \
-  sfot:dev
+  sfde:dev
 ```
 
-SFOT takes a `CHUNK_ID` (a UUID referencing a row in the `chunks` table) and processes that 30-minute segment. It connects to Supabase for chunk metadata, uploads detection frames to Storage, and writes results back to the database.
+SFDE takes a `CHUNK_ID` (a UUID referencing a row in the `chunks` table) and processes that 30-minute segment. It connects to Supabase for chunk metadata, uploads detection frames to Storage, and writes results back to the database.
 
 ## Database
 
@@ -190,7 +190,7 @@ The database schema is managed via migrations in `supabase/migrations/`. Core ta
 | `vods` | Individual VODs with chapter metadata and availability status |
 | `chunks` | 30-minute processing units within a VOD |
 | `detections` | Matchup screen detections with extracted usernames and timestamps |
-| `sfot_profiles` | Per-streamer crop regions and processing parameters |
+| `sfde_profiles` | Per-streamer crop regions and processing parameters |
 | `notification_subscriptions` | Discord notification subscriptions |
 | `server_channels` | Discord server/channel configuration |
 

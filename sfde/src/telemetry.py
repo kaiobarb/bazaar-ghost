@@ -1,7 +1,7 @@
 """
-OpenTelemetry instrumentation for SFOT pipeline
+OpenTelemetry instrumentation for SFDE pipeline
 
-This module provides tracing, metrics, and logging for the SFOT processing pipeline.
+This module provides tracing, metrics, and logging for the SFDE processing pipeline.
 """
 
 import os
@@ -37,9 +37,9 @@ _initialized: bool = False
 
 
 def init_telemetry(
-    service_name: str = "sfot",
+    service_name: str = "sfde",
     service_version: str = "1.0.0",
-    environment: str = "production"
+    environment: str = "production",
 ) -> bool:
     """
     Initialize OpenTelemetry with OTLP exporters for Grafana Cloud.
@@ -59,41 +59,57 @@ def init_telemetry(
 
     try:
         # Create resource with service info
-        resource = Resource.create({
-            SERVICE_NAME: service_name,
-            SERVICE_VERSION: service_version,
-            ResourceAttributes.DEPLOYMENT_ENVIRONMENT: environment,
-        })
+        resource = Resource.create(
+            {
+                SERVICE_NAME: service_name,
+                SERVICE_VERSION: service_version,
+                ResourceAttributes.DEPLOYMENT_ENVIRONMENT: environment,
+            }
+        )
 
         # Setup tracing
         trace_provider = TracerProvider(resource=resource)
-        trace_provider.add_span_processor(
-            BatchSpanProcessor(OTLPSpanExporter())
-        )
+        trace_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
         trace.set_tracer_provider(trace_provider)
         _tracer = trace.get_tracer(service_name, service_version)
 
         # Setup metrics
- 
+
         metric_reader = PeriodicExportingMetricReader(
             OTLPMetricExporter(),
-            export_interval_millis=10000  # Export every 10s
+            export_interval_millis=10000,  # Export every 10s
         )
 
         # Custom bucket boundaries for confidence scores (0-1 range)
-        confidence_buckets = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95, 1.0]
+        confidence_buckets = [
+            0,
+            0.1,
+            0.2,
+            0.3,
+            0.4,
+            0.5,
+            0.6,
+            0.7,
+            0.8,
+            0.85,
+            0.9,
+            0.95,
+            1.0,
+        ]
         confidence_view = lambda name: View(
             instrument_name=name,
-            aggregation=ExplicitBucketHistogramAggregation(boundaries=confidence_buckets),
+            aggregation=ExplicitBucketHistogramAggregation(
+                boundaries=confidence_buckets
+            ),
         )
 
         meter_provider = MeterProvider(
             resource=resource,
             metric_readers=[metric_reader],
             views=[
-                confidence_view("sfot.emblem.confidence"),
-                confidence_view("sfot.ocr.confidence"),
-                confidence_view("sfot.right_edge.confidence"),
+                confidence_view("sfde.emblem.confidence"),
+                confidence_view("sfde.ocr.confidence"),
+                confidence_view("sfde.right_edge.confidence"),
             ],
         )
         metrics.set_meter_provider(meter_provider)
@@ -109,8 +125,7 @@ def init_telemetry(
         # Add OTLP handler to root logger to capture all logs
         # This handler automatically includes trace context (trace_id, span_id)
         otel_handler = LoggingHandler(
-            level=logging.INFO,
-            logger_provider=_logger_provider
+            level=logging.INFO, logger_provider=_logger_provider
         )
         logging.getLogger().addHandler(otel_handler)
 
@@ -132,121 +147,97 @@ def _create_metrics():
 
     # Counters
     _metrics["frames_processed"] = _meter.create_counter(
-        "sfot.frames.processed",
-        description="Total frames processed",
-        unit="1"
+        "sfde.frames.processed", description="Total frames processed", unit="1"
     )
 
     _metrics["matchups_detected"] = _meter.create_counter(
-        "sfot.matchups.detected",
-        description="Total matchup screens detected",
-        unit="1"
+        "sfde.matchups.detected", description="Total matchup screens detected", unit="1"
     )
 
     _metrics["chunks_completed"] = _meter.create_counter(
-        "sfot.chunks.completed",
-        description="Total chunks completed",
-        unit="1"
+        "sfde.chunks.completed", description="Total chunks completed", unit="1"
     )
 
     _metrics["chunks_failed"] = _meter.create_counter(
-        "sfot.chunks.failed",
-        description="Total chunks failed",
-        unit="1"
+        "sfde.chunks.failed", description="Total chunks failed", unit="1"
     )
 
     _metrics["detections_uploaded"] = _meter.create_counter(
-        "sfot.detections.uploaded",
+        "sfde.detections.uploaded",
         description="Total detections uploaded to Supabase",
-        unit="1"
+        unit="1",
     )
 
     # Detection funnel counters
     _metrics["emblem_not_found"] = _meter.create_counter(
-        "sfot.emblem.not_found",
+        "sfde.emblem.not_found",
         description="Frames where no emblem was detected",
-        unit="1"
+        unit="1",
     )
 
     _metrics["right_edge_failed"] = _meter.create_counter(
-        "sfot.right_edge.failed",
+        "sfde.right_edge.failed",
         description="Frames where right edge detection failed",
-        unit="1"
+        unit="1",
     )
 
     _metrics["ocr_empty"] = _meter.create_counter(
-        "sfot.ocr.empty",
-        description="OCR extractions that returned no text",
-        unit="1"
+        "sfde.ocr.empty", description="OCR extractions that returned no text", unit="1"
     )
 
     _metrics["ocr_invalid_username"] = _meter.create_counter(
-        "sfot.ocr.invalid_username",
+        "sfde.ocr.invalid_username",
         description="OCR extractions rejected by username validation",
-        unit="1"
+        unit="1",
     )
 
     _metrics["frames_skipped"] = _meter.create_counter(
-        "sfot.frames.skipped",
+        "sfde.frames.skipped",
         description="Frames skipped (queue full or interval)",
-        unit="1"
+        unit="1",
     )
 
     _metrics["queue_overflow"] = _meter.create_counter(
-        "sfot.queue.overflow",
-        description="Frame queue overflow events",
-        unit="1"
+        "sfde.queue.overflow", description="Frame queue overflow events", unit="1"
     )
 
     _metrics["errors"] = _meter.create_counter(
-        "sfot.errors",
-        description="Categorized errors by component and type",
-        unit="1"
+        "sfde.errors", description="Categorized errors by component and type", unit="1"
     )
 
     # Histograms
     _metrics["ocr_confidence"] = _meter.create_histogram(
-        "sfot.ocr.confidence",
-        description="OCR confidence score distribution",
-        unit="1"
+        "sfde.ocr.confidence", description="OCR confidence score distribution", unit="1"
     )
 
     _metrics["emblem_confidence"] = _meter.create_histogram(
-        "sfot.emblem.confidence",
+        "sfde.emblem.confidence",
         description="Emblem detection confidence distribution",
-        unit="1"
+        unit="1",
     )
 
     _metrics["right_edge_confidence"] = _meter.create_histogram(
-        "sfot.right_edge.confidence",
+        "sfde.right_edge.confidence",
         description="Right edge detection confidence distribution",
-        unit="1"
+        unit="1",
     )
 
     _metrics["processing_duration"] = _meter.create_histogram(
-        "sfot.chunk.duration",
-        description="Chunk processing duration",
-        unit="ms"
+        "sfde.chunk.duration", description="Chunk processing duration", unit="ms"
     )
 
     _metrics["frame_processing_rate"] = _meter.create_histogram(
-        "sfot.frames.rate",
-        description="Frame processing rate (FPS)",
-        unit="1/s"
+        "sfde.frames.rate", description="Frame processing rate (FPS)", unit="1/s"
     )
 
     # Upload duration histogram (meaningful because it's a discrete operation)
     _metrics["upload_duration"] = _meter.create_histogram(
-        "sfot.upload.duration",
-        description="Supabase batch upload duration",
-        unit="ms"
+        "sfde.upload.duration", description="Supabase batch upload duration", unit="ms"
     )
 
     # Gauges (using UpDownCounter as proxy)
     _metrics["queue_depth"] = _meter.create_up_down_counter(
-        "sfot.queue.depth",
-        description="Current frame queue depth",
-        unit="1"
+        "sfde.queue.depth", description="Current frame queue depth", unit="1"
     )
 
 
@@ -282,7 +273,7 @@ def record_gauge(name: str, delta: int, attributes: Dict[str, str] = None):
 def create_span(
     name: str,
     attributes: Dict[str, Any] = None,
-    kind: trace.SpanKind = trace.SpanKind.INTERNAL
+    kind: trace.SpanKind = trace.SpanKind.INTERNAL,
 ):
     """
     Context manager to create and manage a span.
@@ -331,7 +322,7 @@ def get_current_trace_id() -> Optional[str]:
     """Get the current trace ID if available"""
     span = trace.get_current_span()
     if span and span.is_recording():
-        return format(span.get_span_context().trace_id, '032x')
+        return format(span.get_span_context().trace_id, "032x")
     return None
 
 
@@ -339,7 +330,7 @@ def get_current_span_id() -> Optional[str]:
     """Get the current span ID if available"""
     span = trace.get_current_span()
     if span and span.is_recording():
-        return format(span.get_span_context().span_id, '016x')
+        return format(span.get_span_context().span_id, "016x")
     return None
 
 
@@ -382,26 +373,27 @@ def shutdown_telemetry(timeout_millis: int = 30000):
         # Metrics recorded just before shutdown won't be in the buffer yet,
         # so we sleep to ensure at least one collection captures final metrics.
         import time
+
         time.sleep(11)
         # Flush and shutdown logger provider FIRST (so final logs are captured)
         if _logger_provider:
-            if hasattr(_logger_provider, 'force_flush'):
+            if hasattr(_logger_provider, "force_flush"):
                 _logger_provider.force_flush(timeout_millis)
-            if hasattr(_logger_provider, 'shutdown'):
+            if hasattr(_logger_provider, "shutdown"):
                 _logger_provider.shutdown()
 
         # Flush and shutdown trace provider
         trace_provider = trace.get_tracer_provider()
-        if hasattr(trace_provider, 'force_flush'):
+        if hasattr(trace_provider, "force_flush"):
             trace_provider.force_flush(timeout_millis)
-        if hasattr(trace_provider, 'shutdown'):
+        if hasattr(trace_provider, "shutdown"):
             trace_provider.shutdown()
 
         # Flush and shutdown meter provider
         meter_provider = metrics.get_meter_provider()
-        if hasattr(meter_provider, 'force_flush'):
+        if hasattr(meter_provider, "force_flush"):
             meter_provider.force_flush(timeout_millis)
-        if hasattr(meter_provider, 'shutdown'):
+        if hasattr(meter_provider, "shutdown"):
             meter_provider.shutdown()
 
         # Log after shutdown since the handler is already removed

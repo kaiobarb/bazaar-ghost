@@ -52,7 +52,7 @@ async function triggerGithubWorkflow(
   vodId: string,
   chunkUuids: string[],
   oldTemplates: boolean,
-  sfotProfile: string,
+  sfdeProfile: string,
   environment: string,
 ): Promise<string | null> {
   const workflowDispatchUrl =
@@ -78,7 +78,7 @@ async function triggerGithubWorkflow(
         vod_id: vodId,
         chunk_uuids: JSON.stringify(chunkUuids), // Pass as JSON string
         old_templates: oldTemplates.toString(), // Pass as string
-        sfot_profile: sfotProfile, // Pass profile as JSON string
+        sfde_profile: sfdeProfile, // Pass profile as JSON string
         environment: environment, // Pass environment selection
       },
     }),
@@ -316,7 +316,7 @@ async function processStreamOffline(event: {
     // Fetch VOD's published_at date and streamer's profile
     const { data: vodData, error: vodError } = await supabase
       .from("vods")
-      .select("published_at, streamer_id, streamers!inner(sfot_profile_id)")
+      .select("published_at, streamer_id, streamers!inner(sfde_profile_id)")
       .eq("id", actualVodId)
       .single();
 
@@ -333,23 +333,23 @@ async function processStreamOffline(event: {
     const vodPublishedAt = new Date(vodData.published_at);
     const useOldTemplates = vodPublishedAt <= cutoffDate;
 
-    // Fetch SFOT profile
-    const sfotProfileId = vodData.streamers.sfot_profile_id;
+    // Fetch SFDE profile
+    const sfdeProfileId = vodData.streamers.sfde_profile_id;
     const { data: profileData, error: profileError } = await supabase
-      .from("sfot_profiles")
+      .from("sfde_profiles")
       .select("*")
-      .eq("id", sfotProfileId)
+      .eq("id", sfdeProfileId)
       .single();
 
     if (profileError) {
-      log("error", "Failed to fetch SFOT profile", {
-        profile_id: sfotProfileId,
+      log("error", "Failed to fetch SFDE profile", {
+        profile_id: sfdeProfileId,
         error: profileError.message,
       });
       return;
     }
 
-    const sfotProfileJson = JSON.stringify(profileData);
+    const sfdeProfileJson = JSON.stringify(profileData);
     const environment = Deno.env.get("ENV") || "production";
 
     // Update chunks to 'queued' status
@@ -370,7 +370,7 @@ async function processStreamOffline(event: {
       vodSourceId,
       chunkUuids,
       useOldTemplates,
-      sfotProfileJson,
+      sfdeProfileJson,
       environment,
     );
 
@@ -473,7 +473,7 @@ async function handleInternalRequest(req: Request): Promise<Response> {
     // Fetch VOD's published_at date and streamer's profile to determine processing settings
     const { data: vodData, error: vodError } = await supabase
       .from("vods")
-      .select("published_at, streamer_id, streamers!inner(sfot_profile_id)")
+      .select("published_at, streamer_id, streamers!inner(sfde_profile_id)")
       .eq("id", actualVodId)
       .single();
 
@@ -491,22 +491,22 @@ async function handleInternalRequest(req: Request): Promise<Response> {
       `VOD published at: ${vodData.published_at}, cutoff: ${cutoffDate.toISOString()}, use old templates: ${useOldTemplates}`,
     );
 
-    // Fetch the streamer's SFOT profile
-    const sfotProfileId = vodData.streamers.sfot_profile_id;
+    // Fetch the streamer's SFDE profile
+    const sfdeProfileId = vodData.streamers.sfde_profile_id;
     const { data: profileData, error: profileError } = await supabase
-      .from("sfot_profiles")
+      .from("sfde_profiles")
       .select("*")
-      .eq("id", sfotProfileId)
+      .eq("id", sfdeProfileId)
       .single();
 
     if (profileError) {
-      console.error("Error fetching SFOT profile:", profileError);
-      throw new Error(`Failed to fetch SFOT profile: ${profileError.message}`);
+      console.error("Error fetching SFDE profile:", profileError);
+      throw new Error(`Failed to fetch SFDE profile: ${profileError.message}`);
     }
 
     // Serialize profile as JSON string for passing to GitHub Actions
-    const sfotProfileJson = JSON.stringify(profileData);
-    console.log(`Using SFOT profile: ${profileData.profile_name}`);
+    const sfdeProfileJson = JSON.stringify(profileData);
+    console.log(`Using SFDE profile: ${profileData.profile_name}`);
 
     // Get environment from ENV environment variable (set via .env or .env.dev)
     const environment = Deno.env.get("ENV") || "production";
@@ -548,7 +548,7 @@ async function handleInternalRequest(req: Request): Promise<Response> {
       actualSourceId,
       chunkUuids,
       useOldTemplates,
-      sfotProfileJson,
+      sfdeProfileJson,
       environment,
     );
 

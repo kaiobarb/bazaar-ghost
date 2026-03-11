@@ -2,11 +2,11 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Debug SFOT",
+      "name": "Debug SFDE",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/sfot/src/sfot.py",
-      "cwd": "${workspaceFolder}/sfot",
+      "program": "${workspaceFolder}/sfde/src/sfde.py",
+      "cwd": "${workspaceFolder}/sfde",
       "python": "${workspaceFolder}/.venv-scripts/bin/python3",
       "envFile": "${workspaceFolder}/.env.local"
     }

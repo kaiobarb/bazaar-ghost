@@ -1,9 +1,9 @@
 version: "3.8"
 
 services:
-  sfot:
+  sfde:
     build: .
-    image: ghcr.io/bazaar-ghost/sfot:latest
+    image: ghcr.io/bazaar-ghost/sfde:latest
     environment:
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_SECRET_KEY=${SUPABASE_SECRET_KEY}

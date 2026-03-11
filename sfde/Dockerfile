@@ -43,13 +43,13 @@ COPY --chown=1000:1000 templates/ ./templates/
 
 # Create health file and set up user permissions
 RUN echo "ok" > /app/health && \
-    useradd -m -u 1000 sfot && \
-    cp -r /root/.paddlex /home/sfot/.paddlex && \
-    chown -R sfot:sfot /app /home/sfot/.paddlex
+    useradd -m -u 1000 sfde && \
+    cp -r /root/.paddlex /home/sfde/.paddlex && \
+    chown -R sfde:sfde /app /home/sfde/.paddlex
 
 # Switch to non-root user
-USER sfot
+USER sfde
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD [ -f /app/health ] || exit 1
 
-ENTRYPOINT ["python", "-u", "src/sfot.py"]
+ENTRYPOINT ["python", "-u", "src/sfde.py"]

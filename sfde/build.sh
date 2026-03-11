@@ -1,14 +1,14 @@
 #!/bin/bash
 set -e
 
-# Build and push SFOT container
+# Build and push SFDE container
 
 # Configuration
-IMAGE_NAME="ghcr.io/bazaar-ghost/sfot"
+IMAGE_NAME="ghcr.io/bazaar-ghost/sfde"
 VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
-echo "Building SFOT container..."
+echo "Building SFDE container..."
 echo "Version: $VERSION"
 echo "Timestamp: $TIMESTAMP"
 

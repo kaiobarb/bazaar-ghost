@@ -21,8 +21,8 @@ on:
           - dev
           - production
         default: dev
-      sfot_profile:
-        description: "SFOT profile configuration (JSON string)"
+      sfde_profile:
+        description: "SFDE profile configuration (JSON string)"
         required: false
         type: string
         default: ""
@@ -271,19 +271,19 @@ jobs:
         uses: docker/setup-buildx-action@v3
         timeout-minutes: 5
 
-      - name: Build SFOT container with cache
+      - name: Build SFDE container with cache
         if: ${{ !inputs.local }}
         uses: docker/build-push-action@v5
         timeout-minutes: 10
         with:
-          context: ./sfot
-          tags: bazaar-ghost-sfot
+          context: ./sfde
+          tags: bazaar-ghost-sfde
           load: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Process chunk with SFOT
-        id: sfot
+      - name: Process chunk with SFDE
+        id: sfde
         timeout-minutes: 25
         run: |
           # Create output directory with write permissions for container user (UID 1000)
@@ -312,16 +312,16 @@ jobs:
           echo "Small templates mode: ${{ inputs.old_templates }}"
           echo "Environment: ${{ inputs.environment }}"
 
-          # Parse SFOT profile if provided
-          SFOT_PROFILE='${{ inputs.sfot_profile }}'
-          if [ -n "$SFOT_PROFILE" ] && [ "$SFOT_PROFILE" != "" ]; then
-            echo "Using SFOT profile"
-            echo "$SFOT_PROFILE" | jq '.'
+          # Parse SFDE profile if provided
+          SFDE_PROFILE='${{ inputs.sfde_profile }}'
+          if [ -n "$SFDE_PROFILE" ] && [ "$SFDE_PROFILE" != "" ]; then
+            echo "Using SFDE profile"
+            echo "$SFDE_PROFILE" | jq '.'
           else
-            echo "No SFOT profile provided, SFOT will use defaults"
+            echo "No SFDE profile provided, SFDE will use defaults"
           fi
 
-          # Run SFOT container - it will handle all chunk details and status updates internally
+          # Run SFDE container - it will handle all chunk details and status updates internally
           docker run --rm \
             --network="host" \
             -v "./output:/app/output" \
@@ -332,13 +332,13 @@ jobs:
             -e QUALITY="$QUALITY" \
             -e VIDEO_FPS="$VIDEO_FPS" \
             -e OLD_TEMPLATES="${{ inputs.old_templates }}" \
-            -e SFOT_PROFILE="$SFOT_PROFILE" \
+            -e SFDE_PROFILE="$SFDE_PROFILE" \
             -e ENVIRONMENT="${{ inputs.environment }}" \
             -e OTEL_EXPORTER_OTLP_ENDPOINT="${{ secrets.GRAFANA_OTLP_ENDPOINT }}" \
             -e OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic ${{ secrets.GRAFANA_OTLP_AUTH }}" \
-            -e OTEL_SERVICE_NAME="sfot" \
+            -e OTEL_SERVICE_NAME="sfde" \
             -e OTEL_RESOURCE_ATTRIBUTES="deployment.environment=${{ inputs.environment }},vod.id=${{ inputs.vod_id }},chunk.id=${{ matrix.chunk_id }}" \
-            bazaar-ghost-sfot
+            bazaar-ghost-sfde
 
           DOCKER_EXIT_CODE=$?
           echo "Docker run exit code: $DOCKER_EXIT_CODE"
