@@ -58,7 +58,7 @@ jobs:
 
     steps:
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -264,16 +264,16 @@ jobs:
     steps:
       - name: Checkout repository
         if: ${{ !inputs.local }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Docker Buildx
         if: ${{ !inputs.local }}
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
         timeout-minutes: 5
 
       - name: Build SFDE container with cache
         if: ${{ !inputs.local }}
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         timeout-minutes: 10
         with:
           context: ./sfde
