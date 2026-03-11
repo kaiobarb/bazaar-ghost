@@ -77,8 +77,7 @@ supabase/
     schedule-vod-processing/    # Schedules VOD processing runs
     search-chat-mentions/       # Searches Twitch chat mentions
     ghost-bot/                  # Discord bot (/search, /notify, /list, /setchannel, /help)
-    generate-seed/              # Generates seed SQL
-    generate-seed-data/         # Generates seed data
+    generate-seed-data/         # Generates seed SQL with chunk creation
   migrations/                   # PostgreSQL migrations
   config.toml                   # Supabase project config
 sfde/
