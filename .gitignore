@@ -9,4 +9,4 @@ CLAUDE.md
 *.vars
 seed.sql
 test_data/
-backup-prod/
+backup-prod*/

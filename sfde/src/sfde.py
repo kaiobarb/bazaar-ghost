@@ -6,6 +6,7 @@ Stream → Filter → Detect → Extract
 
 import os
 import sys
+import re
 import signal
 import queue
 import threading
@@ -93,6 +94,7 @@ class SFDEProcessor:
 
         # Initialize components
         self.frame_queue = queue.Queue(maxsize=self.config["processing"]["queue_size"])
+        self.pts_queue = queue.Queue()  # PTS timestamps from FFmpeg showinfo filter
         self.result_queue = queue.Queue()
         self.shutdown = threading.Event()
 
@@ -618,6 +620,7 @@ class SFDEProcessor:
                         "480p": (854, 480),
                         "720p": (1280, 720),
                         "1080p": (1920, 1080),
+                        "1080p60": (1920, 1080),
                     }
                     frame_width, frame_height = quality_resolutions.get(
                         self.quality, (854, 480)
@@ -637,11 +640,15 @@ class SFDEProcessor:
                 )
                 self.logger.info(f"Cropped frame dimensions will be: {w}x{h} pixels")
 
+                # Add showinfo filter to extract PTS timestamps from stderr
+                vf_filters.append("showinfo")
+
                 vf_chain = ",".join(vf_filters)
 
                 # Build FFmpeg command
                 if self.test_mode:
                     # Read from file with seeking support
+                    # Use loglevel 'info' so showinfo filter PTS output appears on stderr
                     ffmpeg_cmd = [
                         "ffmpeg",
                         "-ss",
@@ -657,11 +664,12 @@ class SFDEProcessor:
                         "-vcodec",
                         "mjpeg",
                         "-loglevel",
-                        self.config["ffmpeg"]["loglevel"],
+                        "info",
                         "pipe:1",  # Output to stdout
                     ]
                 else:
                     # Read from pipe (streamlink)
+                    # Use loglevel 'info' so showinfo filter PTS output appears on stderr
                     ffmpeg_cmd = [
                         "ffmpeg",
                         "-i",
@@ -673,7 +681,7 @@ class SFDEProcessor:
                         "-vcodec",
                         "mjpeg",
                         "-loglevel",
-                        self.config["ffmpeg"]["loglevel"],
+                        "info",
                         "pipe:1",  # Output to stdout
                     ]
 
@@ -725,6 +733,30 @@ class SFDEProcessor:
                 else:
                     self.logger.info("FFmpeg process started successfully")
 
+                # Start background thread to read FFmpeg stderr and parse
+                # showinfo PTS timestamps. Each showinfo line corresponds 1:1
+                # with a JPEG frame on stdout, so pts_queue stays in sync
+                # with frame_queue.
+                pts_re = re.compile(r"pts_time:([\d.]+)\s")
+
+                def _read_ffmpeg_stderr():
+                    try:
+                        for raw_line in self.ffmpeg_proc.stderr:
+                            line = raw_line.decode("utf-8", errors="ignore").rstrip()
+                            m = pts_re.search(line)
+                            if m:
+                                self.pts_queue.put(float(m.group(1)))
+                            elif line and "showinfo" not in line:
+                                # Forward non-showinfo FFmpeg messages to logger
+                                self.logger.debug(f"FFmpeg: {line}")
+                    except Exception as e:
+                        self.logger.warning(f"FFmpeg stderr reader error: {e}")
+
+                stderr_thread = threading.Thread(
+                    target=_read_ffmpeg_stderr, name="ffmpeg-stderr", daemon=True
+                )
+                stderr_thread.start()
+
                 # Read frames from FFmpeg
                 frame_buffer = b""
                 frames_extracted = 0
@@ -734,18 +766,6 @@ class SFDEProcessor:
                 while not self.shutdown.is_set():
                     chunk = self.ffmpeg_proc.stdout.read(4096)
                     if not chunk:
-                        # Check FFmpeg stderr for any error messages
-                        stderr_data = b""
-                        try:
-                            stderr_data = self.ffmpeg_proc.stderr.read()
-                            stderr_text = (
-                                stderr_data.decode("utf-8", errors="ignore")
-                                if stderr_data
-                                else "No stderr output"
-                            )
-                        except:
-                            stderr_text = "Could not read stderr"
-
                         self.logger.info(
                             f"FFmpeg stream ended. Total bytes read: {bytes_read}, frames extracted: {frames_extracted}"
                         )
@@ -773,6 +793,12 @@ class SFDEProcessor:
                             self.frame_queue.put(frame_data, timeout=0.1)
                             record_gauge("queue_depth", 1, metric_attrs)
                         except queue.Full:
+                            # Frame dropped — consume the matching PTS to
+                            # keep pts_queue and frame_queue in sync
+                            try:
+                                self.pts_queue.get(timeout=1)
+                            except queue.Empty:
+                                pass
                             self.logger.warning("Frame queue full, dropping frame")
                             record_counter(
                                 "frames_skipped",
@@ -780,6 +806,9 @@ class SFDEProcessor:
                                 {**metric_attrs, "reason": "queue_full"},
                             )
                             record_counter("queue_overflow", 1, metric_attrs)
+
+                # Wait for stderr thread to finish reading remaining output
+                stderr_thread.join(timeout=5)
 
                 self.logger.info(
                     f"FFmpeg worker finished. Final stats: {bytes_read} bytes read, {frames_extracted} frames extracted"
@@ -824,14 +853,23 @@ class SFDEProcessor:
                     frame_data = self.frame_queue.get(timeout=1)
                     record_gauge("queue_depth", -1, metric_attrs)
 
-                    # Calculate timestamp based on frame rate
-                    sampling_rate = self.config["processing"]["frame_rate"]
-                    seconds_per_sampled_frame = (
-                        1 / sampling_rate if sampling_rate > 0 else 0
-                    )
-                    timestamp = self.start_time + int(
-                        self.frames_processed * seconds_per_sampled_frame
-                    )
+                    # Get PTS-based timestamp from showinfo filter output.
+                    # pts_time is seconds from stream start (0-based).
+                    # Falls back to frame counting if PTS is unavailable.
+                    try:
+                        pts_time = self.pts_queue.get(timeout=5)
+                        timestamp = self.start_time + int(pts_time)
+                    except queue.Empty:
+                        sampling_rate = self.config["processing"]["frame_rate"]
+                        seconds_per_sampled_frame = (
+                            1 / sampling_rate if sampling_rate > 0 else 0
+                        )
+                        timestamp = self.start_time + int(
+                            self.frames_processed * seconds_per_sampled_frame
+                        )
+                        self.logger.warning(
+                            f"PTS unavailable for frame {self.frames_processed}, using frame count fallback"
+                        )
                     result = self.frame_processor.process_frame(
                         frame_data, timestamp, self.vod_id, self.chunk_id
                     )
