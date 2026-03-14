@@ -18,6 +18,7 @@ import math
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Tuple, List
 import yaml
+import cv2
 import numpy as np
 from dotenv import load_dotenv
 
@@ -105,6 +106,11 @@ class SFDEProcessor:
         self.matchups_found = 0
         self.result_batch = []  # Current batch being accumulated
         self.all_detections = []  # All detections for summary export
+
+        # IGD subregion slices (computed by ffmpeg_worker, read by opencv_worker).
+        # Initialize here so opencv_worker can safely read them before ffmpeg_worker sets them.
+        self._nameplate_slice: Optional[List[int]] = None
+        self._igd_slice: Optional[List[int]] = None
 
         # Initialize frame processor with quality information and template selection
         self.frame_processor = FrameProcessor(
@@ -203,7 +209,69 @@ class SFDEProcessor:
                 f"SFDE_PROFILE crop_region must be array of 4 numbers, got: {profile.get('crop_region')}"
             )
 
+        # Parse igd_crop_region if present (optional)
+        igd_crop = profile.get("igd_crop_region")
+        if igd_crop is not None:
+            if not isinstance(igd_crop, list) or len(igd_crop) != 4:
+                raise ValueError(
+                    f"SFDE_PROFILE igd_crop_region must be array of 4 numbers, got: {igd_crop}"
+                )
+            # Convert to floats (may come as strings from JSON/DB)
+            profile["igd_crop_region"] = [float(v) for v in igd_crop]
+
         return profile
+
+    def _compute_combined_crop(
+        self, frame_width: int, frame_height: int
+    ) -> Tuple[List[int], Optional[List[int]], Optional[List[int]]]:
+        """Compute a combined FFmpeg crop that encompasses both nameplate and IGD regions.
+
+        When igd_crop_region is present in the profile, computes a bounding box that
+        covers both crop regions. Returns the combined crop for FFmpeg plus local offsets
+        for slicing each subregion from the decoded frame.
+
+        Args:
+            frame_width: Width of the source frame in pixels.
+            frame_height: Height of the source frame in pixels.
+
+        Returns:
+            Tuple of:
+                - combined_crop: [w, h, x, y] in pixels for the FFmpeg crop filter
+                - nameplate_slice: [x_offset, y_offset, w, h] local offsets within combined crop, or None if no IGD
+                - igd_slice: [x_offset, y_offset, w, h] local offsets within combined crop, or None if no IGD
+        """
+        nameplate_pixels = self.percent_to_pixels(
+            self.profile["crop_region"], frame_width, frame_height
+        )
+        np_w, np_h, np_x, np_y = nameplate_pixels
+
+        igd_crop = self.profile.get("igd_crop_region")
+        if not igd_crop:
+            # No IGD — return nameplate crop only, no subregion slicing needed
+            return nameplate_pixels, None, None
+
+        igd_pixels = self.percent_to_pixels(igd_crop, frame_width, frame_height)
+        igd_w, igd_h, igd_x, igd_y = igd_pixels
+
+        # Compute bounding box that encompasses both regions
+        bbox_x = min(np_x, igd_x)
+        bbox_y = min(np_y, igd_y)
+        bbox_right = max(np_x + np_w, igd_x + igd_w)
+        bbox_bottom = max(np_y + np_h, igd_y + igd_h)
+        bbox_w = bbox_right - bbox_x
+        bbox_h = bbox_bottom - bbox_y
+
+        # Clamp to frame bounds
+        bbox_w = min(bbox_w, frame_width - bbox_x)
+        bbox_h = min(bbox_h, frame_height - bbox_y)
+
+        combined_crop = [bbox_w, bbox_h, bbox_x, bbox_y]
+
+        # Compute local offsets within the combined crop
+        nameplate_slice = [np_x - bbox_x, np_y - bbox_y, np_w, np_h]
+        igd_slice = [igd_x - bbox_x, igd_y - bbox_y, igd_w, igd_h]
+
+        return combined_crop, nameplate_slice, igd_slice
 
     def _setup_logging(self):
         """Setup structured JSON logging"""
@@ -310,6 +378,29 @@ class SFDEProcessor:
                 self.supabase.update_chunk(
                     self.chunk_id, "processing", quality=self.formatted_quality
                 )
+
+                # Pre-compute combined crop and subregion slices so both
+                # ffmpeg_worker and opencv_worker have them before they start.
+                quality_resolutions = {
+                    "360p": (640, 360),
+                    "480p": (854, 480),
+                    "720p": (1280, 720),
+                    "1080p": (1920, 1080),
+                    "1080p60": (1920, 1080),
+                }
+                pre_fw, pre_fh = quality_resolutions.get(self.quality, (854, 480))
+                combined_crop, nameplate_slice, igd_slice = self._compute_combined_crop(
+                    pre_fw, pre_fh
+                )
+                self._combined_crop = combined_crop
+                self._nameplate_slice = nameplate_slice
+                self._igd_slice = igd_slice
+
+                if igd_slice:
+                    self.logger.info(
+                        f"IGD detection enabled. Combined crop: {combined_crop}, "
+                        f"nameplate slice: {nameplate_slice}, IGD slice: {igd_slice}"
+                    )
 
                 # Start worker threads
                 threads = [
@@ -629,14 +720,11 @@ class SFDEProcessor:
                 # Build video filter chain
                 vf_filters = [f"fps={self.config['processing']['frame_rate']}"]
 
-                # Use crop region from SFDE profile
-                crop_pixels = self.percent_to_pixels(
-                    self.profile["crop_region"], frame_width, frame_height
-                )
-                w, h, x, y = crop_pixels
+                # Use pre-computed combined crop (set in process_vod_chunk before threads start)
+                w, h, x, y = self._combined_crop
                 vf_filters.append(f"crop={w}:{h}:{x}:{y}")
                 self.logger.info(
-                    f"Applied profile crop: [x={x}, y={y}, w={w}, h={h}] for {frame_width}x{frame_height} video"
+                    f"Applied crop: [x={x}, y={y}, w={w}, h={h}] for {frame_width}x{frame_height} video"
                 )
                 self.logger.info(f"Cropped frame dimensions will be: {w}x{h} pixels")
 
@@ -839,6 +927,44 @@ class SFDEProcessor:
                 )
                 self.shutdown.set()
 
+    def _decode_jpeg(self, frame_data: bytes) -> Optional[np.ndarray]:
+        """Decode JPEG bytes to a BGR numpy array.
+
+        Args:
+            frame_data: Raw JPEG bytes.
+
+        Returns:
+            BGR numpy array, or None if decoding fails.
+        """
+        arr = np.frombuffer(frame_data, dtype=np.uint8)
+        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        return frame
+
+    def _encode_jpeg(self, frame: np.ndarray) -> bytes:
+        """Encode a BGR numpy array to JPEG bytes.
+
+        Args:
+            frame: BGR numpy array.
+
+        Returns:
+            Raw JPEG bytes.
+        """
+        _, buf = cv2.imencode(".jpg", frame)
+        return buf.tobytes()
+
+    def _slice_subregion(self, frame: np.ndarray, region: List[int]) -> np.ndarray:
+        """Slice a subregion from a decoded frame.
+
+        Args:
+            frame: Decoded BGR numpy array of the combined crop.
+            region: [x_offset, y_offset, width, height] within the combined crop.
+
+        Returns:
+            Numpy array view of the subregion.
+        """
+        x, y, w, h = region
+        return frame[y : y + h, x : x + w]
+
     def opencv_worker(self):
         """Worker to process frames with OpenCV (runs in parallel, consumes from frame queue)"""
         self.logger.info("OpenCV worker starting...")
@@ -846,6 +972,19 @@ class SFDEProcessor:
             "streamer": self.streamer or "unknown",
             "quality": self.formatted_quality,
         }
+
+        # IGD state machine
+        igd_enabled = self._igd_slice is not None
+        igd_scan_active = False
+        igd_frames_scanned = 0
+        igd_max_scan_frames = 15  # ~30 seconds at 0.5 fps
+        pending_detection = None  # Held detection awaiting IGD resolution
+
+        if igd_enabled:
+            self.logger.info(
+                f"\033[36mIGD detection enabled, will scan up to {igd_max_scan_frames} frames after each username detection\033[0m"
+            )
+
         try:
             while not self.shutdown.is_set():
                 try:
@@ -870,49 +1009,123 @@ class SFDEProcessor:
                         self.logger.warning(
                             f"PTS unavailable for frame {self.frames_processed}, using frame count fallback"
                         )
+
+                    # If using combined crop, decode and slice subregions.
+                    # Otherwise pass raw JPEG bytes directly (existing behavior).
+                    if self._nameplate_slice is not None:
+                        full_frame = self._decode_jpeg(frame_data)
+                        if full_frame is None:
+                            self.frames_processed += 1
+                            continue
+                        nameplate_frame = self._slice_subregion(
+                            full_frame, self._nameplate_slice
+                        )
+                        nameplate_data = self._encode_jpeg(nameplate_frame)
+                    else:
+                        full_frame = None
+                        nameplate_data = frame_data
+
                     result = self.frame_processor.process_frame(
-                        frame_data, timestamp, self.vod_id, self.chunk_id
+                        nameplate_data, timestamp, self.vod_id, self.chunk_id
                     )
 
                     self.frames_processed += 1
                     record_counter("frames_processed", 1, metric_attrs)
 
-                    # If matchup detected, add to result queue
+                    # --- IGD scan on current frame (if active) ---
+                    if igd_scan_active and full_frame is not None:
+                        igd_crop = self._slice_subregion(full_frame, self._igd_slice)
+                        igd_value = self.frame_processor.extract_igd(igd_crop)
+                        igd_frames_scanned += 1
+
+                        if igd_value is not None:
+                            pending_detection["igd"] = igd_value
+                            self.logger.info(
+                                f"\033[32mIGD detected: day {igd_value} after {igd_frames_scanned} frames for {pending_detection.get('username')}\033[0m"
+                            )
+                            record_counter("igd_detected", 1, metric_attrs)
+                            self._enqueue_detection(pending_detection, metric_attrs)
+                            pending_detection = None
+                            igd_scan_active = False
+                        elif igd_frames_scanned >= igd_max_scan_frames:
+                            self.logger.warning(
+                                f"\033[33mIGD scan timed out after {igd_frames_scanned} frames for {pending_detection.get('username')}\033[0m"
+                            )
+                            record_counter("igd_timeout", 1, metric_attrs)
+                            self._enqueue_detection(pending_detection, metric_attrs)
+                            pending_detection = None
+                            igd_scan_active = False
+
+                    # --- Handle new matchup detection ---
                     if result and result.get("is_matchup"):
-                        self.result_queue.put(result)
-                        self.matchups_found += 1
-                        # Structured JSON event for Loki queryability
-                        # Log as JSON so Loki can parse with | json
-                        self.logger.info(
-                            json.dumps(
-                                {
-                                    "event": "matchup_detected",
-                                    "timestamp_seconds": timestamp,
-                                    "username": result.get("username"),
-                                    "ocr_confidence": result.get("confidence"),
-                                    "emblem_rank": result.get("detected_rank"),
-                                    "truncated": result.get("truncated", False),
-                                }
-                            )
-                        )
+                        if igd_enabled:
+                            # If a previous IGD scan is still active, flush it
+                            if igd_scan_active and pending_detection is not None:
+                                self.logger.warning(
+                                    f"New matchup detected while IGD scan active, flushing pending detection for {pending_detection.get('username')}"
+                                )
+                                self._enqueue_detection(pending_detection, metric_attrs)
 
-                        # Record matchup detection
-                        record_counter("matchups_detected", 1, metric_attrs)
-
-                        # Record OCR confidence histogram
-                        if result.get("confidence"):
-                            record_histogram(
-                                "ocr_confidence", result["confidence"], metric_attrs
-                            )
+                            # Start IGD scan for the new detection
+                            pending_detection = result
+                            igd_scan_active = True
+                            igd_frames_scanned = 0
+                        else:
+                            # No IGD — enqueue immediately (existing behavior)
+                            self._enqueue_detection(result, metric_attrs)
 
                 except queue.Empty:
                     continue
                 except Exception as e:
                     self.logger.error(f"Frame processing error: {e}")
 
+            # Shutdown: flush any pending detection
+            if igd_scan_active and pending_detection is not None:
+                self.logger.info(
+                    f"Shutdown: flushing pending IGD detection for {pending_detection.get('username')}"
+                )
+                self._enqueue_detection(pending_detection, metric_attrs)
+
         except Exception as e:
             self.logger.error(f"OpenCV worker failed: {e}")
             self.shutdown.set()
+
+    def _enqueue_detection(
+        self, result: Dict[str, Any], metric_attrs: Dict[str, str]
+    ) -> None:
+        """Enqueue a matchup detection to the result queue and record metrics.
+
+        Args:
+            result: Detection result dict from process_frame().
+            metric_attrs: Metric attributes for telemetry.
+        """
+        self.result_queue.put(result)
+        self.matchups_found += 1
+
+        # Structured JSON event for Loki queryability
+        detection_json = json.dumps(
+            {
+                "event": "matchup_detected",
+                "timestamp_seconds": result.get("timestamp"),
+                "username": result.get("username"),
+                "ocr_confidence": result.get("confidence"),
+                "emblem_rank": result.get("detected_rank"),
+                "truncated": result.get("truncated", False),
+                "igd": result.get("igd"),
+            }
+        )
+        # Color: green if IGD found, yellow if missing
+        if result.get("igd") is not None:
+            self.logger.info(f"\033[32m{detection_json}\033[0m")
+        else:
+            self.logger.info(f"\033[33m{detection_json}\033[0m")
+
+        # Record matchup detection
+        record_counter("matchups_detected", 1, metric_attrs)
+
+        # Record OCR confidence histogram
+        if result.get("confidence"):
+            record_histogram("ocr_confidence", result["confidence"], metric_attrs)
 
     def result_worker(self):
         """Worker to handle results and update Supabase in batches"""

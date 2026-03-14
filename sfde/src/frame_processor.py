@@ -408,6 +408,79 @@ class FrameProcessor:
             self.logger.error(f"Frame processing error: {e}")
             return None
 
+    def extract_igd(self, igd_frame: np.ndarray) -> Optional[int]:
+        """Extract in-game day number (1-20) from the IGD crop region.
+
+        Args:
+            igd_frame: BGR numpy array of the IGD region.
+
+        Returns:
+            Day number (1-20) or None.
+        """
+        try:
+            # Upscale
+            h, w = igd_frame.shape[:2]
+            scale = max(200 / h, 200 / w, 4.0)
+            upscaled = cv2.resize(
+                igd_frame,
+                (int(w * scale), int(h * scale)),
+                interpolation=cv2.INTER_LINEAR,
+            )
+
+            # Binary threshold
+            gray = cv2.cvtColor(upscaled, cv2.COLOR_BGR2GRAY)
+            _, binary = cv2.threshold(gray, 65, 255, cv2.THRESH_BINARY)
+            ocr_input = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+
+            # Pad for text detector border requirements
+            pad = 50
+            padded = cv2.copyMakeBorder(
+                ocr_input,
+                pad,
+                pad,
+                pad,
+                pad,
+                cv2.BORDER_CONSTANT,
+                value=(0, 0, 0),
+            )
+
+            # OCR with low detection thresholds
+            results = self.reader.predict(
+                padded,
+                text_det_thresh=0.1,
+                text_det_box_thresh=0.1,
+            )
+
+            rec_texts = []
+            rec_scores = []
+            if results:
+                result = results[0]
+                rec_texts = result.get("rec_texts", [])
+                rec_scores = result.get("rec_scores", [])
+
+            if rec_texts:
+                scored = sorted(
+                    zip(rec_texts, rec_scores), key=lambda x: x[1], reverse=True
+                )
+                for text, score in scored:
+                    if score < 0.9:
+                        continue
+                    digits = "".join(c for c in text if c.isdigit())
+                    if not digits:
+                        continue
+                    try:
+                        value = int(digits)
+                        if 1 <= value <= 20:
+                            return value
+                    except ValueError:
+                        continue
+
+            return None
+
+        except Exception as e:
+            self.logger.debug(f"IGD extraction error: {e}")
+            return None
+
     def _decode_frame(self, frame_data: bytes) -> Optional[np.ndarray]:
         """Decode JPEG frame data to numpy array"""
         try:

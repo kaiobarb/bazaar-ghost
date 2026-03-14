@@ -235,6 +235,7 @@ class SupabaseClient:
                                 "truncated": matchup.get(
                                     "truncated", False
                                 ),  # Track if custom edge was used
+                                "igd": matchup.get("igd"),  # In-game day number
                             }
                             batch_data.append(record)
 
