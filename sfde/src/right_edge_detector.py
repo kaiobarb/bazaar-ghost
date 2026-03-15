@@ -94,33 +94,26 @@ class RightEdgeDetector:
             return None, 0.0
 
         try:
-            # Perform template matching with mask if available
+            # Use TM_CCORR_NORMED for better accuracy with new templates
             if self.mask is not None:
                 result = cv2.matchTemplate(
-                    frame, self.template, cv2.TM_SQDIFF, mask=self.mask
+                    frame, self.template, cv2.TM_CCORR_NORMED, mask=self.mask
                 )
             else:
-                # No mask, use regular matching
-                result = cv2.matchTemplate(frame, self.template, cv2.TM_SQDIFF)
+                result = cv2.matchTemplate(frame, self.template, cv2.TM_CCORR_NORMED)
 
             min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-
-            template_pixels = (
-                self.template.shape[0] * self.template.shape[1] * self.template.shape[2]
-            )
-            max_possible_diff = template_pixels * 255 * 255
-            normalized_score = min_val / max_possible_diff
-            confidence = 1.0 - min(normalized_score, 1.0)  # Clamp to [0, 1]
+            confidence = max_val  # Already normalized for TM_CCORR_NORMED
 
             # Check if match exceeds threshold
             if confidence >= threshold:
                 # Calculate right edge x-coordinate
                 template_width = self.template.shape[1]
-                right_edge_x = min_loc[0] + template_width  # Use min_loc for TM_SQDIFF
+                right_edge_x = max_loc[0] + template_width  # Use max_loc for TM_CCORR_NORMED
 
                 self.logger.info(
                     f"Right edge detected at x={right_edge_x} "
-                    f"(template at {min_loc[0]}), confidence={confidence:.3f}"
+                    f"(template at {max_loc[0]}), confidence={confidence:.3f}"
                 )
                 return right_edge_x, confidence
             else:
@@ -166,16 +159,16 @@ class RightEdgeDetector:
             # Find the y position (from the match location)
             if self.mask is not None:
                 result = cv2.matchTemplate(
-                    frame, self.template, cv2.TM_SQDIFF, mask=self.mask
+                    frame, self.template, cv2.TM_CCORR_NORMED, mask=self.mask
                 )
             else:
-                result = cv2.matchTemplate(frame, self.template, cv2.TM_SQDIFF)
-            _, _, min_loc, _ = cv2.minMaxLoc(result)
+                result = cv2.matchTemplate(frame, self.template, cv2.TM_CCORR_NORMED)
+            _, _, _, max_loc = cv2.minMaxLoc(result)
 
             cv2.rectangle(
                 vis,
-                (template_x, min_loc[1]),
-                (right_edge_x, min_loc[1] + template_h),
+                (template_x, max_loc[1]),
+                (right_edge_x, max_loc[1] + template_h),
                 (0, 255, 0),
                 2,
             )
@@ -185,7 +178,7 @@ class RightEdgeDetector:
             cv2.putText(
                 vis,
                 label,
-                (template_x, min_loc[1] - 5),
+                (template_x, max_loc[1] - 5),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
                 (0, 255, 0),
