@@ -250,7 +250,7 @@ class FrameProcessor:
                         right_edge_x = int(frame.shape[1] * self.custom_edge_percent)
                         truncated = True
                         self.logger.info(
-                            f"No right edge detected, using custom_edge at {right_edge_x}px"
+                            f"No right edge detected at {timestamp}s, using custom_edge at {right_edge_x}px"
                         )
                     else:
                         # No custom_edge configured

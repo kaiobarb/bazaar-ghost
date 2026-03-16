@@ -17,10 +17,9 @@ emblem_detection:
 # Right edge detection for partial occlusion handling
 right_edge_detection:
   enabled: true
-  threshold: 0.7
+  threshold: 0.88
   templates_dir: "templates/"
   crop_margin_percent: 5
-
 
 resources:
   max_memory_mb: 512

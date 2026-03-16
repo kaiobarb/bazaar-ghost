@@ -94,27 +94,36 @@ class RightEdgeDetector:
             return None, 0.0
 
         try:
+            # Only search the right half of the frame to avoid UI false positives
+            frame_height, frame_width = frame.shape[:2]
+            right_half_start = frame_width // 2
+            right_half = frame[:, right_half_start:]
+            
             # Use TM_CCORR_NORMED for better accuracy with new templates
             if self.mask is not None:
                 result = cv2.matchTemplate(
-                    frame, self.template, cv2.TM_CCORR_NORMED, mask=self.mask
+                    right_half, self.template, cv2.TM_CCORR_NORMED, mask=self.mask
                 )
             else:
-                result = cv2.matchTemplate(frame, self.template, cv2.TM_CCORR_NORMED)
+                result = cv2.matchTemplate(right_half, self.template, cv2.TM_CCORR_NORMED)
 
             min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
             confidence = max_val  # Already normalized for TM_CCORR_NORMED
 
             # Check if match exceeds threshold
             if confidence >= threshold:
-                # Calculate right edge x-coordinate
+                # Calculate right edge x-coordinate (adjust for right-half search)
                 template_width = self.template.shape[1]
-                right_edge_x = max_loc[0] + template_width  # Use max_loc for TM_CCORR_NORMED
+                # max_loc[0] is relative to right_half, so add the offset
+                absolute_x = max_loc[0] + right_half_start
+                right_edge_x = absolute_x + template_width
 
                 self.logger.info(
                     f"Right edge detected at x={right_edge_x} "
-                    f"(template at {max_loc[0]}), confidence={confidence:.3f}"
+                    f"(template at {absolute_x}), confidence={confidence:.3f}, "
+                    f"frame width={frame.shape[1]}, edge ratio={right_edge_x/frame.shape[1]:.3f}"
                 )
+                
                 return right_edge_x, confidence
             else:
                 self.logger.info(
