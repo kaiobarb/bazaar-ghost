@@ -827,10 +827,10 @@ class FrameProcessor:
 
         cleaned = re.sub(r"[^a-zA-Z0-9_\-.]", "", text)
 
-        # Additional validation: Twitch username rules
+        # Additional validation: Bazaar username rules
         # - 4-25 characters
         # - Must start with letter or number
-        if len(cleaned) < 4 or len(cleaned) > 25:
+        if len(cleaned) < 2 or len(cleaned) > 13:
             return None
 
         if not cleaned[0].isalnum():
