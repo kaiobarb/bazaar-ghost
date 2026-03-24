@@ -52,7 +52,7 @@ selected_vods AS (
     )
 ),
 referenced_profiles AS (
-    SELECT DISTINCT s.sfde_profile_id
+    SELECT DISTINCT s.sfot_profile_id
     FROM streamers s
     JOIN top_streamers ts ON s.id = ts.streamer_id
 ),
@@ -72,8 +72,8 @@ profile_rows AS (
         p.updated_at
     ) AS row_text,
     p.id AS sort_key
-    FROM sfde_profiles p
-    JOIN referenced_profiles rp ON p.id = rp.sfde_profile_id
+    FROM sfot_profiles p
+    JOIN referenced_profiles rp ON p.id = rp.sfot_profile_id
 ),
 streamer_rows AS (
     SELECT format(
@@ -87,7 +87,7 @@ streamer_rows AS (
         s.oldest_vod,
         s.num_vods,
         s.num_bazaar_vods,
-        s.sfde_profile_id,
+        s.sfot_profile_id,
         s.created_at,
         s.updated_at
     ) AS row_text,
@@ -183,17 +183,17 @@ SELECT
     'TRUNCATE TABLE public.chunks CASCADE;' || E'\n' ||
     'TRUNCATE TABLE public.vods CASCADE;' || E'\n' ||
     'TRUNCATE TABLE public.streamers CASCADE;' || E'\n' ||
-    'TRUNCATE TABLE public.sfde_profiles CASCADE;' || E'\n' ||
+    'TRUNCATE TABLE public.sfot_profiles CASCADE;' || E'\n' ||
     E'\n' ||
     '-- Disable triggers during seed to prevent chunk auto-creation and status recalc' || E'\n' ||
     'SET session_replication_role = replica;' || E'\n' ||
     E'\n' ||
-    '-- SFDE Profiles' || E'\n' ||
-    'INSERT INTO public.sfde_profiles (id, profile_name, crop_region, scale, custom_edge, opaque_edge, from_date, to_date, created_at, updated_at) OVERRIDING SYSTEM VALUE VALUES' || E'\n' ||
+    '-- SFOT Profiles' || E'\n' ||
+    'INSERT INTO public.sfot_profiles (id, profile_name, crop_region, scale, custom_edge, opaque_edge, from_date, to_date, created_at, updated_at) OVERRIDING SYSTEM VALUE VALUES' || E'\n' ||
     (SELECT string_agg(row_text, E',\n' ORDER BY sort_key) FROM profile_rows) || ';' || E'\n' ||
     E'\n' ||
     '-- Streamers (processing_enabled preserved from prod)' || E'\n' ||
-    'INSERT INTO public.streamers (id, login, display_name, profile_image_url, processing_enabled, has_vods, oldest_vod, num_vods, num_bazaar_vods, sfde_profile_id, created_at, updated_at) VALUES' || E'\n' ||
+    'INSERT INTO public.streamers (id, login, display_name, profile_image_url, processing_enabled, has_vods, oldest_vod, num_vods, num_bazaar_vods, sfot_profile_id, created_at, updated_at) VALUES' || E'\n' ||
     (SELECT string_agg(row_text, E',\n' ORDER BY sort_key) FROM streamer_rows) || ';' || E'\n' ||
     E'\n' ||
     '-- VODs (ready_for_processing=false to prevent chunk auto-creation trigger)' || E'\n' ||
@@ -213,7 +213,7 @@ SELECT
     E'\n' ||
     '-- Reset sequences' || E'\n' ||
     'SELECT setval(''public.vods_id_seq'', (SELECT COALESCE(MAX(id), 1) FROM public.vods), true);' || E'\n' ||
-    'SELECT setval(''public.sfde_profiles_id_seq'', (SELECT COALESCE(MAX(id), 1) FROM public.sfde_profiles), true);'
+    'SELECT setval(''public.sfot_profiles_id_seq'', (SELECT COALESCE(MAX(id), 1) FROM public.sfot_profiles), true);'
 FROM counts c;
 ")
 

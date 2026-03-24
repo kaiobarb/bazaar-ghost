@@ -250,7 +250,7 @@ class FrameProcessor:
                         right_edge_x = int(frame.shape[1] * self.custom_edge_percent)
                         truncated = True
                         self.logger.info(
-                            f"No right edge detected, using custom_edge at {right_edge_x}px"
+                            f"No right edge detected at {timestamp}s, using custom_edge at {right_edge_x}px"
                         )
                     else:
                         # No custom_edge configured
@@ -827,10 +827,10 @@ class FrameProcessor:
 
         cleaned = re.sub(r"[^a-zA-Z0-9_\-.]", "", text)
 
-        # Additional validation: Twitch username rules
+        # Additional validation: Bazaar username rules
         # - 4-25 characters
         # - Must start with letter or number
-        if len(cleaned) < 4 or len(cleaned) > 25:
+        if len(cleaned) < 2 or len(cleaned) > 13:
             return None
 
         if not cleaned[0].isalnum():
