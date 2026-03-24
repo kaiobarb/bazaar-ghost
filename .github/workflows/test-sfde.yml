@@ -11,6 +11,7 @@ on:
   pull_request:
     branches:
       - main
+      - dev
     paths:
       - "sfde/**"
   workflow_dispatch:
@@ -41,10 +42,12 @@ jobs:
         run: |
           docker run --rm \
             --entrypoint bash \
+            --user "$(id -u):$(id -g)" \
             -e DISABLE_MODEL_SOURCE_CHECK=True \
+            -e HOME=/tmp \
             -v "${{ github.workspace }}/sfde:/app/sfde_host" \
             sfde:test \
-            -c "pip install pytest -q 2>/dev/null && cd /app/sfde_host && python -m pytest tests/ -v"
+            -c "pip install --user pytest -q 2>/dev/null && cd /app/sfde_host && python -m pytest tests/ -v"
 
       - name: Write test summary
         if: always()
