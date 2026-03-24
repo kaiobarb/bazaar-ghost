@@ -1,0 +1,65 @@
+name: Tests
+run-name: Test
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+    paths:
+      - "sfde/**"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "sfde/**"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build SFDE container
+        uses: docker/build-push-action@v6
+        timeout-minutes: 10
+        with:
+          context: ./sfde
+          tags: sfde:test
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run tests
+        timeout-minutes: 10
+        run: |
+          docker run --rm \
+            --entrypoint bash \
+            -e DISABLE_MODEL_SOURCE_CHECK=True \
+            -v "${{ github.workspace }}/sfde:/app/sfde_host" \
+            sfde:test \
+            -c "pip install pytest -q 2>/dev/null && cd /app/sfde_host && python -m pytest tests/ -v"
+
+      - name: Write test summary
+        if: always()
+        run: |
+          if [ -f sfde/tests/last_run_summary.md ]; then
+            cat sfde/tests/last_run_summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sfde-test-report
+          path: |
+            sfde/tests/last_run.txt
+            sfde/tests/last_run_summary.md
+          if-no-files-found: ignore
+          retention-days: 30

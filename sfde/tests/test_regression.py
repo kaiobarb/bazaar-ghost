@@ -12,7 +12,7 @@ import pytest
 
 class TestEmblemAccuracyRegression:
     def test_overall_emblem_accuracy(
-        self, emblem_visible_frames, all_detection_results, metrics
+        self, emblem_visible_frames, all_detection_results
     ):
         correct = 0
         total = 0
@@ -26,16 +26,11 @@ class TestEmblemAccuracyRegression:
                 correct += 1
 
         accuracy = correct / total if total > 0 else 0
-        metrics(
-            f"[SUMMARY] Emblem accuracy (regression): {correct}/{total} ({accuracy:.1%})"
-        )
         assert accuracy >= 0.98, f"Emblem accuracy regression: {accuracy:.1%} < 98%"
 
 
 class TestOCRAccuracyRegression:
-    def test_overall_ocr_accuracy(
-        self, emblem_visible_frames, all_detection_results, metrics
-    ):
+    def test_overall_ocr_accuracy(self, emblem_visible_frames, all_detection_results):
         correct = 0
         total = 0
 
@@ -48,12 +43,9 @@ class TestOCRAccuracyRegression:
                 correct += 1
 
         accuracy = correct / total if total > 0 else 0
-        metrics(
-            f"[SUMMARY] OCR accuracy (regression): {correct}/{total} ({accuracy:.1%})"
-        )
         assert accuracy >= 0.80, f"OCR accuracy regression: {accuracy:.1%} < 80%"
 
-    def test_clean_ocr_accuracy(self, clean_frames, all_detection_results, metrics):
+    def test_clean_ocr_accuracy(self, clean_frames, all_detection_results):
         correct = 0
         total = 0
 
@@ -68,15 +60,12 @@ class TestOCRAccuracyRegression:
                 correct += 1
 
         accuracy = correct / total if total > 0 else 0
-        metrics(
-            f"[SUMMARY] Clean OCR accuracy (regression): {correct}/{total} ({accuracy:.1%})"
-        )
         assert accuracy >= 0.90, f"Clean OCR accuracy regression: {accuracy:.1%} < 90%"
 
 
 class TestRightEdgeDetectionRegression:
     def test_right_edge_detection_rate(
-        self, right_edge_visible_frames, all_detection_results, metrics
+        self, right_edge_visible_frames, all_detection_results
     ):
         default_frames = [f for f in right_edge_visible_frames if f.custom_edge is None]
         if not default_frames:
@@ -94,9 +83,6 @@ class TestRightEdgeDetectionRegression:
                 detected += 1
 
         rate = detected / total if total > 0 else 0
-        metrics(
-            f"[SUMMARY] Right edge detection (regression): {detected}/{total} ({rate:.1%})"
-        )
         assert rate >= 0.80, f"Right edge detection regression: {rate:.1%} < 80%"
 
 

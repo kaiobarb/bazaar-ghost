@@ -11,3 +11,4 @@ seed.sql
 test_data/
 backup-prod*/
 sfde/tests/last_run.txt
+sfde/tests/last_run_summary.md

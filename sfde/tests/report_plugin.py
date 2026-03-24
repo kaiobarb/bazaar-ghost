@@ -20,6 +20,7 @@ from typing import Any, Dict, List
 import pytest
 
 REPORT_PATH = Path(__file__).resolve().parent / "last_run.txt"
+SUMMARY_MD_PATH = Path(__file__).resolve().parent / "last_run_summary.md"
 
 # Pattern: vod_id/frame.jpg where vod_id is digits, frame is digits.jpg
 _FRAME_REF_RE = re.compile(r"(\d+)/(\d+\.jpg)")
@@ -189,3 +190,149 @@ def pytest_sessionfinish(session, exitstatus):
 
     with open(REPORT_PATH, "w") as f:
         f.write(report_text)
+
+    # Generate markdown summary for GitHub Actions
+    _write_markdown_summary(
+        results,
+        by_file,
+        summary_lines,
+        detail_lines,
+        passed,
+        failed,
+        skipped,
+        total,
+        elapsed,
+        now,
+    )
+
+
+def _write_markdown_summary(
+    results,
+    by_file,
+    summary_lines,
+    detail_lines,
+    passed,
+    failed,
+    skipped,
+    total,
+    elapsed,
+    now,
+):
+    """Write a GitHub Actions-friendly markdown summary."""
+    status_emoji = "pass" if failed == 0 else "fail"
+    md = []
+
+    md.append(f"## SFDE Test Results &mdash; {status_emoji}")
+    md.append("")
+    md.append(
+        f"**{passed} passed**, {failed} failed, {skipped} skipped / {total} total &mdash; {elapsed:.0f}s"
+    )
+    md.append("")
+
+    # Accuracy summary table (deduplicate by metric name)
+    if summary_lines:
+        md.append("### Accuracy")
+        md.append("")
+        md.append("| Metric | Result |")
+        md.append("|--------|--------|")
+        seen_names = set()
+        for sl in summary_lines:
+            if ":" in sl:
+                name, value = sl.split(":", 1)
+                name = name.strip().replace(" (regression)", "")
+                if name not in seen_names:
+                    seen_names.add(name)
+                    md.append(f"| {name} | {value.strip()} |")
+        md.append("")
+
+    # Breakdown table
+    if detail_lines:
+        md.append("### Breakdown")
+        md.append("")
+        md.append("| Metric | Result |")
+        md.append("|--------|--------|")
+        for dl in detail_lines:
+            if ":" in dl:
+                name, value = dl.split(":", 1)
+                md.append(f"| {name.strip()} | {value.strip()} |")
+        md.append("")
+
+    # Per-file results with failures
+    has_failures = False
+    failure_md = []
+    for filename, file_results in by_file.items():
+        file_failed_results = [r for r in file_results if r["outcome"] == "failed"]
+        if not file_failed_results:
+            continue
+        has_failures = True
+        failure_md.append(f"**{filename}**")
+        failure_md.append("")
+        for r in file_failed_results:
+            test_name = (
+                r["nodeid"].split("::", 1)[1] if "::" in r["nodeid"] else r["nodeid"]
+            )
+            failure_md.append(f"- `{test_name}`")
+        failure_md.append("")
+
+    if has_failures:
+        md.append("### Failures")
+        md.append("")
+        md.extend(failure_md)
+
+    # Collapsible per-frame failures (OCR mismatches, missed detections, etc.)
+    frame_failures_seen = set()
+    frame_failures = []
+    for nodeid, mlines in report_metrics.items():
+        for ml in mlines:
+            if ml.startswith("[SUMMARY]") or ml.startswith("[DETAIL]"):
+                continue
+            if ml in frame_failures_seen:
+                continue
+            if any(
+                ml.startswith(p)
+                for p in (
+                    "NOT DETECTED",
+                    "WRONG",
+                    "MISSED",
+                    "FALSE POS",
+                )
+            ):
+                frame_failures_seen.add(ml)
+                frame_failures.append(ml)
+            elif "expected=" in ml and "got=" in ml:
+                frame_failures_seen.add(ml)
+                frame_failures.append(ml)
+            elif "expected=" in ml and "got=" in ml:
+                frame_failures.append(ml)
+
+    if frame_failures:
+        md.append("<details>")
+        md.append(f"<summary>Per-frame failures ({len(frame_failures)})</summary>")
+        md.append("")
+        md.append("```")
+        for ff in frame_failures:
+            md.append(ff)
+        md.append("```")
+        md.append("")
+        md.append("</details>")
+        md.append("")
+
+    # File-level summary
+    md.append("<details>")
+    md.append("<summary>Test files</summary>")
+    md.append("")
+    md.append("| File | Status | Passed |")
+    md.append("|------|--------|--------|")
+    for filename, file_results in by_file.items():
+        fp = sum(1 for r in file_results if r["outcome"] == "passed")
+        ff = sum(1 for r in file_results if r["outcome"] == "failed")
+        ft = len(file_results)
+        icon = "pass" if ff == 0 else "fail"
+        md.append(f"| {filename} | {icon} | {fp}/{ft} |")
+    md.append("")
+    md.append("</details>")
+
+    md_text = "\n".join(md) + "\n"
+
+    with open(SUMMARY_MD_PATH, "w") as f:
+        f.write(md_text)
