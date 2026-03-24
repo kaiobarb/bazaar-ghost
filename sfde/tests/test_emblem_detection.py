@@ -2,40 +2,38 @@
 
 Tests that EmblemDetector correctly identifies rank emblems (bronze, silver,
 gold, diamond, legend) from validated detection frames.
+
+All detection results are pre-computed in the session-scoped
+all_detection_results fixture — tests just query cached results.
 """
 
 import pytest
 
-from helpers import get_emblem_detector_key
+from helpers import RESOLUTION_MAP
 
 
 class TestEmblemDetectionOnVisibleFrames:
     """Frames annotated with emblem_visible=True should detect the correct rank."""
 
     def test_detects_correct_rank(
-        self, emblem_visible_frames, emblem_detectors, emblem_threshold, metrics
+        self, emblem_visible_frames, all_detection_results, metrics
     ):
-        """Each visible-emblem frame should match its annotated rank."""
         correct = 0
         errors = []
 
         for frame in emblem_visible_frames:
-            det_key = get_emblem_detector_key(frame)
-            detector = emblem_detectors.get(det_key)
-            if detector is None:
+            r = all_detection_results.get(frame.key)
+            if r is None:
                 continue
 
-            rank, bbox, conf = detector.detect_emblem(
-                frame.image, threshold=emblem_threshold
-            )
-
-            if rank is None:
+            if r.emblem_rank is None:
                 errors.append(
                     f"NOT DETECTED: {frame.key} expected={frame.expected_rank}"
                 )
-            elif rank != frame.expected_rank:
+            elif r.emblem_rank != frame.expected_rank:
                 errors.append(
-                    f"WRONG RANK: {frame.key} expected={frame.expected_rank} got={rank} conf={conf:.3f}"
+                    f"WRONG RANK: {frame.key} expected={frame.expected_rank} "
+                    f"got={r.emblem_rank} conf={r.emblem_conf:.3f}"
                 )
             else:
                 correct += 1
@@ -52,39 +50,33 @@ class TestEmblemDetectionOnVisibleFrames:
             f"{len(errors)} failures."
         )
 
-    def test_emblem_bbox_is_valid(
-        self, emblem_visible_frames, emblem_detectors, emblem_threshold
-    ):
-        """Detected emblems should have a reasonable bounding box."""
+    def test_emblem_bbox_is_valid(self, emblem_visible_frames, all_detection_results):
         for frame in emblem_visible_frames:
-            det_key = get_emblem_detector_key(frame)
-            detector = emblem_detectors.get(det_key)
-            if detector is None:
+            r = all_detection_results.get(frame.key)
+            if r is None or r.emblem_bbox is None:
                 continue
 
-            rank, bbox, conf = detector.detect_emblem(
-                frame.image, threshold=emblem_threshold
-            )
-            if bbox is None:
-                continue
-
-            x, y, w, h = bbox
+            x, y, w, h = r.emblem_bbox
             img_h, img_w = frame.image.shape[:2]
 
-            assert x >= 0 and y >= 0, f"Bbox origin negative: {bbox} for {frame.key}"
-            assert x + w <= img_w, f"Bbox exceeds width: {bbox} for {frame.key}"
-            assert y + h <= img_h, f"Bbox exceeds height: {bbox} for {frame.key}"
+            assert x >= 0 and y >= 0, (
+                f"Bbox origin negative: {r.emblem_bbox} for {frame.key}"
+            )
+            assert x + w <= img_w, (
+                f"Bbox exceeds width: {r.emblem_bbox} for {frame.key}"
+            )
+            assert y + h <= img_h, (
+                f"Bbox exceeds height: {r.emblem_bbox} for {frame.key}"
+            )
             assert x < img_w * 0.6, (
                 f"Emblem too far right: x={x}, frame_w={img_w} for {frame.key}"
             )
 
 
 class TestEmblemDetectionByRank:
-    """Per-rank accuracy breakdown."""
-
     @pytest.mark.parametrize("rank", ["bronze", "silver", "gold", "diamond", "legend"])
     def test_rank_accuracy(
-        self, rank, emblem_visible_frames, emblem_detectors, emblem_threshold, metrics
+        self, rank, emblem_visible_frames, all_detection_results, metrics
     ):
         rank_frames = [f for f in emblem_visible_frames if f.expected_rank == rank]
         if not rank_frames:
@@ -93,20 +85,17 @@ class TestEmblemDetectionByRank:
         correct = 0
         errors = []
         for frame in rank_frames:
-            det_key = get_emblem_detector_key(frame)
-            detector = emblem_detectors.get(det_key)
-            if detector is None:
+            r = all_detection_results.get(frame.key)
+            if r is None:
                 continue
-
-            detected_rank, _, conf = detector.detect_emblem(
-                frame.image, threshold=emblem_threshold
-            )
-            if detected_rank == rank:
+            if r.emblem_rank == rank:
                 correct += 1
-            elif detected_rank is None:
+            elif r.emblem_rank is None:
                 errors.append(f"NOT DETECTED: {frame.key}")
             else:
-                errors.append(f"WRONG: {frame.key} got={detected_rank} conf={conf:.3f}")
+                errors.append(
+                    f"WRONG: {frame.key} got={r.emblem_rank} conf={r.emblem_conf:.3f}"
+                )
 
         accuracy = correct / len(rank_frames)
         metrics(
@@ -121,19 +110,10 @@ class TestEmblemDetectionByRank:
 
 
 class TestEmblemDetectionByResolution:
-    """Per-resolution accuracy breakdown."""
-
     @pytest.mark.parametrize("resolution", ["480p", "720p", "1080p"])
     def test_resolution_accuracy(
-        self,
-        resolution,
-        emblem_visible_frames,
-        emblem_detectors,
-        emblem_threshold,
-        metrics,
+        self, resolution, emblem_visible_frames, all_detection_results, metrics
     ):
-        from helpers import RESOLUTION_MAP
-
         res_frames = [
             f
             for f in emblem_visible_frames
@@ -145,23 +125,19 @@ class TestEmblemDetectionByResolution:
         correct = 0
         errors = []
         for frame in res_frames:
-            det_key = get_emblem_detector_key(frame)
-            detector = emblem_detectors.get(det_key)
-            if detector is None:
+            r = all_detection_results.get(frame.key)
+            if r is None:
                 continue
-
-            detected_rank, _, conf = detector.detect_emblem(
-                frame.image, threshold=emblem_threshold
-            )
-            if detected_rank == frame.expected_rank:
+            if r.emblem_rank == frame.expected_rank:
                 correct += 1
-            elif detected_rank is None:
+            elif r.emblem_rank is None:
                 errors.append(
                     f"NOT DETECTED @{resolution}: {frame.key} expected={frame.expected_rank}"
                 )
             else:
                 errors.append(
-                    f"WRONG @{resolution}: {frame.key} expected={frame.expected_rank} got={detected_rank} conf={conf:.3f}"
+                    f"WRONG @{resolution}: {frame.key} expected={frame.expected_rank} "
+                    f"got={r.emblem_rank} conf={r.emblem_conf:.3f}"
                 )
 
         accuracy = correct / len(res_frames)
@@ -177,10 +153,8 @@ class TestEmblemDetectionByResolution:
 
 
 class TestNoEmblemFrames:
-    """Frames annotated with emblem_visible=False should ideally not detect."""
-
     def test_no_emblem_frames_low_detection(
-        self, no_emblem_frames, emblem_detectors, emblem_threshold, metrics
+        self, no_emblem_frames, all_detection_results, metrics
     ):
         if not no_emblem_frames:
             pytest.skip("No frames annotated as no-emblem")
@@ -188,18 +162,13 @@ class TestNoEmblemFrames:
         detected = 0
         false_positives = []
         for frame in no_emblem_frames:
-            det_key = get_emblem_detector_key(frame)
-            detector = emblem_detectors.get(det_key)
-            if detector is None:
+            r = all_detection_results.get(frame.key)
+            if r is None:
                 continue
-
-            rank, _, conf = detector.detect_emblem(
-                frame.image, threshold=emblem_threshold
-            )
-            if rank is not None:
+            if r.emblem_rank is not None:
                 detected += 1
                 false_positives.append(
-                    f"FALSE POS: {frame.key} detected={rank} conf={conf:.3f}"
+                    f"FALSE POS: {frame.key} detected={r.emblem_rank} conf={r.emblem_conf:.3f}"
                 )
 
         rate = detected / len(no_emblem_frames)

@@ -2,13 +2,16 @@
 
 Loads validated annotations and frame images, initializes detectors
 with session scope so PaddleOCR and template loading only happen once.
+
+Detection results (emblem, right edge, OCR) are cached in a single
+session-scoped pass so each frame is processed exactly once.
 """
 
 import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -23,7 +26,7 @@ FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yaml"
 
-from helpers import RESOLUTION_MAP
+from helpers import RESOLUTION_MAP, get_emblem_detector_key, get_processor_key
 
 
 @dataclass
@@ -58,6 +61,24 @@ class ValidatedFrame:
     @property
     def template_resolution(self) -> str:
         return RESOLUTION_MAP.get(self.quality, "480p")
+
+
+@dataclass
+class DetectionResult:
+    """Cached detection results for a single frame (computed once per session)."""
+
+    # Emblem detection
+    emblem_rank: Optional[str]
+    emblem_bbox: Optional[Tuple[int, int, int, int]]
+    emblem_conf: float
+
+    # Right edge detection
+    right_edge_x: Optional[int]
+    right_edge_conf: float
+
+    # OCR extraction (after emblem crop)
+    ocr_username: Optional[str]
+    ocr_confidence: float
 
 
 # ---------------------------------------------------------------------------
@@ -165,13 +186,12 @@ def no_right_edge_frames(all_validated_frames) -> List[ValidatedFrame]:
 
 
 # ---------------------------------------------------------------------------
-# Detector fixtures (keyed by template resolution + old_templates flag)
+# Detector fixtures
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture(scope="session")
 def emblem_detectors(config) -> Dict[str, "EmblemDetector"]:
-    """One EmblemDetector per (resolution, old_templates) combo found in test data."""
     from emblem_detector import EmblemDetector
 
     detectors = {}
@@ -192,7 +212,6 @@ def emblem_detectors(config) -> Dict[str, "EmblemDetector"]:
 
 @pytest.fixture(scope="session")
 def right_edge_detectors() -> Dict[str, "RightEdgeDetector"]:
-    """One RightEdgeDetector per resolution."""
     from right_edge_detector import RightEdgeDetector
 
     detectors = {}
@@ -214,17 +233,11 @@ def right_edge_threshold(config) -> float:
     return config.get("right_edge_detection", {}).get("threshold", 0.88)
 
 
-# ---------------------------------------------------------------------------
-# FrameProcessor fixtures (heavy — one per resolution, session scoped)
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture(scope="session")
 def frame_processors(config) -> Dict[str, "FrameProcessor"]:
     """One FrameProcessor per (quality, old_templates) combo.
 
     These are expensive to create (PaddleOCR init), so session-scoped.
-    Keys match the pattern: '480p', '720p', '1080p', '480p_old'.
     """
     from frame_processor import FrameProcessor
 
@@ -248,3 +261,67 @@ def frame_processors(config) -> Dict[str, "FrameProcessor"]:
         )
 
     return processors
+
+
+# ---------------------------------------------------------------------------
+# Cached detection results — single pass over all frames
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def all_detection_results(
+    all_validated_frames,
+    emblem_detectors,
+    right_edge_detectors,
+    frame_processors,
+    emblem_threshold,
+    right_edge_threshold,
+) -> Dict[str, DetectionResult]:
+    """Run emblem detection, right edge detection, and OCR on every frame
+    exactly once. Returns a dict keyed by frame.key.
+
+    This is the most expensive fixture (~3 min) but eliminates all
+    redundant inference across test files.
+    """
+    results = {}
+
+    for frame in all_validated_frames:
+        # Emblem detection
+        det_key = get_emblem_detector_key(frame)
+        detector = emblem_detectors.get(det_key)
+        if detector is not None:
+            e_rank, e_bbox, e_conf = detector.detect_emblem(
+                frame.image, threshold=emblem_threshold
+            )
+        else:
+            e_rank, e_bbox, e_conf = None, None, 0.0
+
+        # Right edge detection
+        re_detector = right_edge_detectors.get(frame.template_resolution)
+        if re_detector is not None:
+            re_x, re_conf = re_detector.detect_right_edge(
+                frame.image, threshold=right_edge_threshold
+            )
+        else:
+            re_x, re_conf = None, 0.0
+
+        # OCR extraction (requires emblem bbox for cropping)
+        proc_key = get_processor_key(frame)
+        processor = frame_processors.get(proc_key)
+        if processor is not None:
+            cropped = processor._crop(frame.image, e_bbox)
+            ocr_user, ocr_conf, _ = processor._extract_usernames(cropped)
+        else:
+            ocr_user, ocr_conf = None, 0.0
+
+        results[frame.key] = DetectionResult(
+            emblem_rank=e_rank,
+            emblem_bbox=e_bbox,
+            emblem_conf=e_conf,
+            right_edge_x=re_x,
+            right_edge_conf=re_conf,
+            ocr_username=ocr_user,
+            ocr_confidence=ocr_conf,
+        )
+
+    return results
