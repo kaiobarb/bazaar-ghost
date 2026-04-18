@@ -9,9 +9,6 @@ on:
     paths:
       - "sfde/**"
   pull_request:
-    branches:
-      - main
-      - dev
     paths:
       - "sfde/**"
   workflow_dispatch:
