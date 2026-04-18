@@ -2,18 +2,17 @@
 Frame processor module - Handles OpenCV detection and PaddleOCR
 """
 
-import os
+import base64
+import logging
+from typing import Any, Dict, Optional, Tuple
+
 import cv2
 import numpy as np
 from paddleocr import PaddleOCR
-from typing import Optional, Dict, Any, Tuple
-import logging
-import base64
-from PIL import Image
-import io
+
 from emblem_detector import EmblemDetector
 from right_edge_detector import RightEdgeDetector
-from telemetry import create_span, record_histogram, record_counter
+from telemetry import create_span, record_counter, record_histogram
 
 
 class FrameProcessor:

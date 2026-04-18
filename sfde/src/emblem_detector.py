@@ -4,11 +4,13 @@ Emblem detection and removal for improved OCR accuracy
 Uses template matching for emblem detection
 """
 
+import logging
+from pathlib import Path
+from typing import Optional, Tuple
+
 import cv2
 import numpy as np
-from pathlib import Path
-from typing import Tuple, Optional
-import logging
+
 
 class EmblemDetector:
     """Detect and remove rank emblems using template matching"""

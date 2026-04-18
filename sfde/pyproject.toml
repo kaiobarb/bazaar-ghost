@@ -1,0 +1,38 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Start conservative: real-bug rules only. Tighten later.
+#   F   = pyflakes (undefined names, unused imports/vars)
+#   E9  = syntax / runtime errors
+#   I   = import sorting
+#   B   = flake8-bugbear (likely bugs: mutable defaults, shadowing, etc.)
+select = ["F", "E9", "I", "B"]
+ignore = [
+    "B008",  # function calls in defaults — common in fixtures
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Pre-existing issues in files not yet refactored — clean up incrementally.
+"src/frame_processor.py" = ["B905"]
+"src/supabase_client.py" = ["F841"]
+"tests/report_plugin.py" = ["B007"]
+# Forward refs to classes imported lazily inside fixture bodies (avoids
+# loading PaddleOCR at pytest collection time).
+"tests/conftest.py" = ["F821"]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "frame_processor",
+    "supabase_client",
+    "json_logger",
+    "telemetry",
+    "image_utils",
+    "sfde_config",
+    "workers",
+]
+
+[tool.ruff.format]
+quote-style = "double"

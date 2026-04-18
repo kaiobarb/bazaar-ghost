@@ -57,7 +57,7 @@ def parse_sfde_profile() -> Dict[str, Any]:
     try:
         profile = json.loads(sfde_profile_json)
     except json.JSONDecodeError as e:
-        raise ValueError(f"SFDE_PROFILE is not valid JSON: {e}")
+        raise ValueError(f"SFDE_PROFILE is not valid JSON: {e}") from e
 
     if "crop_region" not in profile:
         raise ValueError("SFDE_PROFILE missing required field: crop_region")

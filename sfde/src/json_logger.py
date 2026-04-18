@@ -5,7 +5,7 @@ JSON logging formatter for structured logging
 import json
 import logging
 from datetime import datetime
-from typing import Any, Dict
+
 
 class JSONFormatter(logging.Formatter):
     """Custom JSON formatter for structured logging"""
