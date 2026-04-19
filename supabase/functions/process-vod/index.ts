@@ -3,22 +3,25 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 import {
+  OLD_TEMPLATES_CUTOFF,
+  triggerGithubWorkflow,
+} from "../_shared/github.ts";
+import {
   fetchAndUpsertVods,
+  fetchVodProcessingConfig,
+  getPendingChunksForVod,
   supabase,
   verifySecretKey,
 } from "../_shared/supabase.ts";
 import { verifyEventSubSignature } from "../_shared/twitch.ts";
 import { log, recordCounter } from "../_shared/telemetry.ts";
 
-const GITHUB_TOKEN = Deno.env.get("GITHUB_TOKEN")!;
-const GITHUB_OWNER = "kaiobarb";
-const GITHUB_REPO = "bazaar-ghost";
 const TWITCH_EVENTSUB_SECRET = Deno.env.get("TWITCH_EVENTSUB_SECRET")!;
 
 interface ProcessVodRequest {
-  vod_id?: number | string; // Can be bigint (internal) or string
-  source_id?: string; // Twitch VOD ID
-  dry_run?: boolean; // If true, only return what would be processed
+  vod_id?: number | string;
+  source_id?: string;
+  dry_run?: boolean;
 }
 
 interface ProcessVodResponse {
@@ -32,7 +35,6 @@ interface ProcessVodResponse {
   error?: string;
 }
 
-// EventSub payload types
 interface EventSubPayload {
   subscription: {
     id: string;
@@ -48,81 +50,10 @@ interface EventSubPayload {
   challenge?: string;
 }
 
-async function triggerGithubWorkflow(
-  vodId: string,
-  chunkUuids: string[],
-  oldTemplates: boolean,
-  sfdeProfile: string,
-  environment: string,
-): Promise<string | null> {
-  const workflowDispatchUrl =
-    `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/process-vod.yml/dispatches`;
+// ---------------------------------------------------------------------------
+// EventSub handler
+// ---------------------------------------------------------------------------
 
-  console.log(
-    `Triggering workflow for VOD ${vodId} with ${chunkUuids.length} chunks (old_templates: ${oldTemplates}, environment: ${environment})`,
-  );
-
-  const branch = environment === "dev" ? "dev" : "main";
-
-  const response = await fetch(workflowDispatchUrl, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${GITHUB_TOKEN}`,
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      ref: branch,
-      inputs: {
-        vod_id: vodId,
-        chunk_uuids: JSON.stringify(chunkUuids), // Pass as JSON string
-        old_templates: oldTemplates.toString(), // Pass as string
-        sfde_profile: sfdeProfile, // Pass profile as JSON string
-        environment: environment, // Pass environment selection
-      },
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error(
-      `GitHub workflow dispatch failed: ${response.status} ${response.statusText}`,
-      errorText,
-    );
-    throw new Error(
-      `GitHub API error: ${response.status} ${response.statusText} - ${errorText}`,
-    );
-  }
-
-  // GitHub API returns 204 No Content on success
-  // Construct the Actions page URL for the workflow
-  const actionsUrl =
-    `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/process-vod.yml`;
-  return actionsUrl;
-}
-
-async function getPendingChunksForVod(
-  vodId?: number | string,
-  sourceId?: string,
-) {
-  // Use the SQL function we created
-  const { data, error } = await supabase.rpc("get_pending_chunks_for_vod", {
-    p_vod_id: vodId ? Number(vodId) : null,
-    p_source_id: sourceId || null,
-  });
-
-  if (error) {
-    console.error("Error fetching pending chunks:", error);
-    throw new Error(`Database error: ${error.message}`);
-  }
-
-  return data || [];
-}
-
-/**
- * Handle Twitch EventSub webhook requests
- */
 async function handleEventSubWebhook(
   req: Request,
   messageType: string,
@@ -132,16 +63,13 @@ async function handleEventSubWebhook(
   const timestamp = req.headers.get("Twitch-Eventsub-Message-Timestamp");
   const signature = req.headers.get("Twitch-Eventsub-Message-Signature");
 
-  // Record webhook received metric
   recordCounter("eventsub.webhook.received", 1, { message_type: messageType });
 
-  // Validate required headers
   if (!messageId || !timestamp || !signature) {
     log("warn", "Missing EventSub headers", { messageId, timestamp, signature });
     return new Response("Missing required headers", { status: 400 });
   }
 
-  // Verify signature
   if (!TWITCH_EVENTSUB_SECRET) {
     log("error", "TWITCH_EVENTSUB_SECRET not configured");
     return new Response("Server configuration error", { status: 500 });
@@ -163,7 +91,6 @@ async function handleEventSubWebhook(
 
   const payload: EventSubPayload = JSON.parse(body);
 
-  // Handle webhook callback verification (challenge)
   if (messageType === "webhook_callback_verification") {
     log("info", "EventSub challenge verification", {
       subscription_type: payload.subscription.type,
@@ -174,7 +101,6 @@ async function handleEventSubWebhook(
     });
   }
 
-  // Handle subscription revocation
   if (messageType === "revocation") {
     log("warn", "EventSub subscription revoked", {
       subscription_id: payload.subscription.id,
@@ -188,7 +114,6 @@ async function handleEventSubWebhook(
     return new Response(null, { status: 204 });
   }
 
-  // Handle notification
   if (messageType === "notification") {
     if (payload.subscription.type === "stream.offline" && payload.event) {
       await processStreamOffline(payload.event);
@@ -202,9 +127,6 @@ async function handleEventSubWebhook(
   return new Response(null, { status: 204 });
 }
 
-/**
- * Process stream.offline event - fetch latest VOD and trigger processing
- */
 async function processStreamOffline(event: {
   broadcaster_user_id: string;
   broadcaster_user_login: string;
@@ -219,32 +141,21 @@ async function processStreamOffline(event: {
     name: broadcaster_user_name,
   });
 
-  // 1. Look up streamer in database (try by ID first, then by login)
-  let streamer: {
-    id: number;
-    login: string;
-    display_name: string;
-    processing_enabled: boolean;
-  } | null = null;
-
-  // Try by ID first
+  // Look up streamer (by ID first, login as fallback for local testing)
   const { data: streamerById } = await supabase
     .from("streamers")
     .select("id, login, display_name, processing_enabled")
     .eq("id", parseInt(broadcaster_user_id))
     .single();
 
-  if (streamerById) {
-    streamer = streamerById;
-  } else {
-    // Fallback to login lookup (useful for testing with Twitch CLI)
-    const { data: streamerByLogin } = await supabase
+  const streamer = streamerById ?? await (async () => {
+    const { data } = await supabase
       .from("streamers")
       .select("id, login, display_name, processing_enabled")
       .eq("login", broadcaster_user_login)
       .single();
-    streamer = streamerByLogin;
-  }
+    return data;
+  })();
 
   if (!streamer) {
     recordCounter("eventsub.stream_offline.skipped", 1, { reason: "not_found" });
@@ -255,7 +166,6 @@ async function processStreamOffline(event: {
     return;
   }
 
-  // 2. Check if processing is enabled
   if (!streamer.processing_enabled) {
     recordCounter("eventsub.stream_offline.skipped", 1, { reason: "disabled" });
     log("info", "Processing disabled for streamer", {
@@ -265,18 +175,8 @@ async function processStreamOffline(event: {
     return;
   }
 
-  // 3. Fetch latest VOD with chapters and upsert to database
-  log("info", "Fetching latest VOD for streamer", {
-    streamer_id: streamer.id,
-    login: streamer.login,
-  });
-
   const { vodsUpserted, bazaarSegments, upsertedVodIds } =
-    await fetchAndUpsertVods(
-      streamer.id,
-      streamer.login,
-      1, // Only fetch the latest VOD
-    );
+    await fetchAndUpsertVods(streamer.id, streamer.login, 1);
 
   if (vodsUpserted === 0 || upsertedVodIds.length === 0) {
     recordCounter("eventsub.stream_offline.skipped", 1, { reason: "no_bazaar" });
@@ -288,7 +188,6 @@ async function processStreamOffline(event: {
   }
 
   const vodSourceId = upsertedVodIds[0];
-
   recordCounter("eventsub.stream_offline.processed", 1, {
     streamer: streamer.login,
   });
@@ -299,73 +198,25 @@ async function processStreamOffline(event: {
     bazaar_segments: bazaarSegments,
   });
 
-  // 4. Trigger processing for the new VOD
   try {
     const chunks = await getPendingChunksForVod(undefined, vodSourceId);
-
     if (chunks.length === 0) {
-      log("info", "No pending chunks for new VOD", {
-        vod_source_id: vodSourceId,
-      });
+      log("info", "No pending chunks for new VOD", { vod_source_id: vodSourceId });
       return;
     }
 
-    const chunkUuids = chunks.map((chunk: any) => chunk.chunk_id);
-    const actualVodId = chunks[0].vod_id;
-
-    // Fetch VOD's published_at date and streamer's profile
-    const { data: vodData, error: vodError } = await supabase
-      .from("vods")
-      .select("published_at, streamer_id, streamers!inner(sfde_profile_id)")
-      .eq("id", actualVodId)
-      .single();
-
-    if (vodError) {
-      log("error", "Failed to fetch VOD data", {
-        vod_id: actualVodId,
-        error: vodError.message,
-      });
-      return;
-    }
-
-    // Check if VOD was published on or before August 12, 2025
-    const cutoffDate = new Date("2025-08-12T00:00:00Z");
-    const vodPublishedAt = new Date(vodData.published_at);
-    const useOldTemplates = vodPublishedAt <= cutoffDate;
-
-    // Fetch SFDE profile
-    const sfdeProfileId = vodData.streamers.sfde_profile_id;
-    const { data: profileData, error: profileError } = await supabase
-      .from("sfde_profiles")
-      .select("*")
-      .eq("id", sfdeProfileId)
-      .single();
-
-    if (profileError) {
-      log("error", "Failed to fetch SFDE profile", {
-        profile_id: sfdeProfileId,
-        error: profileError.message,
-      });
-      return;
-    }
-
-    const sfdeProfileJson = JSON.stringify(profileData);
+    const chunkUuids = chunks.map((c) => c.chunk_id);
+    const { useOldTemplates, sfdeProfileJson } = await fetchVodProcessingConfig(
+      chunks[0].vod_id,
+      OLD_TEMPLATES_CUTOFF,
+    );
     const environment = Deno.env.get("ENV") || "production";
 
-    // Update chunks to 'queued' status
-    const { error: updateError } = await supabase
-      .from("chunks")
-      .update({ status: "queued" })
-      .in("id", chunkUuids);
+    await supabase.from("chunks").update({ status: "queued" }).in(
+      "id",
+      chunkUuids,
+    );
 
-    if (updateError) {
-      log("error", "Failed to update chunks to queued", {
-        error: updateError.message,
-      });
-      return;
-    }
-
-    // Trigger GitHub workflow
     const githubRunUrl = await triggerGithubWorkflow(
       vodSourceId,
       chunkUuids,
@@ -383,20 +234,20 @@ async function processStreamOffline(event: {
       chunks_count: chunks.length,
       github_url: githubRunUrl,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     log("error", "Failed to trigger processing for stream.offline VOD", {
       vod_source_id: vodSourceId,
-      error: error.message,
+      error: error instanceof Error ? error.message : String(error),
     });
   }
 }
 
-/**
- * Handle internal API requests (existing flow)
- */
+// ---------------------------------------------------------------------------
+// Internal API handler
+// ---------------------------------------------------------------------------
+
 async function handleInternalRequest(req: Request): Promise<Response> {
   try {
-    // Handle CORS preflight
     if (req.method === "OPTIONS") {
       return new Response(null, {
         status: 204,
@@ -409,29 +260,24 @@ async function handleInternalRequest(req: Request): Promise<Response> {
       });
     }
 
-    // Verify secret key authentication (after CORS to allow preflight)
     if (!verifySecretKey(req)) {
-      return new Response(
-        JSON.stringify({ error: "Unauthorized" }),
-        {
-          headers: { "Content-Type": "application/json" },
-          status: 401,
-        },
-      );
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        headers: { "Content-Type": "application/json" },
+        status: 401,
+      });
     }
 
     if (req.method !== "POST") {
       return new Response("Method not allowed", { status: 405 });
     }
 
-    const requestBody: ProcessVodRequest = await req.json().catch(() => ({}));
-    const { vod_id, source_id, dry_run = false } = requestBody;
+    const { vod_id, source_id, dry_run = false }: ProcessVodRequest =
+      await req.json().catch(() => ({}));
 
     console.log(
       `Process VOD request - vod_id: ${vod_id}, source_id: ${source_id}, dry_run: ${dry_run}`,
     );
 
-    // Validate input
     if (!vod_id && !source_id) {
       const response: ProcessVodResponse = {
         success: false,
@@ -444,7 +290,6 @@ async function handleInternalRequest(req: Request): Promise<Response> {
       });
     }
 
-    // Get pending chunks for the VOD
     const chunks = await getPendingChunksForVod(vod_id, source_id);
 
     if (chunks.length === 0) {
@@ -452,7 +297,7 @@ async function handleInternalRequest(req: Request): Promise<Response> {
         success: true,
         message: "No pending chunks found for this VOD",
         vod_id: vod_id ? Number(vod_id) : undefined,
-        source_id: source_id,
+        source_id,
         chunks_found: 0,
       };
       return new Response(JSON.stringify(response), {
@@ -461,8 +306,7 @@ async function handleInternalRequest(req: Request): Promise<Response> {
       });
     }
 
-    // Extract chunk UUIDs
-    const chunkUuids = chunks.map((chunk: any) => chunk.chunk_id);
+    const chunkUuids = chunks.map((c) => c.chunk_id);
     const actualVodId = chunks[0].vod_id;
     const actualSourceId = chunks[0].source_id;
 
@@ -470,49 +314,16 @@ async function handleInternalRequest(req: Request): Promise<Response> {
       `Found ${chunks.length} pending chunks for VOD ${actualVodId} (${actualSourceId})`,
     );
 
-    // Fetch VOD's published_at date and streamer's profile to determine processing settings
-    const { data: vodData, error: vodError } = await supabase
-      .from("vods")
-      .select("published_at, streamer_id, streamers!inner(sfde_profile_id)")
-      .eq("id", actualVodId)
-      .single();
-
-    if (vodError) {
-      console.error("Error fetching VOD data:", vodError);
-      throw new Error(`Failed to fetch VOD data: ${vodError.message}`);
-    }
-
-    // Check if VOD was published on or before August 12, 2025
-    const cutoffDate = new Date("2025-08-12T00:00:00Z");
-    const vodPublishedAt = new Date(vodData.published_at);
-    const useOldTemplates = vodPublishedAt <= cutoffDate;
+    const { useOldTemplates, sfdeProfileJson } = await fetchVodProcessingConfig(
+      actualVodId,
+      OLD_TEMPLATES_CUTOFF,
+    );
+    const environment = Deno.env.get("ENV") || "production";
 
     console.log(
-      `VOD published at: ${vodData.published_at}, cutoff: ${cutoffDate.toISOString()}, use old templates: ${useOldTemplates}`,
+      `use old templates: ${useOldTemplates}, environment: ${environment}`,
     );
 
-    // Fetch the streamer's SFDE profile
-    const sfdeProfileId = vodData.streamers.sfde_profile_id;
-    const { data: profileData, error: profileError } = await supabase
-      .from("sfde_profiles")
-      .select("*")
-      .eq("id", sfdeProfileId)
-      .single();
-
-    if (profileError) {
-      console.error("Error fetching SFDE profile:", profileError);
-      throw new Error(`Failed to fetch SFDE profile: ${profileError.message}`);
-    }
-
-    // Serialize profile as JSON string for passing to GitHub Actions
-    const sfdeProfileJson = JSON.stringify(profileData);
-    console.log(`Using SFDE profile: ${profileData.profile_name}`);
-
-    // Get environment from ENV environment variable (set via .env or .env.dev)
-    const environment = Deno.env.get("ENV") || "production";
-    console.log(`Using environment: ${environment}`);
-
-    // If dry run, just return what would be processed
     if (dry_run) {
       const response: ProcessVodResponse = {
         success: true,
@@ -529,7 +340,6 @@ async function handleInternalRequest(req: Request): Promise<Response> {
       });
     }
 
-    // Update chunks to 'queued' status before triggering GitHub workflow
     console.log(`Updating ${chunks.length} chunks to 'queued' status`);
     const { error: updateError } = await supabase
       .from("chunks")
@@ -537,13 +347,11 @@ async function handleInternalRequest(req: Request): Promise<Response> {
       .in("id", chunkUuids);
 
     if (updateError) {
-      console.error("Error updating chunks to queued status:", updateError);
       throw new Error(
         `Failed to update chunks to queued status: ${updateError.message}`,
       );
     }
 
-    // Trigger GitHub workflow with all chunk UUIDs
     const githubRunUrl = await triggerGithubWorkflow(
       actualSourceId,
       chunkUuids,
@@ -553,7 +361,6 @@ async function handleInternalRequest(req: Request): Promise<Response> {
     );
 
     recordCounter("process_vod.triggered", 1, { source: "internal" });
-
     console.log(
       `Successfully triggered GitHub workflow for VOD ${actualVodId} with ${chunks.length} chunks`,
     );
@@ -566,7 +373,7 @@ async function handleInternalRequest(req: Request): Promise<Response> {
       source_id: actualSourceId,
       chunks_found: chunks.length,
       chunk_uuids: chunkUuids,
-      github_run_url: githubRunUrl || undefined,
+      github_run_url: githubRunUrl,
     };
 
     return new Response(JSON.stringify(response), {
@@ -576,15 +383,13 @@ async function handleInternalRequest(req: Request): Promise<Response> {
       },
       status: 200,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Process VOD error:", error);
-
     const response: ProcessVodResponse = {
       success: false,
       message: "Error processing VOD",
-      error: error.message || "Unknown error occurred",
+      error: error instanceof Error ? error.message : "Unknown error occurred",
     };
-
     return new Response(JSON.stringify(response), {
       headers: {
         "Content-Type": "application/json",
@@ -595,18 +400,13 @@ async function handleInternalRequest(req: Request): Promise<Response> {
   }
 }
 
-/**
- * Main entry point - routes to EventSub handler or internal API based on headers
- */
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
 Deno.serve(async (req) => {
-  // Check if this is an EventSub webhook (by headers)
   const messageType = req.headers.get("Twitch-Eventsub-Message-Type");
-
-  if (messageType) {
-    return handleEventSubWebhook(req, messageType);
-  }
-
-  // Otherwise, handle as internal API request
+  if (messageType) return handleEventSubWebhook(req, messageType);
   return handleInternalRequest(req);
 });
 
@@ -626,7 +426,7 @@ Deno.serve(async (req) => {
     --header 'Content-Type: application/json' \
     --data '{"source_id": "2567780387"}'
 
-  # Dry run to see what would be processed
+  # Dry run
   curl -i --location --request POST 'http://127.0.0.1:54321/functions/v1/process-vod' \
     --header "Authorization: Bearer $SUPABASE_PUBLISHABLE_KEY" \
     --header "apikey: $SUPABASE_PUBLISHABLE_KEY" \
@@ -637,8 +437,5 @@ Deno.serve(async (req) => {
   twitch event trigger stream.offline \
     -F http://localhost:54321/functions/v1/process-vod \
     -s $TWITCH_EVENTSUB_SECRET
-
-  Note: The ENV variable in .env/.env.dev determines which GitHub environment
-  (dev or production) the workflow will use.
 
 */

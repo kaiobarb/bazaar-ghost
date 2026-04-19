@@ -7,6 +7,8 @@ Detection results (emblem, right edge, OCR) are cached in a single
 session-scoped pass so each frame is processed exactly once.
 """
 
+from __future__ import annotations
+
 import json
 import sys
 from dataclasses import dataclass, field

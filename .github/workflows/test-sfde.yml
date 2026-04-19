@@ -9,9 +9,6 @@ on:
     paths:
       - "sfde/**"
   pull_request:
-    branches:
-      - main
-      - dev
     paths:
       - "sfde/**"
   workflow_dispatch:
@@ -23,6 +20,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+
+      - name: Lint (ruff)
+        run: pipx run ruff check sfde/
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

@@ -228,3 +228,71 @@ export async function fetchAndUpsertVods(
     oldestVod,
   };
 }
+
+// ---------------------------------------------------------------------------
+// VOD processing helpers (used by process-vod and future functions)
+// ---------------------------------------------------------------------------
+
+/** Pending chunk row returned by the get_pending_chunks_for_vod RPC. */
+export interface PendingChunk {
+  chunk_id: string;
+  vod_id: number;
+  source_id: string;
+}
+
+/** Fetch chunks with status='pending' for a given VOD. */
+export async function getPendingChunksForVod(
+  vodId?: number | string,
+  sourceId?: string,
+): Promise<PendingChunk[]> {
+  const { data, error } = await supabase.rpc("get_pending_chunks_for_vod", {
+    p_vod_id: vodId ? Number(vodId) : null,
+    p_source_id: sourceId || null,
+  });
+
+  if (error) throw new Error(`Database error: ${error.message}`);
+  return (data as PendingChunk[]) || [];
+}
+
+export interface VodProcessingConfig {
+  useOldTemplates: boolean;
+  sfdeProfileJson: string;
+}
+
+/**
+ * Fetch everything needed to dispatch a processing workflow for a VOD:
+ *   - whether to use old (pre-cutoff) templates
+ *   - the streamer's SFDE profile serialised as JSON
+ *
+ * Throws if the VOD or its profile cannot be found.
+ */
+export async function fetchVodProcessingConfig(
+  vodId: number,
+  oldTemplatesCutoff: Date,
+): Promise<VodProcessingConfig> {
+  const { data: vodData, error: vodError } = await supabase
+    .from("vods")
+    .select("published_at, streamer_id, streamers!inner(sfde_profile_id)")
+    .eq("id", vodId)
+    .single();
+
+  if (vodError) {
+    throw new Error(`Failed to fetch VOD data: ${vodError.message}`);
+  }
+
+  const useOldTemplates = new Date(vodData.published_at) <= oldTemplatesCutoff;
+
+  const sfdeProfileId = (vodData.streamers as { sfde_profile_id: number })
+    .sfde_profile_id;
+  const { data: profileData, error: profileError } = await supabase
+    .from("sfde_profiles")
+    .select("*")
+    .eq("id", sfdeProfileId)
+    .single();
+
+  if (profileError) {
+    throw new Error(`Failed to fetch SFDE profile: ${profileError.message}`);
+  }
+
+  return { useOldTemplates, sfdeProfileJson: JSON.stringify(profileData) };
+}

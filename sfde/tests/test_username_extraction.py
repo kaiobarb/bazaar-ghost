@@ -6,8 +6,6 @@ all_detection_results fixture — tests just query cached results.
 
 import pytest
 
-from helpers import RESOLUTION_MAP
-
 
 class TestUsernameExtractionClean:
     def test_clean_frame_accuracy(self, clean_frames, all_detection_results, metrics):

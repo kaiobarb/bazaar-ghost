@@ -2,15 +2,16 @@
 Supabase client module - Handles all Supabase interactions
 """
 
+import logging
 import os
 import time
-import logging
-from typing import List, Dict, Any, Optional
-from supabase import create_client, Client
-from supabase.client import ClientOptions
-import requests
 from datetime import datetime, timedelta
-from telemetry import create_span, record_histogram, record_counter
+from typing import Any, Dict, List, Optional
+
+from supabase import Client, create_client
+from supabase.client import ClientOptions
+
+from telemetry import create_span, record_counter, record_histogram
 
 
 class SupabaseClient:

@@ -4,11 +4,12 @@ Right edge detection for nameplate boundaries in matchup screens
 Detects the right edge of nameplate frames to identify partial occlusions
 """
 
+import logging
+from pathlib import Path
+from typing import Optional, Tuple
+
 import cv2
 import numpy as np
-from pathlib import Path
-from typing import Tuple, Optional
-import logging
 
 
 class RightEdgeDetector:
