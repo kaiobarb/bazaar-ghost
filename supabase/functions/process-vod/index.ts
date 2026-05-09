@@ -355,7 +355,7 @@ async function processStreamOffline(event: {
     // Update chunks to 'queued' status
     const { error: updateError } = await supabase
       .from("chunks")
-      .update({ status: "queued" })
+      .update({ status: "queued", queued_at: new Date().toISOString() })
       .in("id", chunkUuids);
 
     if (updateError) {
@@ -365,14 +365,32 @@ async function processStreamOffline(event: {
       return;
     }
 
-    // Trigger GitHub workflow
-    const githubRunUrl = await triggerGithubWorkflow(
-      vodSourceId,
-      chunkUuids,
-      useOldTemplates,
-      sfdeProfileJson,
-      environment,
-    );
+    // Trigger GitHub workflow. If dispatch fails, roll chunks back to
+    // 'pending' so a future retry can pick them up — otherwise they are
+    // stranded in 'queued' forever (nothing else transitions them).
+    let githubRunUrl: string | null;
+    try {
+      githubRunUrl = await triggerGithubWorkflow(
+        vodSourceId,
+        chunkUuids,
+        useOldTemplates,
+        sfdeProfileJson,
+        environment,
+      );
+    } catch (dispatchError: any) {
+      const { error: rollbackError } = await supabase
+        .from("chunks")
+        .update({ status: "pending", queued_at: null })
+        .in("id", chunkUuids)
+        .eq("status", "queued");
+      log("error", "GitHub dispatch failed; rolled chunks back to pending", {
+        vod_source_id: vodSourceId,
+        chunks_count: chunkUuids.length,
+        dispatch_error: dispatchError.message,
+        rollback_error: rollbackError?.message,
+      });
+      throw dispatchError;
+    }
 
     recordCounter("process_vod.triggered", 1, {
       source: "eventsub",
@@ -533,7 +551,7 @@ async function handleInternalRequest(req: Request): Promise<Response> {
     console.log(`Updating ${chunks.length} chunks to 'queued' status`);
     const { error: updateError } = await supabase
       .from("chunks")
-      .update({ status: "queued" })
+      .update({ status: "queued", queued_at: new Date().toISOString() })
       .in("id", chunkUuids);
 
     if (updateError) {
@@ -543,14 +561,35 @@ async function handleInternalRequest(req: Request): Promise<Response> {
       );
     }
 
-    // Trigger GitHub workflow with all chunk UUIDs
-    const githubRunUrl = await triggerGithubWorkflow(
-      actualSourceId,
-      chunkUuids,
-      useOldTemplates,
-      sfdeProfileJson,
-      environment,
-    );
+    // Trigger GitHub workflow with all chunk UUIDs. If dispatch fails,
+    // roll chunks back to 'pending' so a future retry can pick them up —
+    // otherwise they are stranded in 'queued' forever.
+    let githubRunUrl: string | null;
+    try {
+      githubRunUrl = await triggerGithubWorkflow(
+        actualSourceId,
+        chunkUuids,
+        useOldTemplates,
+        sfdeProfileJson,
+        environment,
+      );
+    } catch (dispatchError: any) {
+      const { error: rollbackError } = await supabase
+        .from("chunks")
+        .update({ status: "pending", queued_at: null })
+        .in("id", chunkUuids)
+        .eq("status", "queued");
+      console.error(
+        "GitHub dispatch failed; rolled chunks back to pending",
+        {
+          vod_id: actualVodId,
+          chunks_count: chunkUuids.length,
+          dispatch_error: dispatchError.message,
+          rollback_error: rollbackError?.message,
+        },
+      );
+      throw dispatchError;
+    }
 
     recordCounter("process_vod.triggered", 1, { source: "internal" });
 
