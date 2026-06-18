@@ -127,6 +127,73 @@ export interface FetchAndUpsertResult {
   oldestVod: string | null;
 }
 
+export interface StreamerIdentity {
+  id: number;
+  login: string;
+  display_name?: string | null;
+  profile_image_url?: string | null;
+}
+
+interface StoredStreamerIdentity {
+  login?: string | null;
+  display_name?: string | null;
+  profile_image_url?: string | null;
+}
+
+/**
+ * Keep mutable Twitch identity fields fresh while preserving the immutable
+ * streamer ID and per-streamer processing config.
+ */
+export async function syncStreamerIdentity(
+  identity: StreamerIdentity,
+  current?: StoredStreamerIdentity | null,
+): Promise<boolean> {
+  const login = identity.login.toLowerCase();
+  const updates: Record<string, string> = {};
+
+  if (current?.login !== login) {
+    updates.login = login;
+  }
+
+  if (
+    identity.display_name &&
+    current?.display_name !== identity.display_name
+  ) {
+    updates.display_name = identity.display_name;
+  }
+
+  if (
+    identity.profile_image_url &&
+    current?.profile_image_url !== identity.profile_image_url
+  ) {
+    updates.profile_image_url = identity.profile_image_url;
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return false;
+  }
+
+  updates.updated_at = new Date().toISOString();
+
+  const { error } = await supabase
+    .from("streamers")
+    .update(updates)
+    .eq("id", identity.id);
+
+  if (error) {
+    console.error(
+      `Failed to sync streamer identity for ${identity.id}:`,
+      error,
+    );
+    return false;
+  }
+
+  console.log(
+    `Synced streamer identity for ${identity.id}: ${login}`,
+  );
+  return true;
+}
+
 /**
  * Fetch VODs with chapter data, extract Bazaar chapters, and upsert to database.
  *

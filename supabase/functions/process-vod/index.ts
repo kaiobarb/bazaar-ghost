@@ -5,6 +5,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
   fetchAndUpsertVods,
   supabase,
+  syncStreamerIdentity,
   verifySecretKey,
 } from "../_shared/supabase.ts";
 import { verifyEventSubSignature } from "../_shared/twitch.ts";
@@ -137,7 +138,11 @@ async function handleEventSubWebhook(
 
   // Validate required headers
   if (!messageId || !timestamp || !signature) {
-    log("warn", "Missing EventSub headers", { messageId, timestamp, signature });
+    log("warn", "Missing EventSub headers", {
+      messageId,
+      timestamp,
+      signature,
+    });
     return new Response("Missing required headers", { status: 400 });
   }
 
@@ -223,7 +228,7 @@ async function processStreamOffline(event: {
   let streamer: {
     id: number;
     login: string;
-    display_name: string;
+    display_name: string | null;
     processing_enabled: boolean;
   } | null = null;
 
@@ -247,13 +252,33 @@ async function processStreamOffline(event: {
   }
 
   if (!streamer) {
-    recordCounter("eventsub.stream_offline.skipped", 1, { reason: "not_found" });
+    recordCounter("eventsub.stream_offline.skipped", 1, {
+      reason: "not_found",
+    });
     log("info", "Streamer not found in database", {
       user_id: broadcaster_user_id,
       login: broadcaster_user_login,
     });
     return;
   }
+
+  const currentLogin = broadcaster_user_login.toLowerCase();
+  const currentDisplayName = broadcaster_user_name || currentLogin;
+
+  await syncStreamerIdentity(
+    {
+      id: streamer.id,
+      login: currentLogin,
+      display_name: currentDisplayName,
+    },
+    streamer,
+  );
+
+  streamer = {
+    ...streamer,
+    login: currentLogin,
+    display_name: currentDisplayName,
+  };
 
   // 2. Check if processing is enabled
   if (!streamer.processing_enabled) {
@@ -274,12 +299,14 @@ async function processStreamOffline(event: {
   const { vodsUpserted, bazaarSegments, upsertedVodIds } =
     await fetchAndUpsertVods(
       streamer.id,
-      streamer.login,
+      currentLogin,
       1, // Only fetch the latest VOD
     );
 
   if (vodsUpserted === 0 || upsertedVodIds.length === 0) {
-    recordCounter("eventsub.stream_offline.skipped", 1, { reason: "no_bazaar" });
+    recordCounter("eventsub.stream_offline.skipped", 1, {
+      reason: "no_bazaar",
+    });
     log("info", "No Bazaar VOD found for streamer", {
       streamer_id: streamer.id,
       login: streamer.login,
@@ -334,7 +361,10 @@ async function processStreamOffline(event: {
     const useOldTemplates = vodPublishedAt <= cutoffDate;
 
     // Fetch SFDE profile
-    const sfdeProfileId = vodData.streamers.sfde_profile_id;
+    const streamerProfile = Array.isArray(vodData.streamers)
+      ? vodData.streamers[0]
+      : vodData.streamers;
+    const sfdeProfileId = streamerProfile.sfde_profile_id;
     const { data: profileData, error: profileError } = await supabase
       .from("sfde_profiles")
       .select("*")
@@ -510,7 +540,10 @@ async function handleInternalRequest(req: Request): Promise<Response> {
     );
 
     // Fetch the streamer's SFDE profile
-    const sfdeProfileId = vodData.streamers.sfde_profile_id;
+    const streamerProfile = Array.isArray(vodData.streamers)
+      ? vodData.streamers[0]
+      : vodData.streamers;
+    const sfdeProfileId = streamerProfile.sfde_profile_id;
     const { data: profileData, error: profileError } = await supabase
       .from("sfde_profiles")
       .select("*")

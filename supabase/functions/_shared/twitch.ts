@@ -58,6 +58,13 @@ interface TwitchToken {
   expires_at: number;
 }
 
+export interface TwitchUserProfile {
+  id: string;
+  login: string;
+  display_name: string;
+  profile_image_url: string;
+}
+
 let twitchToken: TwitchToken | null = null;
 
 export async function getTwitchToken(): Promise<string> {
@@ -175,7 +182,7 @@ export async function checkVodAvailability(vodId: string): Promise<boolean> {
 
     // If we get data back with the VOD, it's available
     return data && data.length > 0;
-  } catch (error) {
+  } catch (error: any) {
     // If API call fails (404, etc.), VOD is not available
     console.log(`VOD ${vodId} is not available: ${error.message}`);
     return false;
@@ -269,17 +276,42 @@ export async function batchCheckVodAvailability(
 export async function getStreamerIdByLogin(
   login: string,
 ): Promise<string | null> {
+  const user = await getStreamerByLogin(login);
+  return user?.id ?? null;
+}
+
+export async function getStreamerByLogin(
+  login: string,
+): Promise<TwitchUserProfile | null> {
   try {
     const { data } = await twitchApiCall("users", { login });
 
     if (data && data.length > 0) {
-      return data[0].id;
+      return data[0] as TwitchUserProfile;
     }
 
     console.log(`No streamer found with login: ${login}`);
     return null;
-  } catch (error) {
+  } catch (error: any) {
     console.error(`Error fetching streamer ID for ${login}:`, error);
+    return null;
+  }
+}
+
+export async function getStreamerById(
+  userId: string,
+): Promise<TwitchUserProfile | null> {
+  try {
+    const { data } = await twitchApiCall("users", { id: userId });
+
+    if (data && data.length > 0) {
+      return data[0] as TwitchUserProfile;
+    }
+
+    console.log(`No streamer found with id: ${userId}`);
+    return null;
+  } catch (error: any) {
+    console.error(`Error fetching streamer profile for ${userId}:`, error);
     return null;
   }
 }

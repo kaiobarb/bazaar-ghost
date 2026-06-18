@@ -5,11 +5,12 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import {
   fetchAndUpsertVods,
   supabase,
+  syncStreamerIdentity,
   verifySecretKey,
 } from "../_shared/supabase.ts";
 import { ensureEventSubSubscription } from "../_shared/eventsub.ts";
 import {
-  getStreamerIdByLogin,
+  getStreamerById,
   getVodsFromStreamer,
   isStreamerLive,
 } from "../_shared/twitch.ts";
@@ -34,7 +35,9 @@ async function updateVods(streamerId: number): Promise<UpdateVodsResult> {
   // Get streamer info from database
   const { data: streamer, error: streamerError } = await supabase
     .from("streamers")
-    .select("id, login, display_name, processing_enabled, eventsub_subscription_id")
+    .select(
+      "id, login, display_name, profile_image_url, processing_enabled, eventsub_subscription_id",
+    )
     .eq("id", streamerId)
     .single();
 
@@ -42,32 +45,45 @@ async function updateVods(streamerId: number): Promise<UpdateVodsResult> {
     throw new Error(`Streamer with ID ${streamerId} not found in database`);
   }
 
-  // Ensure EventSub subscription exists for processing-enabled streamers
-  if (streamer.processing_enabled && !streamer.eventsub_subscription_id) {
-    await ensureEventSubSubscription(streamer.id, streamer.login);
+  const twitchUser = await getStreamerById(streamer.id.toString());
+
+  if (!twitchUser) {
+    throw new Error(`Could not find Twitch user for ID ${streamer.id}`);
   }
 
-  console.log(
-    `Fetching VODs for streamer: ${streamer.login} (${streamerId})`,
+  const currentLogin = twitchUser.login.toLowerCase();
+
+  await syncStreamerIdentity(
+    {
+      id: streamer.id,
+      login: currentLogin,
+      display_name: twitchUser.display_name,
+      profile_image_url: twitchUser.profile_image_url,
+    },
+    streamer,
   );
 
-  // Quick check: Get streamer's Twitch ID and check if they have more than 1 VOD
-  // This avoids expensive GraphQL chapter fetching for streamers who don't save VODs
-  console.log("Checking VOD count before fetching chapter data...");
-  const twitchUserId = await getStreamerIdByLogin(streamer.login);
-
-  if (!twitchUserId) {
-    throw new Error(`Could not find Twitch user ID for ${streamer.login}`);
+  // Ensure EventSub subscription exists for processing-enabled streamers
+  if (streamer.processing_enabled && !streamer.eventsub_subscription_id) {
+    await ensureEventSubSubscription(streamer.id, currentLogin);
   }
 
-  // Check if streamer is currently live
-  const isLive = await isStreamerLive(twitchUserId);
   console.log(
-    `Streamer ${streamer.login} live status: ${isLive ? "LIVE" : "offline"}`,
+    `Fetching VODs for streamer: ${currentLogin} (${streamerId})`,
+  );
+
+  // Quick check: use the immutable Twitch ID and check if they have more than 1 VOD
+  // This avoids expensive GraphQL chapter fetching for streamers who don't save VODs
+  console.log("Checking VOD count before fetching chapter data...");
+
+  // Check if streamer is currently live
+  const isLive = await isStreamerLive(twitchUser.id);
+  console.log(
+    `Streamer ${currentLogin} live status: ${isLive ? "LIVE" : "offline"}`,
   );
 
   // Fetch only first 2 VODs to check count (lightweight Helix API call)
-  const quickCheck = await getVodsFromStreamer(twitchUserId, { first: "2" });
+  const quickCheck = await getVodsFromStreamer(twitchUser.id, { first: "2" });
   const vodCount = quickCheck.data?.length || 0;
   console.log(`Streamer has ${vodCount} VOD(s)`);
 
@@ -89,7 +105,7 @@ async function updateVods(streamerId: number): Promise<UpdateVodsResult> {
       .eq("id", streamerId);
 
     return {
-      streamerLogin: streamer.login,
+      streamerLogin: currentLogin,
       totalVodsFetched: vodCount,
       vodsWithBazaar: 0,
       vodsInserted: 0,
@@ -103,7 +119,7 @@ async function updateVods(streamerId: number): Promise<UpdateVodsResult> {
   // skipLiveVod=true if streamer is currently live
   const result = await fetchAndUpsertVods(
     streamerId,
-    streamer.login,
+    currentLogin,
     undefined, // Fetch all VODs
     isLive, // Skip live VOD if streaming
   );
@@ -128,7 +144,7 @@ async function updateVods(streamerId: number): Promise<UpdateVodsResult> {
     .eq("id", streamerId);
 
   console.log(`
-Summary for ${streamer.login}:
+Summary for ${currentLogin}:
   Total VODs fetched: ${totalVodsFetched}
   VODs with Bazaar gameplay: ${vodsUpserted}
   VODs inserted/updated: ${vodsUpserted}
@@ -137,7 +153,7 @@ Summary for ${streamer.login}:
   `);
 
   return {
-    streamerLogin: streamer.login,
+    streamerLogin: currentLogin,
     totalVodsFetched,
     vodsWithBazaar: vodsUpserted,
     vodsInserted: vodsUpserted,

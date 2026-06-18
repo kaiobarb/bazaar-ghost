@@ -2,12 +2,13 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { supabase, verifySecretKey } from "../_shared/supabase.ts";
-import { ensureEventSubSubscription } from "../_shared/eventsub.ts";
 import {
-  getBazaarGameId,
-  twitchApiCall,
-} from "../_shared/twitch.ts";
+  supabase,
+  syncStreamerIdentity,
+  verifySecretKey,
+} from "../_shared/supabase.ts";
+import { ensureEventSubSubscription } from "../_shared/eventsub.ts";
+import { getBazaarGameId, twitchApiCall } from "../_shared/twitch.ts";
 import { log, recordCounter } from "../_shared/telemetry.ts";
 
 interface InsertNewStreamersResult {
@@ -83,12 +84,41 @@ async function insertNewStreamers(): Promise<InsertNewStreamersResult> {
       // Check if streamer already exists in database
       const { data: existingStreamer } = await supabase
         .from("streamers")
-        .select("id")
+        .select("id, login, display_name")
         .eq("id", parseInt(streamerId))
         .single();
 
       if (existingStreamer) {
-        console.log(`Streamer ${streamerData.login} already exists, skipping`);
+        const currentLogin = streamerData.login.toLowerCase();
+        const identityChanged = existingStreamer.login !== currentLogin ||
+          existingStreamer.display_name !== streamerData.display_name;
+
+        if (identityChanged) {
+          const synced = await syncStreamerIdentity(
+            {
+              id: parseInt(streamerId),
+              login: currentLogin,
+              display_name: streamerData.display_name,
+            },
+            existingStreamer,
+          );
+
+          if (synced) {
+            recordCounter("streamers.identity_synced", 1, {
+              login: currentLogin,
+            });
+            log("info", "Synced existing streamer identity", {
+              streamer_id: streamerId,
+              old_login: existingStreamer.login,
+              new_login: currentLogin,
+              display_name: streamerData.display_name,
+            });
+          }
+        }
+
+        console.log(
+          `Streamer ${streamerData.login} already exists, skipping insert`,
+        );
         continue;
       }
 
@@ -183,7 +213,7 @@ serve(async (req) => {
         {
           headers: { "Content-Type": "application/json" },
           status: 401,
-        }
+        },
       );
     }
 
