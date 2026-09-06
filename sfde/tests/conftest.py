@@ -112,7 +112,7 @@ def all_validated_frames(annotations) -> List[ValidatedFrame]:
         image_path = FIXTURES_DIR / "frames" / frame_filename
 
         if not image_path.exists():
-            continue
+            raise FileNotFoundError(f"Missing validated fixture: {image_path}")
 
         custom_edge = ann.get("custom_edge")
         if custom_edge is not None:
@@ -199,7 +199,7 @@ def emblem_detectors(config) -> Dict[str, "EmblemDetector"]:
     method = emblem_cfg.get("template_method", "TM_CCOEFF_NORMED")
 
     for res in ("480p", "720p", "1080p"):
-        for old in (False, True):
+        for old in ((False, True) if res == "480p" else (False,)):
             key = f"{res}_old" if old else res
             detectors[key] = EmblemDetector(
                 templates_dir=str(TEMPLATES_DIR),
@@ -309,7 +309,11 @@ def all_detection_results(
         proc_key = get_processor_key(frame)
         processor = frame_processors.get(proc_key)
         if processor is not None:
-            cropped = processor._crop(frame.image, e_bbox)
+            edge = re_x
+            truncated = edge is None and frame.custom_edge is not None
+            if truncated:
+                edge = int(frame.image.shape[1] * frame.custom_edge)
+            cropped = processor._crop(frame.image, e_bbox, edge, truncated)
             ocr_user, ocr_conf, _ = processor._extract_usernames(cropped)
         else:
             ocr_user, ocr_conf = None, 0.0

@@ -5,418 +5,121 @@ on:
   workflow_dispatch:
     inputs:
       vod_id:
-        description: "VOD ID to process"
+        description: Twitch VOD ID
         required: true
         type: string
       quality:
-        description: "Preferred stream quality"
-        required: false
-        type: string
+        description: Preferred stream quality
         default: "480p"
+        type: string
       environment:
-        description: "Environment (dev or production)"
+        description: Environment
         required: true
         type: choice
-        options:
-          - dev
-          - production
+        options: [dev, production]
         default: dev
       sfde_profile:
-        description: "SFDE profile configuration (JSON string)"
-        required: false
+        description: Optional profile JSON override (defaults to the streamer's profile)
         type: string
-        default: ""
       local:
-        description: "Apply when running this action locally"
-        required: false
+        description: Use a prebuilt local image and skip rendition discovery
         type: boolean
         default: false
       chunk_uuids:
-        description: "JSON array of chunk UUIDs to process (optional - will fetch from Supabase if not provided)"
-        required: false
+        description: Optional JSON array of chunk UUIDs
         type: string
-        default: ""
       old_templates:
-        description: "Use old templates (requires 480p quality)"
-        required: false
+        description: Use pre-August-2025 templates (480p only)
         type: boolean
         default: false
 
+permissions:
+  contents: read
+
 jobs:
-  # Pre-flight check: Verify VOD availability and determine best quality
-  check-vod:
+  prepare:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     timeout-minutes: 5
     env:
       SUPABASE_URL: ${{ vars.SUPABASE_URL }}
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      VOD_ID: ${{ inputs.vod_id }}
+      INPUT_CHUNKS: ${{ inputs.chunk_uuids }}
+      REQUESTED_QUALITY: ${{ inputs.quality }}
+      SFDE_PROFILE: ${{ inputs.sfde_profile }}
+      OLD_TEMPLATES: ${{ inputs.old_templates }}
+      LOCAL: ${{ inputs.local }}
     outputs:
-      quality: ${{ steps.check.outputs.quality }}
-      available: ${{ steps.check.outputs.available }}
-      video_fps: ${{ steps.check.outputs.video_fps }}
-
+      chunk_uuids: ${{ steps.prepare.outputs.chunk_uuids }}
+      old_templates: ${{ steps.prepare.outputs.old_templates }}
+      quality: ${{ steps.prepare.outputs.quality }}
+      video_fps: ${{ steps.prepare.outputs.video_fps }}
+      sfde_profile: ${{ steps.prepare.outputs.sfde_profile }}
     steps:
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+      - run: pip install 'streamlink>=8,<9'
+      - id: prepare
+        run: python scripts/vod_workflow.py prepare
+      - if: failure()
+        run: python scripts/vod_workflow.py fail-queued
 
-      - name: Install streamlink
-        run: pip install streamlink
-
-      - name: Check VOD availability and quality
-        if: ${{ !inputs.local }}
-        id: check
-        run: |
-          echo "Checking VOD ${{ inputs.vod_id }} availability and qualities..."
-          VOD_URL="https://www.twitch.tv/videos/${{ inputs.vod_id }}"
-
-          # Get available streams in JSON format
-          STREAMS_JSON=$(streamlink --json "$VOD_URL" 2>/dev/null || echo '{"error": "failed"}')
-
-          # Check if VOD is available
-          if echo "$STREAMS_JSON" | grep -q '"error"'; then
-            echo "VOD ${{ inputs.vod_id }} is not available"
-            echo "$STREAMS_JSON"
-            echo "available=false" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-
-          # Extract available streams
-          echo "Available streams JSON:"
-          echo "$STREAMS_JSON" | jq '.streams | keys'
-
-          # Determine best quality based on old_templates flag
-          SELECTED_STREAM=""
-          OLD_TEMPLATES="${{ inputs.old_templates }}"
-
-          if [ "$OLD_TEMPLATES" = "true" ]; then
-            echo "Older vod, using smaller templates - checking for 480p quality only"
-
-            # Check for 480p or 480p60
-            if echo "$STREAMS_JSON" | jq -e '.streams["480p"]' > /dev/null 2>&1; then
-              SELECTED_STREAM="480p"
-            elif echo "$STREAMS_JSON" | jq -e '.streams["480p60"]' > /dev/null 2>&1; then
-              SELECTED_STREAM="480p60"
-            else
-              echo "ERROR: Small templates are 480p only, 480p stream not found"
-              echo "Available qualities:"
-              echo "$STREAMS_JSON" | jq '.streams | keys'
-
-              # Mark VOD as failed since required quality not available
-              echo "No 480p quality available for old templates, marking vod as failed"
-              curl -fsSL -X PATCH "$SUPABASE_URL/rest/v1/vods?source_id=eq.${{ inputs.vod_id }}" \
-                -H "apikey: $SUPABASE_SECRET_KEY" \
-                -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
-                -H "Content-Type: application/json" \
-                -H "Prefer: return=minimal" \
-                -d "{\"status\": \"failed\"}"
-
-              echo "available=false" >> $GITHUB_OUTPUT
-              exit 1
-            fi
-          else
-            # Normal quality selection (preference: 480p -> 720p -> 1080p)
-            if echo "$STREAMS_JSON" | jq -e '.streams["480p"]' > /dev/null 2>&1; then
-              SELECTED_STREAM="480p"
-            elif echo "$STREAMS_JSON" | jq -e '.streams["480p60"]' > /dev/null 2>&1; then
-              SELECTED_STREAM="480p60"
-            elif echo "$STREAMS_JSON" | jq -e '.streams["720p"]' > /dev/null 2>&1; then
-              SELECTED_STREAM="720p"
-            elif echo "$STREAMS_JSON" | jq -e '.streams["720p60"]' > /dev/null 2>&1; then
-              SELECTED_STREAM="720p60"
-            elif echo "$STREAMS_JSON" | jq -e '.streams["1080p"]' > /dev/null 2>&1; then
-              SELECTED_STREAM="1080p"
-            elif echo "$STREAMS_JSON" | jq -e '.streams["1080p60"]' > /dev/null 2>&1; then
-              SELECTED_STREAM="1080p60"
-            else
-              # No supported qualities available
-              echo "No supported qualities available, marking vod as failed"
-              curl -fsSL -X PATCH "$SUPABASE_URL/rest/v1/vods?source_id=eq.${{ inputs.vod_id }}" \
-                -H "apikey: $SUPABASE_SECRET_KEY" \
-                -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
-                -H "Content-Type: application/json" \
-                -H "Prefer: return=minimal" \
-                -d "{\"status\": \"failed\"}"
-
-              echo "available=false" >> $GITHUB_OUTPUT
-              exit 1
-            fi
-          fi
-
-          echo "Selected stream: $SELECTED_STREAM"
-
-          # Extract base quality (remove 60 suffix if present) and FPS
-          if [[ "$SELECTED_STREAM" == *"60" ]]; then
-            QUALITY="${SELECTED_STREAM%60}"
-            VIDEO_FPS="60"
-          else
-            QUALITY="$SELECTED_STREAM"
-            VIDEO_FPS="30"
-          fi
-
-          echo "Resolution: $QUALITY"
-          echo " Video FPS: $VIDEO_FPS"
-
-          echo "quality=$QUALITY" >> $GITHUB_OUTPUT
-          echo "video_fps=$VIDEO_FPS" >> $GITHUB_OUTPUT
-          echo "available=true" >> $GITHUB_OUTPUT
-
-      - name: Update VOD status to failed if not available
-        if: failure()
-        run: |
-          echo "Updating VOD ${{ inputs.vod_id }} status to 'failed' - VOD not available"
-
-          # Update VOD status to failed and availability to unavailable with timestamp
-          CURRENT_TIME=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ")
-          curl -fsSL -X PATCH "$SUPABASE_URL/rest/v1/vods?source_id=eq.${{ inputs.vod_id }}" \
-            -H "apikey: $SUPABASE_SECRET_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
-            -H "Content-Type: application/json" \
-            -H "Prefer: return=minimal" \
-            -d "{\"status\": \"failed\", \"availability\": \"unavailable\", \"unavailable_since\": \"$CURRENT_TIME\", \"last_availability_check\": \"$CURRENT_TIME\"}"
-
-          echo "VOD marked as failed and unavailable"
-
-  # Fetch chunks from Supabase if not provided
-  fetch-chunks:
-    needs: check-vod
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
-    timeout-minutes: 5
-    env:
-      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
-      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
-    outputs:
-      chunk_uuids: ${{ steps.fetch.outputs.chunk_uuids }}
-
-    steps:
-      - name: Determine chunk UUIDs
-        id: fetch
-        run: |
-          # Check if chunk_uuids was provided as input
-          INPUT_CHUNKS='${{ inputs.chunk_uuids }}'
-
-          if [ -n "$INPUT_CHUNKS" ] && [ "$INPUT_CHUNKS" != "[]" ]; then
-            echo "Using provided chunk UUIDs: $INPUT_CHUNKS"
-            echo "chunk_uuids=$INPUT_CHUNKS" >> $GITHUB_OUTPUT
-          else
-            echo "No chunk UUIDs provided, fetching from Supabase for VOD ${{ inputs.vod_id }}..."
-
-            # Call Supabase RPC function to get pending chunks
-            RESPONSE=$(curl -fsSL -X POST "$SUPABASE_URL/rest/v1/rpc/get_pending_chunks_for_vod" \
-              -H "apikey: $SUPABASE_SECRET_KEY" \
-              -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
-              -H "Content-Type: application/json" \
-              -H "Prefer: return=representation" \
-              -d "{\"p_source_id\": \"${{ inputs.vod_id }}\"}")
-
-            CURL_EXIT=$?
-
-            if [ $CURL_EXIT -ne 0 ]; then
-              echo "Failed to fetch chunks from Supabase (exit code: $CURL_EXIT)"
-              echo "Response: $RESPONSE"
-              exit 1
-            fi
-
-            # Extract chunk IDs and format as JSON array
-            CHUNK_IDS=$(echo "$RESPONSE" | jq -c '[.[] | .chunk_id]' 2>/dev/null || echo "[]")
-
-            # Check if we got any chunks
-            if [ "$CHUNK_IDS" = "[]" ] || [ -z "$CHUNK_IDS" ]; then
-              echo "No pending chunks found for VOD ${{ inputs.vod_id }}"
-              echo "Full response: $RESPONSE"
-
-              # Update VOD status to indicate no chunks available
-              curl -fsSL -X PATCH "$SUPABASE_URL/rest/v1/vods?source_id=eq.${{ inputs.vod_id }}" \
-                -H "apikey: $SUPABASE_SECRET_KEY" \
-                -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
-                -H "Content-Type: application/json" \
-                -H "Prefer: return=minimal" \
-                -d '{"status": "no_chunks"}'
-
-              echo "chunk_uuids=[]" >> $GITHUB_OUTPUT
-              exit 1
-            fi
-
-            CHUNK_COUNT=$(echo "$CHUNK_IDS" | jq 'length')
-            echo "Found $CHUNK_COUNT pending chunks for VOD ${{ inputs.vod_id }}"
-            echo "Chunk UUIDs: $CHUNK_IDS"
-            echo "chunk_uuids=$CHUNK_IDS" >> $GITHUB_OUTPUT
-          fi
-
-  # Process all chunks in parallel using matrix strategy
   process-chunk:
-    needs: [check-vod, fetch-chunks]
+    needs: prepare
+    if: needs.prepare.outputs.chunk_uuids != '[]'
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
-    timeout-minutes: 30 # Overall job timeout
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        chunk_id: ${{ fromJson(needs.prepare.outputs.chunk_uuids) }}
     env:
       SUPABASE_URL: ${{ vars.SUPABASE_URL }}
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
-    strategy:
-      matrix:
-        chunk_id: ${{ fromJson(needs.fetch-chunks.outputs.chunk_uuids) }}
-      # Allow some chunks to fail without stopping others
-      fail-fast: false
-
+      CHUNK_ID: ${{ matrix.chunk_id }}
+      QUALITY: ${{ needs.prepare.outputs.quality }}
+      VIDEO_FPS: ${{ needs.prepare.outputs.video_fps }}
+      SFDE_PROFILE: ${{ needs.prepare.outputs.sfde_profile }}
+      OLD_TEMPLATES: ${{ needs.prepare.outputs.old_templates }}
+      ENVIRONMENT: ${{ inputs.environment }}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
+      OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
     steps:
-      - name: Checkout repository
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
         if: ${{ !inputs.local }}
-        uses: actions/checkout@v5
-
-      - name: Set up Docker Buildx
+      - uses: docker/build-push-action@v6
         if: ${{ !inputs.local }}
-        uses: docker/setup-buildx-action@v4
-        timeout-minutes: 5
-
-      - name: Build SFDE container with cache
-        if: ${{ !inputs.local }}
-        uses: docker/build-push-action@v6
         timeout-minutes: 10
         with:
           context: ./sfde
-          tags: bazaar-ghost-sfde
+          tags: sfde:dev
           load: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: Process chunk with SFDE
-        id: sfde
-        timeout-minutes: 25
+      - name: Process chunk
         run: |
-          # Create output directory with write permissions for container user (UID 1000)
-          mkdir -p ./output
-          chmod 777 ./output
-
-          # Set quality and FPS (use defaults for local testing if check-vod was skipped)
-          QUALITY="${{ needs.check-vod.outputs.quality }}"
-          VIDEO_FPS="${{ needs.check-vod.outputs.video_fps }}"
-
-          if [ -z "$QUALITY" ]; then
-            QUALITY="${{ inputs.quality }}"
-            echo "Using default quality: $QUALITY (check-vod skipped)"
-          else
-            echo "Using quality: $QUALITY"
-          fi
-
-          if [ -z "$VIDEO_FPS" ]; then
-            VIDEO_FPS="60"
-            echo "Using default FPS: $VIDEO_FPS (check-vod skipped)"
-          else
-            echo "Video FPS: $VIDEO_FPS"
-          fi
-
-          echo "Processing chunk ${{ matrix.chunk_id }} for VOD ${{ inputs.vod_id }}"
-          echo "Small templates mode: ${{ inputs.old_templates }}"
-          echo "Environment: ${{ inputs.environment }}"
-
-          # Parse SFDE profile if provided
-          SFDE_PROFILE='${{ inputs.sfde_profile }}'
-          if [ -n "$SFDE_PROFILE" ] && [ "$SFDE_PROFILE" != "" ]; then
-            echo "Using SFDE profile"
-            echo "$SFDE_PROFILE" | jq '.'
-          else
-            echo "No SFDE profile provided, SFDE will use defaults"
-          fi
-
-          # Run SFDE container - it will handle all chunk details and status updates internally
-          docker run --rm \
-            --network="host" \
-            -v "./output:/app/output" \
-            -e SUPABASE_URL="$SUPABASE_URL" \
-            -e SUPABASE_SECRET_KEY="$SUPABASE_SECRET_KEY" \
-            -e CHUNK_ID="${{ matrix.chunk_id }}" \
-            -e TEST_MODE="false" \
-            -e QUALITY="$QUALITY" \
-            -e VIDEO_FPS="$VIDEO_FPS" \
-            -e OLD_TEMPLATES="${{ inputs.old_templates }}" \
-            -e SFDE_PROFILE="$SFDE_PROFILE" \
-            -e ENVIRONMENT="${{ inputs.environment }}" \
-            -e OTEL_EXPORTER_OTLP_ENDPOINT="${{ secrets.GRAFANA_OTLP_ENDPOINT }}" \
-            -e OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic ${{ secrets.GRAFANA_OTLP_AUTH }}" \
-            -e OTEL_SERVICE_NAME="sfde" \
-            -e OTEL_RESOURCE_ATTRIBUTES="deployment.environment=${{ inputs.environment }},vod.id=${{ inputs.vod_id }},chunk.id=${{ matrix.chunk_id }}" \
-            bazaar-ghost-sfde
-
-          DOCKER_EXIT_CODE=$?
-          echo "Docker run exit code: $DOCKER_EXIT_CODE"
-
-          if [ $DOCKER_EXIT_CODE -eq 0 ]; then
-            echo "Chunk ${{ matrix.chunk_id }} completed successfully"
-          else
-            echo "Chunk ${{ matrix.chunk_id }} failed with exit code: $DOCKER_EXIT_CODE"
-            exit $DOCKER_EXIT_CODE
-          fi
-
-      - name: Generate workflow summary
-        if: success()
-        run: |
-          # Check if detection summary file exists for this chunk
-          SUMMARY_FILE="./output/detections_${{ matrix.chunk_id }}.json"
-
-          if [ ! -f "$SUMMARY_FILE" ]; then
-            echo "No detection summary found for chunk ${{ matrix.chunk_id }}"
-            echo "## Chunk ${{ matrix.chunk_id }}" >> $GITHUB_STEP_SUMMARY
-            echo "No detections found in this chunk." >> $GITHUB_STEP_SUMMARY
-            exit 0
-          fi
-
-          # Parse detection summary
-          SUMMARY=$(cat "$SUMMARY_FILE")
-          CHUNK_ID=$(echo "$SUMMARY" | jq -r '.chunk_id')
-          VOD_ID=$(echo "$SUMMARY" | jq -r '.vod_id')
-          STREAMER=$(echo "$SUMMARY" | jq -r '.streamer')
-          QUALITY=$(echo "$SUMMARY" | jq -r '.quality')
-          FRAMES=$(echo "$SUMMARY" | jq -r '.frames_processed')
-          MATCHUPS=$(echo "$SUMMARY" | jq -r '.matchups_found')
-          START_TIME=$(echo "$SUMMARY" | jq -r '.start_time')
-          END_TIME=$(echo "$SUMMARY" | jq -r '.end_time')
-
-          # Calculate duration
-          DURATION=$((END_TIME - START_TIME))
-
-          # Format timestamp for readability
-          START_HMS=$(date -u -d "@${START_TIME}" +%H:%M:%S 2>/dev/null || echo "${START_TIME}s")
-          END_HMS=$(date -u -d "@${END_TIME}" +%H:%M:%S 2>/dev/null || echo "${END_TIME}s")
-
-          # Generate markdown summary
-          cat >> $GITHUB_STEP_SUMMARY << EOF
-          ## Chunk ${{ matrix.chunk_id }} Results
-
-          **VOD:** [${VOD_ID}](https://www.twitch.tv/videos/${VOD_ID}) (${STREAMER})
-          **Time Range:** ${START_HMS} - ${END_HMS} (${DURATION}s)
-          **Quality:** ${QUALITY}
-          **Frames Processed:** ${FRAMES}
-          **Matchups Detected:** ${MATCHUPS}
-
-          ### All Detected Usernames
-
-          | Timestamp | Username | Confidence | Rank | Image |
-          |-----------|----------|------------|------|-------|
-          EOF
-
-          # Get source_id for image URLs
-          SOURCE_ID=$(echo "$SUMMARY" | jq -r '.vod_id')
-
-          # Add each detection as a table row with link to image in Supabase storage
-          echo "$SUMMARY" | jq -r --arg sid "$SOURCE_ID" --arg base_url "$SUPABASE_URL" '.detections[] | "| \(.timestamp)s | \(.username) | \(.confidence * 100 | floor)% | \(.rank) | [view](\($base_url)/storage/v1/object/public/detections/\($sid)/\(.timestamp).jpg) |"' >> $GITHUB_STEP_SUMMARY
-
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "---" >> $GITHUB_STEP_SUMMARY
-
-      - name: Update VOD status to failed
+          mkdir -p output
+          chmod 777 output
+          docker run --rm --network host \
+            -v "$PWD/output:/app/output" \
+            -e SUPABASE_URL -e SUPABASE_SECRET_KEY -e CHUNK_ID \
+            -e QUALITY -e VIDEO_FPS -e SFDE_PROFILE -e OLD_TEMPLATES \
+            -e ENVIRONMENT -e OTEL_EXPORTER_OTLP_ENDPOINT -e OTEL_EXPORTER_OTLP_HEADERS \
+            sfde:dev
+      - name: Fail unclaimed chunk
         if: failure()
-        run: |
-          echo "Updating VOD ${{ inputs.vod_id }} status to 'failed' due to chunk processing failure"
-
-          # Update VOD status to failed using Supabase API
-          curl -fsSL -X PATCH "$SUPABASE_URL/rest/v1/vods?source_id=eq.${{ inputs.vod_id }}" \
-            -H "apikey: $SUPABASE_SECRET_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SECRET_KEY" \
-            -H "Content-Type: application/json" \
-            -H "Prefer: return=minimal" \
-            -d '{"status": "failed"}'
-
-          echo "VOD status updated to failed"
+        run: python scripts/vod_workflow.py fail-chunk
+      - name: Write summary
+        if: always()
+        run: python scripts/vod_workflow.py summary
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: detections-${{ matrix.chunk_id }}
+          path: output/*.json
+          if-no-files-found: ignore

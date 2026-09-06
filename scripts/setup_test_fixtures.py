@@ -5,20 +5,29 @@ Flattens the category/vod_id/ hierarchy into a single frames/ directory
 using {vod_id}_{filename} naming convention.
 """
 
+import argparse
 import json
 import shutil
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-ANNOTATIONS_PATH = REPO_ROOT / "test_data" / "annotations(10).json"
+ANNOTATIONS_PATH = REPO_ROOT / "test_data" / "annotations.json"
 SOURCE_DIR = REPO_ROOT / "test_data"
 DEST_DIR = REPO_ROOT / "sfde" / "tests" / "fixtures"
 
 
-def main():
-    with open(ANNOTATIONS_PATH) as f:
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--annotations', type=Path, default=ANNOTATIONS_PATH)
+    args = parser.parse_args()
+    with open(args.annotations) as f:
         annotations = json.load(f)
 
+    missing_paths = [SOURCE_DIR / ann['category'] / str(ann['vod_id']) / ann['filename']
+                     for ann in annotations.values() if ann.get('validated')
+                     and not (SOURCE_DIR / ann['category'] / str(ann['vod_id']) / ann['filename']).is_file()]
+    if missing_paths:
+        raise FileNotFoundError(f'{len(missing_paths)} validated frames are missing; first: {missing_paths[0]}')
     frames_dir = DEST_DIR / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
 
@@ -41,7 +50,7 @@ def main():
 
     # Copy annotations.json (canonical name, no parens)
     dest_annotations = DEST_DIR / "annotations.json"
-    shutil.copy2(ANNOTATIONS_PATH, dest_annotations)
+    shutil.copy2(args.annotations, dest_annotations)
 
     print(f"Copied {copied} frames to {frames_dir}")
     if missing:

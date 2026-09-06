@@ -127,7 +127,7 @@ def init_telemetry(
         otel_handler = LoggingHandler(
             level=logging.INFO, logger_provider=_logger_provider
         )
-        logging.getLogger().addHandler(otel_handler)
+        logging.getLogger("sfde").addHandler(otel_handler)
 
         # Create metrics instruments
         _create_metrics()
@@ -205,6 +205,9 @@ def _create_metrics():
         "sfde.errors", description="Categorized errors by component and type", unit="1"
     )
 
+    _metrics['igd_detected'] = _meter.create_counter('sfde.igd.detected', unit='1')
+    _metrics['igd_timeout'] = _meter.create_counter('sfde.igd.timeout', unit='1')
+
     # Histograms
     _metrics["ocr_confidence"] = _meter.create_histogram(
         "sfde.ocr.confidence", description="OCR confidence score distribution", unit="1"
@@ -241,14 +244,8 @@ def _create_metrics():
     )
 
 
-def get_tracer() -> Optional[trace.Tracer]:
-    """Get the configured tracer"""
-    return _tracer
 
 
-def get_meter() -> Optional[metrics.Meter]:
-    """Get the configured meter"""
-    return _meter
 
 
 def record_counter(name: str, value: int = 1, attributes: Dict[str, str] = None):
@@ -274,6 +271,7 @@ def create_span(
     name: str,
     attributes: Dict[str, Any] = None,
     kind: trace.SpanKind = trace.SpanKind.INTERNAL,
+    context: Optional[trace.Context] = None,
 ):
     """
     Context manager to create and manage a span.
@@ -288,7 +286,7 @@ def create_span(
         yield None
         return
 
-    with _tracer.start_as_current_span(name, kind=kind) as span:
+    with _tracer.start_as_current_span(name, kind=kind, context=context) as span:
         if attributes:
             for key, value in attributes.items():
                 if value is not None:  # Skip None values
@@ -311,49 +309,16 @@ def extract_trace_context(headers: Dict[str, str]) -> Optional[trace.Context]:
     return propagator.extract(carrier=headers)
 
 
-def inject_trace_context(headers: Dict[str, str]) -> Dict[str, str]:
-    """Inject trace context into outgoing headers"""
-    propagator = TraceContextTextMapPropagator()
-    propagator.inject(carrier=headers)
-    return headers
 
 
-def get_current_trace_id() -> Optional[str]:
-    """Get the current trace ID if available"""
-    span = trace.get_current_span()
-    if span and span.is_recording():
-        return format(span.get_span_context().trace_id, "032x")
-    return None
 
 
-def get_current_span_id() -> Optional[str]:
-    """Get the current span ID if available"""
-    span = trace.get_current_span()
-    if span and span.is_recording():
-        return format(span.get_span_context().span_id, "016x")
-    return None
 
 
-def add_span_event(name: str, attributes: Dict[str, Any] = None):
-    """Add an event to the current span"""
-    span = trace.get_current_span()
-    if span and span.is_recording():
-        span.add_event(name, attributes=attributes or {})
 
 
-def set_span_attribute(key: str, value: Any):
-    """Set an attribute on the current span"""
-    span = trace.get_current_span()
-    if span and span.is_recording() and value is not None:
-        span.set_attribute(key, value)
 
 
-def set_span_error(error: Exception):
-    """Mark the current span as error"""
-    span = trace.get_current_span()
-    if span and span.is_recording():
-        span.set_status(Status(StatusCode.ERROR, str(error)))
-        span.record_exception(error)
 
 
 def shutdown_telemetry(timeout_millis: int = 30000):
@@ -368,13 +333,6 @@ def shutdown_telemetry(timeout_millis: int = 30000):
         return
 
     try:
-        # Wait for one more metric collection cycle before flushing.
-        # PeriodicExportingMetricReader collects on a schedule (every 10s).
-        # Metrics recorded just before shutdown won't be in the buffer yet,
-        # so we sleep to ensure at least one collection captures final metrics.
-        import time
-
-        time.sleep(11)
         # Flush and shutdown logger provider FIRST (so final logs are captured)
         if _logger_provider:
             if hasattr(_logger_provider, "force_flush"):

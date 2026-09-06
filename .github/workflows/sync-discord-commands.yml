@@ -26,7 +26,7 @@ jobs:
             # Main branch: global commands (up to 1 hour to propagate)
             URL="https://discord.com/api/v10/applications/${{ vars.DISCORD_APP_ID }}/commands"
           fi
-          curl -X PUT \
+          curl --fail-with-body --silent --show-error -X PUT \
             -H 'Content-Type: application/json' \
             -H "Authorization: Bot ${{ secrets.DISCORD_BOT_TOKEN }}" \
             -d @supabase/functions/ghost-bot/commands.json \

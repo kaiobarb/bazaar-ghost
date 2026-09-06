@@ -16,7 +16,7 @@ class RightEdgeDetector:
 
     def __init__(
         self,
-        templates_dir: str = "/home/kaio/Dev/bazaar-ghost/sfde/templates",
+        templates_dir: str = str(Path(__file__).resolve().parent.parent / 'templates'),
         resolution: str = "480p",
     ):
         """Initialize with right edge template for specified resolution
@@ -33,6 +33,8 @@ class RightEdgeDetector:
 
         # Load resolution-specific template
         self._load_template()
+        if self.template is None:
+            raise ValueError(f'Missing right edge template for {resolution}')
 
     def _load_template(self):
         """Load the right edge template for the specified resolution"""
@@ -98,6 +100,8 @@ class RightEdgeDetector:
             frame_height, frame_width = frame.shape[:2]
             right_half_start = frame_width // 2
             right_half = frame[:, right_half_start:]
+            if self.template.shape[1] > right_half.shape[1]:
+                return None, 0.0
             
             # Use TM_CCORR_NORMED for better accuracy with new templates
             if self.mask is not None:
@@ -107,7 +111,10 @@ class RightEdgeDetector:
             else:
                 result = cv2.matchTemplate(right_half, self.template, cv2.TM_CCORR_NORMED)
 
+            result[~np.isfinite(result)] = -np.inf
             min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+            if not np.isfinite(max_val):
+                return None, 0.0
             confidence = max_val  # Already normalized for TM_CCORR_NORMED
 
             # Check if match exceeds threshold
@@ -132,108 +139,5 @@ class RightEdgeDetector:
                 return None, confidence  # Return best confidence even when no match
 
         except Exception as e:
-            self.logger.error(f"Right edge detection error: {e}")
-            return None, 0.0
-
-    def create_debug_visualization(
-        self, frame: np.ndarray, threshold: float = 0.7
-    ) -> np.ndarray:
-        """
-        Create a visualization showing detected right edge
-
-        Args:
-            frame: Input frame
-            threshold: Detection threshold
-
-        Returns:
-            Visualization frame with overlay
-        """
-        # Ensure color output
-        if len(frame.shape) == 2:
-            vis = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-        else:
-            vis = frame.copy()
-
-        # Detect right edge
-        right_edge_x, confidence = self.detect_right_edge(frame, threshold)
-
-        if right_edge_x is not None and self.template is not None:
-            # # Draw vertical line at right edge
-            # cv2.line(vis, (right_edge_x, 0), (right_edge_x, vis.shape[0]), (0, 255, 255), 2)
-
-            # Draw template bounding box
-            template_h, template_w = self.template.shape[:2]
-            template_x = right_edge_x - template_w
-
-            # Find the y position (from the match location)
-            if self.mask is not None:
-                result = cv2.matchTemplate(
-                    frame, self.template, cv2.TM_CCORR_NORMED, mask=self.mask
-                )
-            else:
-                result = cv2.matchTemplate(frame, self.template, cv2.TM_CCORR_NORMED)
-            _, _, _, max_loc = cv2.minMaxLoc(result)
-
-            cv2.rectangle(
-                vis,
-                (template_x, max_loc[1]),
-                (right_edge_x, max_loc[1] + template_h),
-                (0, 255, 0),
-                2,
-            )
-
-            # Add text label
-            label = f"Right Edge ({confidence:.2f})"
-            cv2.putText(
-                vis,
-                label,
-                (template_x, max_loc[1] - 5),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0, 255, 0),
-                1,
-            )
-
-        return vis
-
-
-def test_right_edge_detector():
-    """Test right edge detection on a sample image"""
-    import sys
-
-    # Configure logging to see debug output
-    logging.basicConfig(level=logging.DEBUG, format="%(levelname)s - %(message)s")
-
-    # Get image path from command line or use default
-    img_path = (
-        sys.argv[1]
-        if len(sys.argv) > 1
-        else "/home/kaio/Dev/bazaar-ghost/.ignore/375(1).jpg"
-    )
-    resolution = sys.argv[2] if len(sys.argv) > 2 else "480p"
-
-    # Initialize detector
-    detector = RightEdgeDetector(resolution=resolution)
-
-    # Load test image
-    img = cv2.imread(img_path)
-    if img is None:
-        print(f"Could not load image: {img_path}")
-        return
-
-    # Test detection
-    threshold = 0.7
-    right_edge_x, conf = detector.detect_right_edge(img, threshold=threshold)
-    print(f"Detection result: right_edge_x={right_edge_x} (confidence: {conf:.3f})")
-
-    # Show visualization
-    vis = detector.create_debug_visualization(img, threshold=threshold)
-    cv2.imshow("Right Edge Detection", vis)
-
-    print("\nPress any key to exit...")
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
-
-if __name__ == "__main__":
-    test_right_edge_detector()
+            self.logger.error(f'Right edge detection error: {e}')
+            raise

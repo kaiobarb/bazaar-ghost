@@ -141,8 +141,7 @@ async function fetchVodComments(
     const hasNext = video.comments.pageInfo?.hasNextPage ?? false;
     return { comments, hasNext };
   } catch (error: any) {
-    console.error(`Error fetching comments for VOD ${vodId}: ${error.message}`);
-    return { comments: [], hasNext: false };
+    throw new Error(`Could not fetch chat for VOD ${vodId}: ${error.message}`);
   }
 }
 
@@ -309,7 +308,6 @@ async function searchChatMentions(): Promise<{
   for (const vod of vods) {
     const streamer = vod.streamers ?? {};
     const channel = streamer.login ?? "unknown";
-    const vodId = vod.source_id;
 
     const { matches, totalComments: commentCount } = await searchVodChat(vod);
     vodsSearched++;

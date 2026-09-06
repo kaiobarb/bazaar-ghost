@@ -1,67 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { supabase, verifySecretKey } from "../_shared/supabase.ts";
-import { getTwitchToken } from "../_shared/twitch.ts";
-
-const TWITCH_CLIENT_ID = Deno.env.get("TWITCH_CLIENT_ID")!;
-
-async function checkVodBatch(vodIds: string[]): Promise<Record<string, boolean>> {
-  const token = await getTwitchToken();
-  const results: Record<string, boolean> = {};
-
-  const url = new URL("https://api.twitch.tv/helix/videos");
-
-  // Add each ID as a separate query parameter (not comma-separated!)
-  for (const id of vodIds) {
-    url.searchParams.append("id", id);
-  }
-
-  console.log(`Checking ${vodIds.length} VODs with URL: ${url.toString()}`);
-
-  try {
-    const response = await fetch(url.toString(), {
-      method: "GET",
-      headers: {
-        "Client-Id": TWITCH_CLIENT_ID,
-        Authorization: `Bearer ${token}`,
-        Accept: "application/json",
-      },
-    });
-
-    console.log(`Response status: ${response.status}`);
-
-    // Initialize all VODs as unavailable
-    for (const vodId of vodIds) {
-      results[vodId] = false;
-    }
-
-    if (response.ok) {
-      const data = await response.json();
-      console.log(`API returned ${data.data?.length || 0} available VODs out of ${vodIds.length} requested`);
-
-      // Mark returned VODs as available
-      if (data.data) {
-        for (const vod of data.data) {
-          results[vod.id] = true;
-          console.log(`✓ VOD ${vod.id} is available: "${vod.title}" by ${vod.user_name}`);
-        }
-      }
-
-      // Log which VODs were NOT found
-      const unavailable = vodIds.filter(id => !results[id]);
-      if (unavailable.length > 0) {
-        console.log(`✗ ${unavailable.length} VODs not found: ${unavailable.join(", ")}`);
-      }
-    } else {
-      const errorText = await response.text();
-      console.error(`API error response: ${errorText}`);
-    }
-  } catch (error) {
-    console.error(`Error checking VOD batch:`, error);
-    // All VODs remain marked as unavailable
-  }
-
-  return results;
-}
+import { batchCheckVodAvailability } from "../_shared/twitch.ts";
 
 Deno.serve(async (req) => {
   try {
@@ -72,7 +11,7 @@ Deno.serve(async (req) => {
         {
           headers: { "Content-Type": "application/json" },
           status: 401,
-        }
+        },
       );
     }
 
@@ -91,7 +30,7 @@ Deno.serve(async (req) => {
       .or(
         `last_availability_check.is.null,last_availability_check.lt.${
           new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
-        }`
+        }`,
       )
       .limit(100)
       .order("last_availability_check", { ascending: true, nullsFirst: true });
@@ -107,22 +46,22 @@ Deno.serve(async (req) => {
           message: "No VODs need availability check",
           checked: 0,
           markedUnavailable: 0,
-          stillAvailable: 0
+          stillAvailable: 0,
         }),
         {
           headers: { "Content-Type": "application/json" },
-          status: 200
-        }
+          status: 200,
+        },
       );
     }
 
     console.log(`Found ${vodsToCheck.length} VODs to check`);
 
     // Extract Twitch VOD IDs
-    const twitchIds = vodsToCheck.map(v => v.source_id);
+    const twitchIds = vodsToCheck.map((v) => v.source_id);
 
     // Check availability in batches of 100 (Twitch API limit)
-    const results = await checkVodBatch(twitchIds);
+    const results = await batchCheckVodAvailability(twitchIds);
 
     let markedUnavailable = 0;
     let stillAvailable = 0;
@@ -146,7 +85,9 @@ Deno.serve(async (req) => {
           console.error(`Failed to update VOD ${vod.id}:`, updateError);
         } else {
           markedUnavailable++;
-          console.log(`Marked VOD ${vod.source_id} (${vod.title}) as unavailable`);
+          console.log(
+            `Marked VOD ${vod.source_id} (${vod.title}) as unavailable`,
+          );
         }
       } else {
         // Just update the last check timestamp
@@ -177,17 +118,17 @@ Deno.serve(async (req) => {
         markedUnavailable,
         stillAvailable,
         details: {
-          vodsChecked: vodsToCheck.map(v => ({
+          vodsChecked: vodsToCheck.map((v) => ({
             id: v.source_id,
             title: v.title,
-            available: results[v.source_id]
-          }))
-        }
+            available: results[v.source_id],
+          })),
+        },
       }),
       {
         headers: { "Content-Type": "application/json" },
         status: 200,
-      }
+      },
     );
   } catch (error: any) {
     console.error("VOD availability check error:", error);
@@ -196,7 +137,7 @@ Deno.serve(async (req) => {
       {
         headers: { "Content-Type": "application/json" },
         status: 500,
-      }
+      },
     );
   }
 });

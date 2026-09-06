@@ -12,6 +12,10 @@ export async function verifyEventSubSignature(
   signature: string,
   secret: string,
 ): Promise<boolean> {
+  const age = Date.now() - Date.parse(timestamp);
+  if (
+    !Number.isFinite(age) || age > 10 * 60 * 1000 || age < -60 * 1000 || !secret
+  ) return false;
   const message = messageId + timestamp + body;
   const encoder = new TextEncoder();
 
@@ -102,15 +106,19 @@ export async function getTwitchToken(): Promise<string> {
 
 export async function twitchApiCall(
   endpoint: string,
-  params?: Record<string, string>,
+  params?: Record<string, string> | URLSearchParams,
 ) {
   const token = await getTwitchToken();
   const url = new URL(`https://api.twitch.tv/helix/${endpoint}`);
 
   if (params) {
-    Object.entries(params).forEach(([key, value]) => {
+    for (
+      const [key, value] of params instanceof URLSearchParams
+        ? params
+        : Object.entries(params)
+    ) {
       url.searchParams.append(key, value);
-    });
+    }
   }
 
   console.log(`Twitch API call to: ${url.toString()}`);
@@ -119,7 +127,6 @@ export async function twitchApiCall(
     "Client-Id": TWITCH_CLIENT_ID,
     Authorization: `Bearer ${token}`,
     Accept: "application/json",
-    "accept-language": "PURPOSELYBADVALUEBECAUSETWITCHAPIISGARBAGE",
     "User-Agent": "Bazaar-Ghost/1.0",
   };
 
@@ -175,101 +182,27 @@ export async function getBazaarGameId(): Promise<string> {
 }
 
 export async function checkVodAvailability(vodId: string): Promise<boolean> {
-  try {
-    const { data } = await twitchApiCall("videos", {
-      id: vodId,
-    });
-
-    // If we get data back with the VOD, it's available
-    return data && data.length > 0;
-  } catch (error: any) {
-    // If API call fails (404, etc.), VOD is not available
-    console.log(`VOD ${vodId} is not available: ${error.message}`);
-    return false;
-  }
+  return (await batchCheckVodAvailability([vodId]))[vodId];
 }
 
+/** Only a successful Twitch response can establish that a VOD is unavailable. */
 export async function batchCheckVodAvailability(
   vodIds: string[],
 ): Promise<Record<string, boolean>> {
   const results: Record<string, boolean> = {};
-
-  // Twitch API can handle up to 100 video IDs in a single call
-  const batchSize = 100;
-
-  for (let i = 0; i < vodIds.length; i += batchSize) {
-    const batch = vodIds.slice(i, i + batchSize);
-
-    try {
-      // Build URL with multiple id parameters (not comma-separated)
-      const token = await getTwitchToken();
-      const url = new URL("https://api.twitch.tv/helix/videos");
-
-      // Add each ID as a separate query parameter
-      for (const id of batch) {
-        url.searchParams.append("id", id);
-      }
-
-      console.log(`Checking ${batch.length} VODs with URL: ${url.toString()}`);
-
-      const response = await fetch(url.toString(), {
-        method: "GET",
-        headers: {
-          "Client-Id": TWITCH_CLIENT_ID,
-          Authorization: `Bearer ${token}`,
-          Accept: "application/json",
-        },
-      });
-
-      // Mark all requested VODs as unavailable by default
-      for (const vodId of batch) {
-        results[vodId] = false;
-      }
-
-      if (response.ok) {
-        const responseData = await response.json();
-        console.log(
-          `API returned ${
-            responseData.data?.length || 0
-          } available VODs out of ${batch.length} requested`,
-        );
-
-        // Mark returned VODs as available
-        if (responseData.data) {
-          for (const vod of responseData.data) {
-            results[vod.id] = true;
-            console.log(`✓ VOD ${vod.id} is available`);
-          }
-        }
-
-        // Log which VODs were NOT found
-        const unavailable = batch.filter((id) => !results[id]);
-        if (unavailable.length > 0) {
-          console.log(
-            `✗ ${unavailable.length} VODs not found: ${unavailable.join(", ")}`,
-          );
-        }
-      } else {
-        const errorText = await response.text();
-        console.error(`API error response: ${errorText}`);
-        // All VODs remain marked as unavailable
-      }
-
-      console.log(`Checked availability for ${batch.length} VODs`);
-
-      // Rate limiting: wait 1 second between batches
-      if (i + batchSize < vodIds.length) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-      }
-    } catch (error) {
-      console.error(`Error checking VOD availability for batch:`, error);
-      // Mark all VODs in this batch as unavailable
-      for (const vodId of batch) {
-        results[vodId] = false;
-      }
+  for (let offset = 0; offset < vodIds.length; offset += 100) {
+    const batch = vodIds.slice(offset, offset + 100);
+    const params = new URLSearchParams();
+    for (const id of batch) params.append("id", id);
+    const response = await twitchApiCall("videos", params);
+    if (!Array.isArray(response.data)) {
+      throw new Error("Invalid Twitch videos response");
     }
+    const available = new Set(
+      response.data.map((vod: { id: string }) => vod.id),
+    );
+    for (const id of batch) results[id] = available.has(id);
   }
-
   return results;
 }
 
@@ -336,7 +269,7 @@ export async function getVodsFromStreamer(
   if (params?.type) queryParams.type = params.type;
   if (params?.period) queryParams.period = params.period;
 
-  return twitchApiCall("videos", queryParams);
+  return await twitchApiCall("videos", queryParams);
 }
 
 export async function isStreamerLive(userId: string): Promise<boolean> {
@@ -356,8 +289,7 @@ export async function isStreamerLive(userId: string): Promise<boolean> {
     return isLive;
   } catch (error) {
     console.error(`Error checking live status for ${userId}:`, error);
-    // On error, assume not live to avoid skipping VODs
-    return false;
+    throw error;
   }
 }
 
@@ -510,7 +442,7 @@ export async function getStreamerVodsWithChapters(
   // If numVods specified, fetch exactly that many (max 100 per request)
   // Otherwise, fetch all with pagination (up to 50 pages = 5000 VODs)
   const perPage = numVods ? Math.min(numVods, 100) : 100;
-  const maxPages = numVods ? 1 : 50;
+  const maxPages = numVods ? Math.ceil(numVods / 100) : 50;
 
   do {
     const variables: { login: string; first: number; after?: string } = {
@@ -541,6 +473,13 @@ export async function getStreamerVodsWithChapters(
 
       // Parse chapter data
       const chapters: VideoChapter[] = [];
+      // A full first page may omit later game changes. Do not infer a whole-VOD
+      // Bazaar tail from incomplete chapter evidence.
+      if ((video.moments?.edges?.length ?? 0) >= 25) {
+        throw new Error(
+          `VOD ${video.id} reached the 25-chapter query limit; refusing incomplete chapter data`,
+        );
+      }
       if (video.moments?.edges) {
         for (const momentEdge of video.moments.edges) {
           const moment = momentEdge.node;
@@ -584,7 +523,7 @@ export async function getStreamerVodsWithChapters(
   } while (cursor && pageCount < maxPages);
 
   console.log(`Total VODs fetched for ${streamerLogin}: ${allVods.length}`);
-  return allVods;
+  return numVods ? allVods.slice(0, numVods) : allVods;
 }
 
 // ============================================================================

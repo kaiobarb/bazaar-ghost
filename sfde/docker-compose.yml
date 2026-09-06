@@ -1,25 +1,13 @@
-version: "3.8"
-
 services:
   sfde:
     build: .
-    image: ghcr.io/bazaar-ghost/sfde:latest
+    image: sfde:dev
+    env_file:
+      - ../.env.dev
     environment:
-      - SUPABASE_URL=${SUPABASE_URL}
-      - SUPABASE_SECRET_KEY=${SUPABASE_SECRET_KEY}
-      - VOD_ID=${VOD_ID}
-      - START_TIME=${START_TIME:-0}
-      - END_TIME=${END_TIME:-3200}
-      - PYTHONUNBUFFERED=1
-    volumes:
-      - ./templates:/app/templates:ro
-      - ./logs:/app/logs
+      CHUNK_ID: ${CHUNK_ID:?Set CHUNK_ID to a pending local chunk UUID}
+      SFDE_PROFILE: ${SFDE_PROFILE:?Set SFDE_PROFILE to the streamer's JSON profile}
+      QUALITY: ${QUALITY:-480p}
+      ENVIRONMENT: dev
     network_mode: host
-    restart: unless-stopped
-    mem_limit: 512m
-    cpus: 1.0
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+    restart: "no"

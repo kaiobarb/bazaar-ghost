@@ -1,121 +1,60 @@
-# SFDE Processor
+# SFDE
 
-SFDE (Stream Filter Detect Extract) is the computer vision pipeline that processes Twitch VOD chunks to detect matchup screens and extract opponent usernames.
+SFDE processes one database chunk: **Stream → Filter → Detect → Extract**. Its input is `CHUNK_ID`, not a VOD command-line range. The database supplies the Twitch source ID and the half-open time range `[start_seconds, end_seconds)`.
 
-## Architecture
+## Execution
 
-The `SFDEProcessor` class in `src/sfde.py` orchestrates 4 parallel threads connected by queues:
+The orchestrator runs three workers:
 
-1. **Streamlink** -- Downloads a VOD segment via HLS, pipes the stream to stdout
-2. **FFmpeg** -- Reads the piped stream, applies a crop region from the SFDE profile, extracts JPEG frames at 0.5 FPS (1 frame every 2 seconds)
-3. **OpenCV** -- Detects rank emblems via template matching, finds nameplate right edges, then runs PaddleOCR to extract the opponent username
-4. **Results** -- Batches detections, uploads frame screenshots to Supabase Storage, and inserts detection records into the database
+1. **Decoder:** Streamlink resolves an exact rendition URL. FFmpeg downloads and accurately seeks that playlist, normalizes dimensions, applies the profile crop, and emits JPEGs plus `showinfo` timestamps. `video.py` pairs pixels and timestamps before enqueuing them. Sampling defaults to one frame every two seconds.
+2. **OCR:** OpenCV finds a rank emblem and the right edge. Only the resulting username crop reaches PaddleOCR. Missing/invalid boundaries cannot fall back to reading the whole frame. A custom opaque edge marks the result as truncated. The same continuously visible matchup is emitted once; failed OCR leaves the next sample eligible. An optional IGD region is scanned for up to 15 subsequent samples, preserving the username even if day extraction fails or EOF arrives.
+3. **Results:** Batches screenshots and detections. The required screenshot is uploaded before the database insert; optional debug-image failures are logged. Stable detection IDs make a retried insert safe after a lost response. Only persisted metadata is retained for the job summary.
 
-### Detection pipeline detail
+The two bounded queues apply backpressure. EOF signals and cancellation are separate: normal EOF drains everything; any worker failure, zero-frame decode, cancellation, or processing deadline fails the chunk. A worker claims a pending/queued chunk atomically before replacing old detections. A 35-minute lease allows the scheduler to recover abandoned workers; the processing deadline must remain shorter than that lease.
 
-Each frame goes through three stages in `src/frame_processor.py`:
+## Profiles and templates
 
-1. **Emblem detection** (`src/emblem_detector.py`) -- Template matches against rank badge images (bronze, silver, gold, diamond, legend) at the configured resolution. A match indicates a matchup screen is present.
-2. **Right edge detection** (`src/right_edge_detector.py`) -- Locates the right boundary of the opponent's nameplate to crop the OCR region precisely, handling camera overlays that partially occlude the nameplate.
-3. **PaddleOCR** -- Runs text recognition on the cropped nameplate region to extract the opponent's username.
+`SFDE_PROFILE` is required JSON. `crop_region` and optional `igd_crop_region` are `[x, y, width, height]` fractions of the full video dimensions. `custom_edge` is a fraction of nameplate width; `opaque_edge` selects the overlay boundary. Regions must be finite, positive in size, and fit within the frame.
 
-### Template images
+```json
+{"profile_name":"example","crop_region":[0.50,0.50,0.40,0.20],"opaque_edge":false}
+```
 
-The `templates/` directory contains ~38 template images:
+Use the streamer's database profile, not this illustrative crop, for real processing. Supported qualities are 360p, 480p, 720p, and 1080p, with 30/60 FPS renditions. Quality controls template selection and normalization; sampling rate remains independent. Pre-August-12-2025 templates exist only for 480p. The orchestrator/workflow derives that cutoff from the VOD publication date; direct runs must supply `OLD_TEMPLATES=true` when applicable. Missing required template sets fail startup.
 
-- **Rank emblems** at multiple resolutions (360p, 480p, 720p, 1080p, fullres) for each rank
-- **Old templates** (prefixed with `_`) for VODs published before Aug 12, 2025, when The Bazaar used smaller UI elements
-- **Right edge templates** at each resolution for nameplate boundary detection
+## Build and run
 
-## Running locally
-
-SFDE runs as a Docker container. It takes a **chunk ID** (a UUID referencing a row in the `chunks` table) and processes that 30-minute VOD segment.
-
-### Prerequisites
-
-- Docker
-- A running Supabase instance (local or remote) with seeded data
-- A `.env.dev` file in the project root (see root README)
-
-### Build and run
+From the repository root, create `.env.dev` containing only local/development settings, and export `CHUNK_ID` and `SFDE_PROFILE`. The profile can be obtained from the streamer's `sfde_profiles` relation.
 
 ```bash
-# From the project root
 docker build -t sfde:dev sfde/
-
-# Process a specific chunk
-docker run --rm --network host \
-  --env-file .env.dev \
-  -e CHUNK_ID=<chunk-uuid> \
-  -e QUALITY=480p \
+docker run --rm --network host --env-file .env.dev \
+  -e CHUNK_ID -e SFDE_PROFILE -e QUALITY=480p -e ENVIRONMENT=dev \
   sfde:dev
 ```
 
-### Build with the helper script
+For a rerun, reset only an inactive local chunk to `pending`; do not reset a running worker. `force_process_vod` rejects VODs with active workers and preserves existing chunk identities. A normal successful run exports `/app/output/detections_<chunk-id>.json`; mount a writable output directory to retain it. The image runs as user `sfde` (UID 1000).
+
+To use an existing video instead of Twitch:
 
 ```bash
-cd sfde
-./build.sh          # Build + tag for GHCR
-./build.sh --push   # Build + push to GHCR
+docker run --rm --network host --env-file .env.dev \
+  -v "$PWD/.ignore/clip.mp4:/video.mp4:ro" \
+  -e CHUNK_ID -e SFDE_PROFILE -e QUALITY=480p -e ENVIRONMENT=dev \
+  -e TEST_MODE=true -e TEST_VIDEO=/video.mp4 sfde:dev
 ```
 
-### Run without Docker
+`TEST_MODE` changes video input and screenshot prefixes; it still writes to the connected database's `public` schema. Use a full VOD file, or a synthetic local chunk beginning at zero, because seeking uses the database's absolute range. It is not a dry run. Credentials are never auto-loaded by Python.
+
+`docker compose -f sfde/docker-compose.yml up --build` provides a one-shot equivalent using `.env.dev`, `CHUNK_ID`, and `SFDE_PROFILE`. The helper `sfde/build.sh` builds locally; `--test` runs the suite, and `--push` explicitly publishes the image.
+
+## Tests and tuning
 
 ```bash
-cd sfde
-pip install -r requirements.txt
-
-# Set environment variables (or use .env.local which is auto-loaded)
-export SUPABASE_URL=http://localhost:54321
-export SUPABASE_SECRET_KEY=<your-key>
-export CHUNK_ID=<chunk-uuid>
-
-python src/sfde.py
-# Or: python src/sfde.py <chunk-uuid>
+docker build --target test -t sfde:test sfde/
+docker run --rm --network none sfde:test
 ```
 
-## Environment Variables
+The test image installs pytest separately from runtime dependencies and caches the same OCR models as production. Tests cover the validated image corpus, template boundaries, OCR cleaning, cooldown/reappearance, queue draining, worker failures, timestamp pairing, non-segment-aligned HLS seeking, IGD association, and persistence retries. Missing validated fixture images fail collection rather than silently shrinking coverage.
 
-| Variable                      | Required | Default      | Description                                                  |
-| ----------------------------- | -------- | ------------ | ------------------------------------------------------------ |
-| `CHUNK_ID`                    | Yes      | --           | UUID of the chunk to process (can also be passed as CLI arg) |
-| `SUPABASE_URL`                | Yes      | --           | Supabase API URL                                             |
-| `SUPABASE_SECRET_KEY`         | Yes      | --           | Supabase secret key                                          |
-| `QUALITY`                     | No       | `480p`       | Stream quality to download (480p, 720p, 1080p, etc.)         |
-| `OLD_TEMPLATES`               | No       | `false`      | Use old (smaller) template images for pre-Aug-2025 VODs      |
-| `VIDEO_FPS`                   | No       | `30`         | Source video FPS (30 or 60)                                  |
-| `SFDE_PROFILE`                | No       | --           | JSON string with crop region, scale, and edge settings       |
-| `TEST_MODE`                   | No       | `false`      | Use local test files instead of downloading from Twitch      |
-| `ENVIRONMENT`                 | No       | `production` | Environment name (for telemetry tagging)                     |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | No       | --           | OpenTelemetry collector endpoint                             |
-| `OTEL_EXPORTER_OTLP_HEADERS`  | No       | --           | OpenTelemetry auth headers                                   |
-
-## SFDE Profiles
-
-Each streamer can have a custom SFDE profile that defines:
-
-- **Crop region** -- Where the opponent nameplate appears on screen (varies by streamer overlay)
-- **Scale** -- Scaling factor for the crop region
-- **Edge settings** -- Custom right-edge detection parameters for streamers with camera overlays that partially cover the nameplate
-
-The default profile (id=1) works for most streamers. Custom profiles are stored in the `sfde_profiles` table and passed to the container as the `SFDE_PROFILE` environment variable (a JSON string).
-
-## Configuration
-
-Processing parameters are in `config.yaml`:
-
-| Section                | Key Parameters                                               |
-| ---------------------- | ------------------------------------------------------------ |
-| `processing`           | `frame_rate: 0.5` (1 frame/2s), `timeout: 1800` (30 min max) |
-| `detection`            | `threshold: 0.78` (template matching confidence)             |
-| `emblem_detection`     | `template_threshold: 0.5`, method: `TM_CCOEFF_NORMED`        |
-| `right_edge_detection` | `threshold: 0.7`, `crop_margin_percent: 5`                   |
-| `streamlink`           | Default `480p`, fallback to `360p`/`worst`                   |
-| `resources`            | `max_memory_mb: 512`, `max_cpu_percent: 50`                  |
-
-## Monitoring
-
-SFDE emits:
-
-- **Structured JSON logs** via `src/json_logger.py` with processing metrics, health status, and error tracking
-- **OpenTelemetry traces and metrics** via `src/telemetry.py` when `OTEL_EXPORTER_OTLP_ENDPOINT` is configured
+`config.yaml` contains the actual runtime controls: sampling/queue/deadline, detector thresholds, OCR confidence and minimum interval, storage batch/retry settings, and log level. Start with the labeled corpus when changing thresholds. Passing fixture tests does not measure recall over all Twitch frames: 0.5 FPS can miss a shorter screen, new game UI can invalidate templates, and truncated names remain partial evidence. Preserve those flags for consumers.
