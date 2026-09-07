@@ -5,6 +5,7 @@ Platform identities/history survive conversion. Historical notifications cannot 
 WebSub capabilities rotate and imported subscriptions remain unconfirmed. No network calls.
 """
 import argparse
+from contextlib import closing
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -14,10 +15,10 @@ import sqlite3
 import unicodedata
 
 if __package__:
-    from .snapshot_schema import (ROOT, SCHEMA_VERSION, TABLES, REQUIRED_TABLES, OPTIONAL_TABLES,
+    from .snapshot_schema import (ROOT, SCHEMA_VERSION, TARGET_SCHEMA_VERSION, TABLES, REQUIRED_TABLES, OPTIONAL_TABLES,
                                   IMPORT_TABLES, apply_schema, migrations, private_json, private_open)
 else:
-    from snapshot_schema import (ROOT, SCHEMA_VERSION, TABLES, REQUIRED_TABLES, OPTIONAL_TABLES,
+    from snapshot_schema import (ROOT, SCHEMA_VERSION, TARGET_SCHEMA_VERSION, TABLES, REQUIRED_TABLES, OPTIONAL_TABLES,
                                  IMPORT_TABLES, apply_schema, migrations, private_json, private_open)
 
 
@@ -207,30 +208,49 @@ def convert(source, destination):
         db.commit()
         triggers = db.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger' ORDER BY name").fetchall()
         output_counts = {table: db.execute(f'SELECT count(*) FROM {table}').fetchone()[0] for table in IMPORT_TABLES}
-        with private_open(destination / 'import.sql') as output:
-            # Do not append a snapshot to an existing live or partially imported database.
-            nonempty = ' OR '.join(f'EXISTS(SELECT 1 FROM {table})' for table in IMPORT_TABLES)
-            output.write(f"INSERT INTO mutation_checks(id,ok) VALUES('snapshot-import-empty',NOT({nonempty}));\n")
-            output.write("DELETE FROM mutation_checks WHERE id='snapshot-import-empty';\n")
-            for name, _ in triggers:
-                output.write(f'DROP TRIGGER IF EXISTS {name};\n')
-            for table in IMPORT_TABLES:
-                columns = [r[1] for r in db.execute(f'PRAGMA table_info({table})')]
-                quoted = ','.join(f'quote("{column}")' for column in columns)
-                names = ','.join(f'"{column}"' for column in columns)
-                for values in db.execute(f'SELECT {quoted} FROM {table}'):
-                    output.write(f'INSERT INTO {table}({names}) VALUES({",".join(values)});\n')
-            for _, sql in triggers:
-                output.write(sql + ';\n')
+        # Validate the old application snapshot separately from the complete deployment
+        # schema. New auth/social tables are never source import tables, but an existing
+        # user or moderation record still makes the target unsafe for a fresh import.
+        with closing(sqlite3.connect(':memory:')) as target:
+            apply_schema(target, TARGET_SCHEMA_VERSION)
+            target_tables = [row[0] for row in target.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+            with private_open(destination / 'import.sql') as output:
+                nonempty = ' OR '.join(f'EXISTS(SELECT 1 FROM {table})' for table in target_tables if table != 'public_cache_state')
+                singleton = '(SELECT count(*) FROM public_cache_state)=1 AND EXISTS(SELECT 1 FROM public_cache_state WHERE id=1 AND revision=0)'
+                output.write(f"INSERT INTO mutation_checks(id,ok) VALUES('snapshot-import-empty',NOT({nonempty}) AND {singleton});\n")
+                output.write("DELETE FROM mutation_checks WHERE id='snapshot-import-empty';\n")
+                # Only the old application's triggers are suspended. New clip/auth/cache
+                # triggers stay installed and materialize derived rows during this import.
+                for name, _ in triggers:
+                    output.write(f'DROP TRIGGER IF EXISTS {name};\n')
+                for table in IMPORT_TABLES:
+                    columns = [r[1] for r in db.execute(f'PRAGMA table_info({table})')]
+                    quoted = ','.join(f'quote("{column}")' for column in columns)
+                    names = ','.join(f'"{column}"' for column in columns)
+                    for values in db.execute(f'SELECT {quoted} FROM {table}'):
+                        output.write(f'INSERT INTO {table}({names}) VALUES({",".join(values)});\n')
+                for _, sql in triggers:
+                    output.write(sql + ';\n')
+            target.executescript((destination / 'import.sql').read_text())
+            if target.execute('PRAGMA foreign_key_check').fetchall():
+                raise ValueError('Generated import violates target foreign keys')
+            target_counts = {table: target.execute(f'SELECT count(*) FROM {table}').fetchone()[0] for table in target_tables}
+            if any(target_counts[table] != count for table, count in output_counts.items()):
+                raise ValueError('Generated import changed application row counts')
         parts = split_import(destination)
-        manifest = {'format_version': 2, 'schema_version': SCHEMA_VERSION, 'complete': True,
+        manifest = {'format_version': 2, 'schema_version': SCHEMA_VERSION,
+                    'source_schema_version': SCHEMA_VERSION, 'target_schema_version': TARGET_SCHEMA_VERSION, 'complete': True,
                     'migrations': {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in migrations()},
+                    'target_migrations': {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in migrations(TARGET_SCHEMA_VERSION)},
+                    'target_counts': target_counts,
                     'input_counts': counts, 'output_counts': output_counts, 'absent_source_tables': absent,
                     'import_parts': parts, 'imported_at': imported_at,
                     'policies': {'notification_history': 'marked sent', 'websub_capabilities': 'rotated',
                                  'websub_subscriptions': 'unconfirmed; renew only after target cutover review',
                                  'websub_delivery_receipts': 'retained', 'ingestion_jobs': 'retained; active leases refused',
-                                 'auth': 'not included; schema support ends at migration 0003'}}
+                                 'auth': 'source auth is excluded; target auth and social tables must be empty',
+                                 'target': 'full schema 0001–0006 required; clips derive from imported detections'}}
         private_json(destination / 'manifest.json', manifest)
         print(json.dumps({'counts': counts, 'absent_tables': sorted(absent), 'rotated_websub_subscriptions': counts['youtube_websub_subscriptions']}, indent=2))
         return counts

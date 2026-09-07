@@ -1,6 +1,6 @@
 # Cloudflare backend migration
 
-This worktree replaces the backend's Supabase runtime with one Cloudflare Worker, D1, R2, Queues, and Cron Triggers. OCR, Docker builds, tests, processing jobs, Discord command registration, deployment execution, and the weekly dev storage purge remain in **GitHub Actions**. The frontend repository is untouched. The original migration at `6a6d0ae` was local only; the subsequent multiplatform commit `2923d2a` is deployed to the isolated [validation Worker](https://bazaarghost-validation.kaio-8df.workers.dev/health). Existing dev/production services have not been migrated. See the [current work log](platform-work-log.md) for deployment evidence and unfinished hosted checks.
+This worktree replaces the backend's Supabase runtime with one Cloudflare Worker, D1, R2, Queues, and Cron Triggers. OCR, Docker builds, tests, processing jobs, Discord command registration, and the weekly dev storage purge remain in **GitHub Actions**. The frontend repository is untouched. The original migration at `6a6d0ae` was local only; the subsequent platform and auth/social backend is deployed to the isolated [validation Worker](https://bazaarghost-validation.kaio-8df.workers.dev/health). Validation deployment currently uses authenticated local Wrangler because the dedicated GitHub deployment token is not configured. Existing dev/production services have not been migrated. See the [current work log](platform-work-log.md) for deployment evidence and unfinished hosted checks.
 
 ## Service mapping
 

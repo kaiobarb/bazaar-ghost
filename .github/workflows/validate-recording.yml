@@ -1,0 +1,94 @@
+name: Validate recording on ephemeral runner
+run-name: Validate ${{ inputs.source }} ${{ inputs.video_id }}
+on:
+  # Register the branch-only workflow in GitHub; pushes never start a runner job.
+  push:
+    branches: [codex/cloudflare-validation]
+    paths: [.github/workflows/validate-recording.yml, 'scripts/validation_runner/**']
+  workflow_dispatch:
+    inputs:
+      runner_label:
+        description: Unique one-job runner label from the operator
+        required: true
+        type: string
+      source:
+        description: Reviewed source (temporary runner supports YouTube)
+        required: true
+        type: choice
+        options: [youtube]
+      video_id:
+        description: Exact public YouTube video ID
+        required: true
+        type: string
+      ranges:
+        description: Reviewed gameplay seconds, e.g. [0,900]; at most 3 ranges and 3600 seconds
+        required: true
+        type: string
+      templates:
+        description: Reviewed gameplay template era
+        required: true
+        type: choice
+        options: [current, old]
+      profile_id:
+        description: Existing reviewed validation SFDE crop profile ID
+        required: true
+        default: 1
+        type: number
+      quality:
+        description: Processing resolution
+        required: true
+        default: 480p
+        type: choice
+        options: [360p, 480p, 720p, 1080p]
+      recorded_at:
+        description: Known gameplay recording start, ISO timestamp with timezone; otherwise blank
+        type: string
+      minimum_detections:
+        description: Minimum high-confidence public detections required for success
+        default: 1
+        type: number
+      require_igd:
+        description: Require at least one extracted in-game day
+        default: false
+        type: boolean
+permissions:
+  contents: read
+concurrency:
+  group: validation-recording-${{ inputs.source }}-${{ inputs.video_id }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/cloudflare-validation' && startsWith(inputs.runner_label, 'bazaarghost-validation-')
+    runs-on: ${{ inputs.runner_label }}
+    environment: validation
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Catalog, prepare, process sequentially and verify persistence
+        env:
+          ENVIRONMENT: validation
+          BAZAARGHOST_API_URL: ${{ vars.BAZAARGHOST_API_URL }}
+          BAZAARGHOST_CATALOG_KEY: ${{ secrets.BAZAARGHOST_CATALOG_KEY }}
+          BAZAARGHOST_PROCESSOR_KEY: ${{ secrets.BAZAARGHOST_PROCESSOR_KEY }}
+          VALIDATION_SOURCE: ${{ inputs.source }}
+          VALIDATION_VIDEO_ID: ${{ inputs.video_id }}
+          VALIDATION_RANGES: ${{ inputs.ranges }}
+          VALIDATION_TEMPLATES: ${{ inputs.templates }}
+          VALIDATION_PROFILE_ID: ${{ inputs.profile_id }}
+          VALIDATION_QUALITY: ${{ inputs.quality }}
+          VALIDATION_RECORDED_AT: ${{ inputs.recorded_at }}
+          VALIDATION_MINIMUM_DETECTIONS: ${{ inputs.minimum_detections }}
+          VALIDATION_REQUIRE_IGD: ${{ inputs.require_igd }}
+        run: python scripts/validation_runner/validate.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-${{ inputs.source }}-${{ inputs.video_id }}-${{ github.run_id }}
+          path: |
+            validation-output/*.json
+            /app/output/detections_*.json
+          if-no-files-found: error
+          retention-days: 7

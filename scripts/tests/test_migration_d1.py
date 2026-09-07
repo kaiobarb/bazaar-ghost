@@ -1,0 +1,122 @@
+"""Opt-in real workerd/D1 import proof. Never exports source or accesses hosted D1.
+
+RUN_LOCAL_D1_MIGRATION_TESTS=1 python -m unittest scripts.tests.test_migration_d1
+Set LOCAL_D1_ARTIFACT_DIR to a new directory to retain private proof artifacts.
+"""
+from contextlib import redirect_stdout
+import io
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+
+from scripts.tests import test_migration as fixtures
+
+conversion = fixtures.conversion
+
+
+@unittest.skipUnless(os.environ.get('RUN_LOCAL_D1_MIGRATION_TESTS') == '1', 'Opt-in local workerd/D1 test')
+class FullTargetD1Tests(unittest.TestCase):
+    def setUp(self):
+        retained = os.environ.get('LOCAL_D1_ARTIFACT_DIR')
+        if retained:
+            self.root = Path(retained).resolve()
+            self.root.mkdir(mode=0o700, parents=True, exist_ok=False)
+        else:
+            directory = tempfile.TemporaryDirectory(prefix='bazaarghost-d1-import-')
+            self.addCleanup(directory.cleanup)
+            self.root = Path(directory.name)
+        self.config = self.root / 'wrangler.json'
+        self.config.write_text(json.dumps({
+            'name': 'bazaarghost-local-import-proof', 'compatibility_date': '2026-08-22',
+            'd1_databases': [{'binding': 'DB', 'database_name': 'bazaarghost-local-import-proof',
+                'database_id': '00000000-0000-0000-0000-000000000000',
+                'migrations_dir': str(conversion.ROOT / 'worker/migrations')}],
+        }))
+        self.config.chmod(0o600)
+        with conversion.private_open(self.root / 'wrangler.log'):
+            pass
+        self.calls = 0
+
+    def cli(self, *arguments, state='populated', succeeds=True):
+        self.calls += 1
+        command = [str(conversion.ROOT / 'node_modules/.bin/wrangler'), 'd1', *arguments,
+            '--config', str(self.config), '--local', '--persist-to', str(self.root / state)]
+        process = subprocess.run(command, cwd=conversion.ROOT, text=True, capture_output=True, timeout=90,
+            env={**os.environ, 'CI': 'true', 'WRANGLER_SEND_METRICS': 'false',
+                 'WRANGLER_LOG_PATH': str(self.root / 'wrangler.log')})
+        log = self.root / f'command-{self.calls:02}.log'
+        log.write_text(process.stdout + '\n' + process.stderr)
+        log.chmod(0o600)
+        if succeeds:
+            self.assertEqual(process.returncode, 0, f'Local D1 command failed; private details: {log}')
+        else:
+            self.assertNotEqual(process.returncode, 0, 'Unsafe import unexpectedly succeeded')
+            self.assertIn('valid_mutation', process.stdout + process.stderr)
+        return process.stdout
+
+    def query(self, sql, state='populated'):
+        result = json.loads(self.cli('execute', 'DB', '--command', sql, '--json', state=state))
+        self.assertTrue(all(item['success'] for item in result))
+        return result[0]['results']
+
+    def test_generated_populated_snapshot_into_full_target_with_guards(self):
+        source, destination = self.root / 'source', self.root / 'converted'
+        source.mkdir(mode=0o700)
+        records = fixtures.MultiplatformMigrationTests().records()
+        for table in conversion.TABLES:
+            with conversion.private_open(source / f'{table}.jsonl') as output:
+                output.write(''.join(json.dumps(row)+'\n' for row in records.get(table, [])))
+        with redirect_stdout(io.StringIO()):
+            conversion.convert(source, destination)
+        manifest = json.loads((destination / 'manifest.json').read_text())
+        self.assertEqual(manifest['target_schema_version'], 6)
+        self.cli('migrations', 'apply', 'DB')
+        before_triggers = self.query("SELECT name FROM sqlite_master WHERE type='trigger' ORDER BY name")
+        for part in sorted(destination.glob('import-*.sql')):
+            self.cli('execute', 'DB', '--file', str(part), '--json', '--yes')
+        counts_sql = 'SELECT ' + ','.join(f'(SELECT count(*) FROM {table}) AS "{table}"' for table in manifest['target_counts'])
+        counts = self.query(counts_sql)[0]
+        self.assertEqual(counts, manifest['target_counts'])
+        self.assertEqual(self.query('PRAGMA foreign_key_check'), [])
+        self.assertEqual(self.query("SELECT name FROM sqlite_master WHERE type='trigger' ORDER BY name"), before_triggers)
+        self.assertEqual(self.query('SELECT id,source,source_id,source_video_id,source_part_id,source_part_index FROM vods ORDER BY id'), [
+            {'id':1,'source':'twitch','source_id':'12345678901','source_video_id':None,'source_part_id':None,'source_part_index':None},
+            {'id':2,'source':'youtube','source_id':'12345678901','source_video_id':None,'source_part_id':None,'source_part_index':None},
+            {'id':3,'source':'bilibili','source_id':'BV1234567890:111','source_video_id':'BV1234567890','source_part_id':'111','source_part_index':2},
+            {'id':4,'source':'bilibili','source_id':'BV1234567890:222','source_video_id':'BV1234567890','source_part_id':'222','source_part_index':1},
+        ])
+        self.assertEqual(self.query('SELECT recorded_at,published_at FROM vods WHERE id=2'), [{'recorded_at':'2025-08-11T22:00:00.000Z','published_at':'2026-09-01T15:00:00.000Z'}])
+        self.assertEqual(self.query('SELECT source_video_id FROM video_detections WHERE vod_id=2'), [{'source_video_id':'12345678901'}])
+        self.assertEqual(self.query('SELECT count(*) n FROM matchup_appearances'), [{'n':2}])
+        self.assertEqual(self.query('SELECT count(*) n FROM notification_outbox WHERE sent_at IS NULL'), [{'n':0}])
+        subscription = self.query(f"SELECT length(callback_token) token_length,length(secret) secret_length,callback_token!='{'a'*64}' AS token_rotated,secret!='{'b'*64}' AS secret_rotated FROM youtube_websub_subscriptions")
+        self.assertEqual(subscription,[{'token_length':64,'secret_length':64,'token_rotated':1,'secret_rotated':1}])
+        self.assertEqual(self.query('SELECT count(*) n FROM youtube_websub_subscriptions WHERE requested_at IS NOT NULL OR confirmed_at IS NOT NULL OR lease_expires_at IS NOT NULL'),[{'n':0}])
+        self.assertEqual(self.query('SELECT count(*) n FROM youtube_websub_deliveries'),[{'n':1}])
+        self.assertEqual(self.query('SELECT status,next_attempt_at FROM platform_ingestion_jobs'),[{'status':'waiting','next_attempt_at':'2026-09-08T15:00:00.000Z'}])
+        self.assertEqual(self.query("SELECT count(*) n FROM vods WHERE status='completed'"),[{'n':4}])
+        self.assertEqual(self.query('SELECT id,revision FROM public_cache_state'),[{'id':1,'revision':0}])
+        for table in ['app_users','user_accounts','user_sessions','auth_verifications','auth_flows','auth_rate_limits','clip_comments','clip_likes','clip_favorites','social_reports','social_moderation_audit']:
+            self.assertEqual(counts[table],0,table)
+        self.cli('execute','DB','--file',str(destination/'import.sql'),'--json','--yes',succeeds=False)
+        self.assertEqual(self.query(counts_sql)[0],counts)
+        self.assertEqual(self.query("SELECT name FROM sqlite_master WHERE type='trigger' ORDER BY name"),before_triggers)
+        # The full-target triggers still operate on the imported clips and public views.
+        self.query("UPDATE clips SET status='hidden' WHERE vod_id=1")
+        self.assertEqual(self.query('SELECT revision FROM public_cache_state'),[{'revision':1}])
+        self.assertEqual(self.query('SELECT count(*) n FROM detection_search'),[{'n':0}])
+        self.assertEqual(self.query('SELECT count(*) n FROM video_detections'),[{'n':3}])
+        self.cli('migrations','apply','DB',state='occupied-auth')
+        self.query("INSERT INTO app_users(id,name,email,emailVerified,createdAt,updatedAt) VALUES('existing','Existing','fixture@invalid.test',0,'2026-09-07T00:00:00.000Z','2026-09-07T00:00:00.000Z')",state='occupied-auth')
+        self.cli('execute','DB','--file',str(destination/'import.sql'),'--json','--yes',state='occupied-auth',succeeds=False)
+        self.assertEqual(self.query('SELECT count(*) n FROM app_users',state='occupied-auth'),[{'n':1}])
+        self.assertEqual(self.query('SELECT count(*) n FROM vods',state='occupied-auth'),[{'n':0}])
+        self.query('DELETE FROM app_users;DELETE FROM public_cache_state',state='occupied-auth')
+        self.cli('execute','DB','--file',str(destination/'import.sql'),'--json','--yes',state='occupied-auth',succeeds=False)
+        conversion.private_json(self.root/'proof.json',{'status':'passed','source_schema':3,'target_schema':6,
+            'counts_after_import':counts,'no_auth_imported':True,'nonempty_application_refused':True,
+            'nonempty_auth_refused':True,'missing_cache_singleton_refused':True,'foreign_key_errors':0,
+            'triggers_preserved':True,'public_visibility_trigger_verified':True,'hosted_resources_touched':False})

@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_VERSION = 3
+TARGET_SCHEMA_VERSION = 6
 REQUIRED_TABLES = ('sfde_profiles', 'streamers', 'vods', 'chunks', 'detections',
                    'notification_subscriptions', 'server_channels', 'processing_config', 'cataloger_runs')
 # Optional means absent from older source schemas, never permission-denied or silently omitted.
@@ -25,18 +26,18 @@ KEYS = {'server_channels': 'guild_id', 'processing_config': 'key',
         'youtube_websub_subscriptions': 'account_id', 'youtube_websub_deliveries': 'account_id,body_sha256'}
 
 
-def migrations():
+def migrations(version=SCHEMA_VERSION):
     # Auth is developed independently. Do not pretend this converter can migrate user sessions.
     selected = sorted(p for p in (ROOT / 'worker/migrations').glob('*.sql')
-                      if int(p.name.split('_', 1)[0]) <= SCHEMA_VERSION)
-    if {int(p.name.split('_', 1)[0]) for p in selected} != set(range(1, SCHEMA_VERSION + 1)):
+                      if int(p.name.split('_', 1)[0]) <= version)
+    if {int(p.name.split('_', 1)[0]) for p in selected} != set(range(1, version + 1)):
         raise ValueError('Incomplete supported D1 migration sequence')
     return selected
 
 
-def apply_schema(db):
+def apply_schema(db, version=SCHEMA_VERSION):
     db.execute('PRAGMA foreign_keys=ON')
-    for path in migrations():
+    for path in migrations(version):
         db.executescript('BEGIN;\n' + path.read_text() + '\nCOMMIT;')
 
 

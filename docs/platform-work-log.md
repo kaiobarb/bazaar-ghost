@@ -39,6 +39,14 @@ Production safeguards: no pushes to `main`/`dev`, no production/development reso
 
 ## Activity
 
+### 2026-09-07 — authentication and social backend deployed
+
+- Committed/pushed `1c5428c` and successfully applied remote migrations `0004`–`0006` from that exact snapshot. Deployed Worker version `55249edb-32ec-4b74-9ba8-09367b57a627`; public health confirms the exact build, `/api/auth/providers` returns enabled with no configured providers, and `/api/v1/clips` serves the real Bilibili detection backfill (17 clips).
+- The hourly auth cleanup Cron is now deployed. Outbound integrations remain disabled. This supersedes the earlier checkpoint's migration/deployment blocker; real provider OAuth and hosted social acceptance remain separate checks.
+- Added separate validation profile 2 with the visually reviewed IGD crop `[0.1458,0.4509,0.013,0.0231]` for subsequent recording checks; existing profile 1 remains unchanged.
+- Reviewed temporary Actions runner verifies exact source/chunk identity, full sampled coverage including a 2,718-second two-chunk recording, exact public detection counts, and bounded full JPEG decoding. Nine helper tests pass in the offline OCR image. The image has no host mounts or Docker socket and accepts one explicitly dispatched validation job. Actual registration/dispatch remains pending.
+- Updated snapshot imports to require target schema 6 while preserving the source schema 3 contract. Independent review passed 17 migration tests and the populated real local D1 proof, including all target table counts, derived clips, preserved triggers and unsafe-import rejection. The proposed separate remote import-proof database was not created: automatic approval review rejected creation pending explicit permission for that temporary resource; user approval has been requested.
+
 ### 2026-09-07 — remote D1 migration parser correction
 
 - A disposable table in the isolated validation database reproduced the failure: a trigger containing bare `SELECT CASE ... END` fails through the remote D1 query endpoint with `incomplete input`, while the equivalent trigger-level `WHEN` guard succeeds. The probe table was removed after each attempt. Evidence: `.ignore/platform-validation/d1-parser-probe.json`.

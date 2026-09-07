@@ -28,7 +28,7 @@ class MigrationTests(unittest.TestCase):
             restored = sqlite3.connect(':memory:')
             self.addCleanup(restored.close)
             restored.execute('PRAGMA foreign_keys=ON')
-            conversion.apply_schema(restored)
+            conversion.apply_schema(restored, conversion.TARGET_SCHEMA_VERSION)
             restored.executescript((dest / 'import.sql').read_text())
             self.assertEqual(restored.execute('SELECT username,igd FROM detections').fetchone(), ("O'Connor", 9))
             self.assertTrue(restored.execute('SELECT sent_at FROM notification_outbox').fetchone()[0])
@@ -63,7 +63,7 @@ class MultiplatformMigrationTests(unittest.TestCase):
         conversion.convert(self.source, self.destination)
         db = sqlite3.connect(':memory:')
         self.addCleanup(db.close)
-        conversion.apply_schema(db)
+        conversion.apply_schema(db, conversion.TARGET_SCHEMA_VERSION)
         for part in sorted(self.destination.glob('import-*.sql')):
             db.executescript(part.read_text())
         self.assertEqual(db.execute('PRAGMA foreign_key_check').fetchall(), [])
@@ -123,6 +123,12 @@ class MultiplatformMigrationTests(unittest.TestCase):
         self.assertNotIn('b' * 64, (self.destination / 'import.sql').read_text())
         manifest = json.loads((self.destination / 'manifest.json').read_text())
         self.assertEqual(manifest['schema_version'], 3)
+        self.assertEqual(manifest['source_schema_version'], 3)
+        self.assertEqual(manifest['target_schema_version'], 6)
+        self.assertEqual(manifest['target_counts']['clips'], 4)
+        self.assertEqual(manifest['target_counts']['app_users'], 0)
+        self.assertEqual(restored.execute('SELECT count(*) FROM clips').fetchone()[0], 4)
+        self.assertEqual(restored.execute('SELECT revision FROM public_cache_state WHERE id=1').fetchone()[0], 0)
         self.assertEqual(manifest['input_counts']['matchup_appearances'], 2)
         self.assertEqual(manifest['output_counts']['notification_outbox'], 1)
 
@@ -190,6 +196,42 @@ class MultiplatformMigrationTests(unittest.TestCase):
             restored.executescript((self.destination / 'import.sql').read_text())
         self.assertEqual(restored.execute("SELECT name FROM sqlite_master WHERE type='trigger' ORDER BY name").fetchall(), triggers)
         self.assertEqual(restored.execute('SELECT count(*) FROM vods').fetchone()[0], 4)
+
+    def test_full_target_refuses_existing_auth_or_moderation_and_uninitialized_cache(self):
+        self.snapshot(self.records())
+        conversion.convert(self.source, self.destination)
+        for occupied in [
+            "INSERT INTO app_users(id,name,email,emailVerified,createdAt,updatedAt) VALUES('existing','Existing','existing@test.invalid',0,'2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')",
+            "INSERT INTO auth_verifications(id,identifier,value,expiresAt,createdAt,updatedAt) VALUES('existing','private','private','2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')",
+            "INSERT INTO social_moderation_audit(request_id,target_type,target_id,action,reason) VALUES('existing','user','old-user','suspended','History must survive')",
+            "DELETE FROM public_cache_state",
+            "UPDATE public_cache_state SET revision=1",
+        ]:
+            with self.subTest(occupied=occupied):
+                target = sqlite3.connect(':memory:')
+                self.addCleanup(target.close)
+                conversion.apply_schema(target, conversion.TARGET_SCHEMA_VERSION)
+                target.execute(occupied)
+                before = target.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger' ORDER BY name").fetchall()
+                with self.assertRaises(sqlite3.IntegrityError):
+                    target.executescript((self.destination / 'import.sql').read_text())
+                self.assertEqual(target.execute('SELECT count(*) FROM vods').fetchone()[0], 0)
+                self.assertEqual(target.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger' ORDER BY name").fetchall(), before)
+
+    def test_old_target_schema_is_refused_and_source_auth_is_not_accepted(self):
+        self.snapshot(self.records())
+        conversion.convert(self.source, self.destination)
+        target = sqlite3.connect(':memory:')
+        self.addCleanup(target.close)
+        conversion.apply_schema(target)
+        before = target.execute("SELECT name FROM sqlite_master WHERE type='trigger' ORDER BY name").fetchall()
+        with self.assertRaises(sqlite3.OperationalError):
+            target.executescript((self.destination / 'import.sql').read_text())
+        self.assertEqual(target.execute('SELECT count(*) FROM vods').fetchone()[0], 0)
+        self.assertEqual(target.execute("SELECT name FROM sqlite_master WHERE type='trigger' ORDER BY name").fetchall(), before)
+        (self.source / 'app_users.jsonl').write_text('{}\n')
+        with self.assertRaisesRegex(ValueError, 'Unsupported snapshot tables'):
+            conversion.convert(self.source, self.destination.with_name('source-auth-refused'))
 
     def test_additive_migration_preserves_deleted_id_high_watermark(self):
         for preserve_live in [False, True]:

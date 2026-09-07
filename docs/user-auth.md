@@ -1,6 +1,6 @@
 # User authentication
 
-Status: implemented locally and under integration/adversarial testing. The deployed validation Worker does not yet expose this module. Real provider login requires dedicated OAuth application configuration and user consent; mocked provider tests do not establish hosted login success.
+Status: deployed to the dedicated validation Worker at `1c5428c`, with hosted session/social checks in progress. Existing dev/production remain unchanged. Real provider login requires dedicated OAuth application configuration and user consent; mocked provider tests do not establish hosted login success.
 
 The Worker runs Better Auth with native D1 storage. The public surface is explicitly limited to `/api/auth/*`. Application sessions use an HTTP-only, Secure, host-only cookie on HTTPS (`__Host-bazaarghost_session`), with SameSite=Lax and a seven-day expiry. The browser sends `credentials: 'include'`; it never receives an admin, catalog, or processor key. Session responses contain application identity and a session-bound CSRF token, not the bearer session token or email.
 

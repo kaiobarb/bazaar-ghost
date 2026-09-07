@@ -1,6 +1,6 @@
 # Application snapshots for Cloudflare
 
-These tools migrate the backend application data through `0003_platform_contracts.sql`. They do not export Supabase Auth users, browser sessions, or the new auth layer. A snapshot containing unknown tables or columns stops conversion for review.
+The source snapshot contract covers backend application data through `0003_platform_contracts.sql`. The generated import requires the complete target schema through `0006_public_visibility.sql`. These are separate version boundaries: the tools do not export Supabase Auth users, browser sessions, or any new user/social data. A snapshot containing unknown tables or columns stops conversion for review.
 
 Pause source cataloging, ingestion, scheduled processing and notification delivery; drain active jobs before a final export. PostgREST pagination cannot provide a cross-table transactional snapshot. The exporter makes only read requests and refuses redirects, so project credentials cannot be forwarded to a different origin.
 
@@ -23,7 +23,9 @@ Imported notification outbox rows are marked sent, and historical Twitch detecti
 
 WebSub callback tokens and signing secrets are **rotated during conversion**. The generated database and SQL contain new random capabilities; original capabilities are not copied into the target. All imported subscription request, confirmation, and expiry fields are cleared. A subscription must be renewed for the target environment before any notification can be accepted. This is recorded in the manifest and in each subscription's status text. Keep `OUTBOUND_ENABLED=false` and scheduled/catalog jobs paused until you have reviewed the target hostname, provider configuration, and processing settings. Renew subscriptions only after that review; the converter never calls the hub.
 
-Apply the supported D1 schema migrations to a fresh target before importing. The first import statement refuses a nonempty application database before changing any triggers. Import the numbered `import-0001.sql` parts in order; each part ends at a complete SQL statement and normally stays below 4 MB. A single larger statement remains whole. The complete `import.sql` is also available. Resume a partially imported database only with an explicit checkpoint review; rerunning the whole import is deliberately refused.
+Apply all target migrations `0001`–`0006` to a fresh target before importing. The first import statement checks every target application, auth and social table is empty before changing any triggers. The `public_cache_state` singleton must exist with its initialized revision of zero; it is the one expected populated application table. A target containing even an auth verification, an orphan user or moderation history is refused, as is a target still on schema3. Import the numbered `import-0001.sql` parts in order; each part ends at a complete SQL statement and normally stays below4MB. A single larger statement remains whole. The complete `import.sql` is also available. Resume a partially imported database only with an explicit checkpoint review; rerunning the whole import is deliberately refused.
+
+Conversion validates the source with schema3, emits only the explicitly supported source tables, then rehearses that exact SQL against a fresh full schema6 database. The newer clip/auth/moderation triggers remain installed while the older application triggers are temporarily suspended. Imported detections therefore create their new durable clip anchors automatically; no user account, session, like, favorite, comment or report is imported. The manifest records `source_schema_version`, `target_schema_version`, both migration hash sets, original application counts and the complete resulting `target_counts` including derived clips. The private `snapshot.sqlite` is the intermediate source-contract database, not a complete target database backup.
 
 For the dedicated validation environment, inspect the actual bound database and pass deployment preflight before any remote import:
 
@@ -33,4 +35,10 @@ python scripts/deployment_check.py validation --ref refs/heads/codex/cloudflare-
 
 Verify output table counts against `manifest.json`, run `PRAGMA foreign_key_check`, inspect source-specific video/search results and stored screenshot objects, and confirm there are no pending historical notification records. Database import does not copy R2/storage objects. No source export or hosted import is performed automatically by tests or deployment.
 
-The converter deliberately stops at schema version 3 until an explicit user/auth migration contract exists. The current tests exercise populated Twitch/YouTube/Bilibili snapshots, cross-platform appearances, paused ingestion state, capability rotation, private file permissions, deleted-ID sequence preservation in the additive D1 migration, and rejection paths.
+The tests exercise populated Twitch/YouTube/Bilibili snapshots, cross-platform appearances, paused ingestion state, capability rotation, private file permissions, deleted-ID sequence preservation, full-target trigger behavior and rejection paths. A real local workerd/D1 proof is opt-in because Wrangler needs local listeners:
+
+```sh
+RUN_LOCAL_D1_MIGRATION_TESTS=1 python -m unittest scripts.tests.test_migration_d1 -v
+```
+
+This proof generates only synthetic fixture data, applies every target migration to isolated local D1, imports the actual generated SQL, checks identities/timestamps/groups/replay state/derived clips/empty auth/foreign keys, exercises moderation against the imported data, and rejects repeat imports, existing users and missing revision state. It never exports Supabase or accesses hosted D1. Set `LOCAL_D1_ARTIFACT_DIR` to a new private directory to retain the proof manifest and captured CLI logs; otherwise the disposable databases are removed after the test.
