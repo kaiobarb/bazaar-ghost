@@ -10,10 +10,19 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from catalog_youtube import normalize_video, save_video
-from media_source import ffmpeg_input_args, resolve_media, watch_url, youtube_id
+from media_source import ffmpeg_input_args, resolve_media, watch_url, youtube_id, youtube_metadata
 
 
 class YouTubeTests(unittest.TestCase):
+    def test_extractor_error_explains_access_failure_without_leaking_upstream_secrets(self):
+        stderr = "ERROR: Sign in to confirm you’re not a bot. https://media.example/?token=secret Cookie: private"
+        with patch('media_source.subprocess.run', return_value=SimpleNamespace(returncode=1, stderr=stderr)):
+            with self.assertRaisesRegex(RuntimeError, 'requires human sign-in') as error:
+                youtube_metadata('0C6bxQsDj-s')
+        self.assertNotIn('secret', str(error.exception))
+        self.assertNotIn('private', str(error.exception))
+        self.assertNotIn('https://', str(error.exception))
+
     def metadata(self, **values):
         return {'id': '0C6bxQsDj-s', 'title': 'A build - The Bazaar', 'duration': 2718,
                 'upload_date': '20260906', 'live_status': 'not_live', **values}

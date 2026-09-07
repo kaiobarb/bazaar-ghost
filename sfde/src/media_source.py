@@ -134,6 +134,24 @@ def resolve_media(source: str, source_id: str, quality: str = '480p') -> Dict[st
                        selected['height'], selected.get('fps') or 30)
 
 
+def extraction_failure(stderr: str) -> str:
+    """Classify actionable failures without emitting upstream URLs or credentials."""
+    message = stderr.lower().replace('\u2019', "'")
+    categories = (
+        (("confirm you're not a bot", 'confirm you are not a bot'), 'provider requires human sign-in from this runner'),
+        (('sign in to confirm your age', 'age-restricted'), 'age-restricted recording'),
+        (('private video', 'members-only', 'join this channel', 'premium-only'), 'recording requires account access'),
+        (('http error 429', 'too many requests'), 'provider rate limit'),
+        (('http error 403', 'forbidden'), 'provider denied access'),
+        (('no supported javascript runtime', 'javascript runtime'), 'JavaScript runtime unavailable'),
+        (('challenge solving failed', 'signature extraction failed', 'nsig extraction failed'), 'player challenge extraction failed'),
+        (('video unavailable', 'video has been removed'), 'recording unavailable to this runner'),
+        (('timed out', 'temporary failure', 'unable to download webpage'), 'provider transport failure'),
+    )
+    return next((category for markers, category in categories if any(marker in message for marker in markers)),
+                'unclassified provider extraction failure')
+
+
 def youtube_metadata(source_id: str) -> Dict[str, Any]:
     """Fetch metadata without downloading media or using ambient user configuration."""
     url = watch_url('youtube', source_id)
@@ -141,8 +159,7 @@ def youtube_metadata(source_id: str) -> Dict[str, Any]:
                                '--dump-single-json', '--socket-timeout', '30', url],
                               capture_output=True, text=True, timeout=120, check=False)
     if response.returncode:
-        # Upstream errors can contain URLs/cookies. Keep public errors bounded.
-        raise RuntimeError(f'YouTube metadata extraction failed (exit {response.returncode})')
+        raise RuntimeError(f'YouTube metadata extraction failed: {extraction_failure(response.stderr)} (exit {response.returncode})')
     data = json.loads(response.stdout)
     if data.get('id') != source_id:
         raise ValueError('YouTube metadata identity mismatch')

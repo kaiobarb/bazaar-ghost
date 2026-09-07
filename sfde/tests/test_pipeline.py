@@ -2,6 +2,7 @@
 
 import io
 import logging
+import subprocess
 import threading
 import time
 from types import SimpleNamespace
@@ -109,6 +110,84 @@ def test_empty_decode_fails_chunk(processor):
     processor.ffmpeg_worker = lambda: None
     with pytest.raises(RuntimeError, match='no frames'):
         processor.process_vod_chunk()
+
+
+@pytest.mark.parametrize('start,end', [(0,30), (3,30), (0,7)])
+def test_clean_early_eof_cannot_complete_requested_range(processor, monkeypatch, tmp_path, start, end):
+    video = tmp_path / 'short.mp4'
+    subprocess.run([
+        'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error',
+        '-f', 'lavfi', '-i', 'color=red:s=160x90:r=10:d=6',
+        '-c:v', 'libx264', str(video),
+    ], check=True, timeout=30)
+    monkeypatch.setenv('TEST_VIDEO', str(video))
+    processor.start_time, processor.end_time = start, end
+    with pytest.raises(RuntimeError, match='coverage'):
+        processor.process_vod_chunk()
+    assert processor.backend.update_chunk.call_args.args[1] == 'failed'
+    assert not any(call.args[1] == 'completed' for call in processor.backend.update_chunk.call_args_list)
+    assert processor.ffmpeg_proc.returncode == 0
+
+
+@pytest.mark.parametrize('duration,start,end,rate', [
+    (8,0,8,0.5), (12,5,9,0.5), (7,0,7,0.5),
+    (7,6,7,0.5), (11,5,11,0.5), (7,0,7,1), (7,0,7,0.2),
+])
+def test_real_decode_covers_bounded_and_final_ranges(processor, monkeypatch, tmp_path, duration, start, end, rate):
+    video = tmp_path / 'complete.mp4'
+    subprocess.run([
+        'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error',
+        '-f', 'lavfi', '-i', f'color=red:s=160x90:r=10:d={duration}',
+        '-c:v', 'libx264', str(video),
+    ], check=True, timeout=30)
+    monkeypatch.setenv('TEST_VIDEO', str(video))
+    processor.start_time, processor.end_time = start, end
+    processor.config['processing']['frame_rate'] = rate
+    result = processor.process_vod_chunk()
+    assert result['status'] == 'completed'
+    assert result['decode_coverage']['sampled_frames'] == result['frames_processed']
+    assert result['decode_coverage']['first_sample_seconds'] == start
+    assert end - 1 / rate <= result['decode_coverage']['last_sample_seconds'] < end
+    assert processor.ffmpeg_proc.returncode == 0
+
+
+@pytest.mark.parametrize('timestamps', [[2,4,6,8], [0,2,6,8], [0,2,4,4,8]])
+def test_shifted_missing_or_duplicate_sample_timeline_fails(processor, monkeypatch, tmp_path, timestamps):
+    import sfde
+    video = tmp_path / 'unused.mp4'
+    video.touch()
+    monkeypatch.setenv('TEST_VIDEO', str(video))
+    monkeypatch.setattr(sfde.subprocess, 'Popen', Mock(return_value=SimpleNamespace(
+        stdout=io.BytesIO(), stderr=io.BytesIO(), wait=lambda **kwargs: 0, poll=lambda: 0,
+    )))
+    monkeypatch.setattr(sfde, 'timestamped_frames', lambda *args: ((b'frame', pts) for pts in timestamps))
+    processor.end_time = 10
+    with pytest.raises(RuntimeError, match='coverage'):
+        processor.process_vod_chunk()
+    assert processor.backend.update_chunk.call_args.args[1] == 'failed'
+
+
+@pytest.mark.parametrize('end,complete', [(9,True), (30,False)])
+def test_hls_coverage_preserves_seek_boundaries_and_rejects_short_playlist(processor, monkeypatch, tmp_path, end, complete):
+    playlist = tmp_path / 'video.m3u8'
+    subprocess.run([
+        'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error',
+        '-f', 'lavfi', '-i', 'color=red:s=160x90:r=10:d=12',
+        '-c:v', 'libx264', '-g', '40', '-sc_threshold', '0',
+        '-hls_time', '4', '-hls_playlist_type', 'vod', str(playlist),
+    ], check=True, timeout=30)
+    monkeypatch.setenv('TEST_VIDEO', str(playlist))
+    processor.start_time, processor.end_time = 5, end
+    if complete:
+        result = processor.process_vod_chunk()
+        assert result['decode_coverage']['first_sample_seconds'] == 5
+        assert result['decode_coverage']['last_sample_seconds'] == 7
+        assert result['frames_processed'] == 2
+    else:
+        with pytest.raises(RuntimeError, match='coverage'):
+            processor.process_vod_chunk()
+        assert processor.backend.update_chunk.call_args.args[1] == 'failed'
+    assert processor.ffmpeg_proc.returncode == 0
 
 
 def test_unclaimed_chunk_does_not_delete_or_rewrite_other_worker(processor):

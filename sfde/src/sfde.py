@@ -109,6 +109,7 @@ class SFDEProcessor:
         self.streamlink_proc: Optional[subprocess.Popen] = None
         self.ffmpeg_proc: Optional[subprocess.Popen] = None
         self.frames_processed = 0
+        self.decode_coverage: Optional[Dict[str, Any]] = None
         self.matchups_found = 0
         self.result_batch = []  # Current batch being accumulated
         self.all_detections = []  # All detections for summary export
@@ -430,6 +431,8 @@ class SFDEProcessor:
                     raise RuntimeError('Chunk processing was interrupted')
                 if self.frames_processed == 0:
                     raise RuntimeError('Decoder produced no frames')
+                if self.decode_coverage is not None and self.frames_processed != self.decode_coverage['sampled_frames']:
+                    raise RuntimeError('Decoded coverage was not fully processed')
                 status = 'completed'
 
                 # Record telemetry metrics
@@ -438,6 +441,7 @@ class SFDEProcessor:
                 self.logger.info('chunk_finished', extra={
                     'event': 'chunk_finished', 'status': status,
                     'frames_processed': self.frames_processed, 'matchups_found': self.matchups_found,
+                    'decode_coverage': self.decode_coverage,
                     'duration_ms': round(duration_ms, 2),
                 })
                 metric_attrs = {
@@ -478,6 +482,7 @@ class SFDEProcessor:
                     "start_time": self.start_time,
                     "end_time": self.end_time,
                     "quality": self.quality,
+                    "decode_coverage": self.decode_coverage,
                 }
 
             except Exception as e:
@@ -539,7 +544,10 @@ class SFDEProcessor:
 
     def ffmpeg_worker(self) -> None:
         """Decode frames and enqueue each image together with its timestamp."""
-        cmd = ['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'info']
+        # Limit demuxing before sampling. An output -t is rounded to the encoder's
+        # coarse FPS time base and can discard a valid final partial interval.
+        cmd = ['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'info',
+               '-t', str(self.end_time - self.start_time)]
         if self.test_mode:
             directory = self.config['test_mode']['data_directory']
             if not os.path.isabs(directory):
@@ -555,25 +563,60 @@ class SFDEProcessor:
         width, height = QUALITY_RESOLUTIONS[self.quality]
         w, h, x, y = self._combined_crop
         filters = (
-            f'scale={width}:{height},fps={self.config["processing"]["frame_rate"]},'
+            f'scale={width}:{height},fps={self.config["processing"]["frame_rate"]}:eof_action=pass,'
             f'crop={w}:{h}:{x}:{y}:exact=1,showinfo'
         )
         cmd += [
-            '-t', str(self.end_time - self.start_time), '-an', '-vf', filters,
+            '-an', '-vf', filters,
             '-fps_mode', 'passthrough', '-f', 'image2pipe', '-vcodec', 'mjpeg', 'pipe:1',
         ]
         self.ffmpeg_proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
+        interval = 1 / self.config['processing']['frame_rate']
+        tolerance = max(0.001, interval * 1e-6)  # showinfo prints rounded decimal PTS.
+        sample_count, first_pts, last_pts = 0, None, None
         for frame_data, pts in timestamped_frames(self.ffmpeg_proc.stdout, self.ffmpeg_proc.stderr, self.logger):
             timestamp = self.start_time + int(pts)
-            if self.start_time <= timestamp < self.end_time:
+            if 0 <= pts < self.end_time - self.start_time:
+                # Validate the sampled timeline before integer conversion for storage.
+                # Missing/duplicate samples must not be hidden by a plausible total count.
+                if last_pts is None:
+                    first_pts = pts
+                    if abs(pts) > tolerance:
+                        raise RuntimeError(f'Incomplete decoder coverage: first sample starts at offset {pts:g}s')
+                elif abs(pts - last_pts - interval) > tolerance:
+                    raise RuntimeError(f'Incomplete decoder coverage: sample gap {pts - last_pts:g}s, expected {interval:g}s')
+                last_pts = pts
+                sample_count += 1
                 self._put(self.frame_queue, (frame_data, timestamp))
                 record_gauge("queue_depth", 1, {"streamer": self.streamer or "unknown", "quality": self.formatted_quality})
         code = self.ffmpeg_proc.wait(timeout=10)
         if code:
             raise RuntimeError(f'FFmpeg exited with code {code}')
+        # eof_action=pass retains the final partial sampling interval. Require
+        # every tick in [start,end), including that interval, after a clean EOF.
+        duration = self.end_time - self.start_time
+        minimum_samples = max(1, math.ceil(duration / interval - 1e-8))
+        if sample_count < minimum_samples:
+            raise RuntimeError(
+                f'Incomplete decoder coverage: {sample_count} samples, expected at least '
+                f'{minimum_samples} for [{self.start_time},{self.end_time}) at '
+                f'{self.config["processing"]["frame_rate"]:g} fps; last offset {last_pts}'
+            )
+        self.decode_coverage = {
+            'sampled_frames': sample_count,
+            'minimum_expected_frames': minimum_samples,
+            'sample_interval_seconds': interval,
+            'first_sample_seconds': self.start_time + first_pts,
+            'last_sample_seconds': self.start_time + last_pts,
+            'requested_start_seconds': self.start_time,
+            'requested_end_seconds': self.end_time,
+        }
+        self.logger.info('decode_coverage_verified', extra={
+            'event': 'decode_coverage_verified', **self.decode_coverage,
+        })
 
     def _decode_jpeg(self, frame_data: bytes) -> Optional[np.ndarray]:
         """Decode JPEG bytes to a BGR numpy array.
@@ -777,6 +820,7 @@ class SFDEProcessor:
                     'vod_pk': self.vod_pk, 'streamer': self.streamer,
                     'start_time': self.start_time, 'end_time': self.end_time, 'quality': self.formatted_quality,
                     'frames_processed': self.frames_processed, 'matchups_found': len(self.all_detections),
+                    'decode_coverage': self.decode_coverage,
                     'detections': self.all_detections,
                 }, destination, indent=2)
         except OSError:
