@@ -236,7 +236,7 @@ export class Twitch {
       for (const edge of edges) {
         const v = await one(
           this.env,
-          "SELECT id FROM vods WHERE source_id=?",
+          "SELECT id FROM vods WHERE source='twitch' AND source_id=?",
           edge.node.id,
         );
         if (v) await this.env.JOBS.send({ type: "plan", id: v.id });
@@ -279,7 +279,7 @@ export class Twitch {
   async availability(after = 0) {
     const batch = await rows(
       this.env,
-      "SELECT id,source_id FROM vods WHERE id>? AND availability!='unavailable' ORDER BY id LIMIT 100",
+      "SELECT id,source_id FROM vods WHERE source='twitch' AND id>? AND availability!='unavailable' ORDER BY id LIMIT 100",
       after,
     );
     if (!batch.length) return;

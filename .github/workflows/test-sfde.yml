@@ -7,6 +7,7 @@ on:
     branches: [main, dev]
     paths: ["sfde/**", "worker/**", "package*.json", "wrangler*.jsonc", "vitest.config.ts", "tsconfig.json", "scripts/**", ".github/workflows/**"]
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 jobs:

@@ -5,6 +5,13 @@ await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 beforeEach(async () => {
   // Explicit cleanup avoids resetting the runtime's own Durable Objects between tests.
   const tables = [
+    "mutation_checks",
+    "matchup_review_events",
+    "matchup_appearances",
+    "matchup_groups",
+    "youtube_websub_deliveries",
+    "youtube_websub_subscriptions",
+    "platform_ingestion_jobs",
     "chat_mentions",
     "notification_deliveries",
     "notification_outbox",
@@ -13,6 +20,7 @@ beforeEach(async () => {
     "search_names",
     "chunks",
     "vods",
+    "platform_accounts",
     "notification_subscriptions",
     "server_channels",
     "streamers",

@@ -10,6 +10,8 @@ import {
   decodeRow,
   external,
 } from "./http";
+import { dispatchBranch, source, videoIdentity } from "./sources";
+import { atomic } from "./atomic";
 
 export function normalizeRanges(
   input: unknown,
@@ -63,20 +65,24 @@ export function missingChunks(
 export async function vodDetails(
   env: Env,
   sourceId: string,
+  platform = "twitch",
 ): Promise<Record<string, any>> {
+  videoIdentity(source(platform),sourceId);
   const vod = await one(
     env,
-    "SELECT v.*,s.processing_enabled,s.sfde_profile_id FROM vods v JOIN streamers s ON s.id=v.streamer_id WHERE source_id=?",
-    sourceId,
+    "SELECT * FROM vod_processing_context WHERE source=? AND source_id=?",
+    platform, sourceId,
   );
   if (!vod) throw new HttpError(404, "VOD not found");
   const profile = await one(
     env,
     "SELECT * FROM sfde_profiles WHERE id=?",
-    vod.sfde_profile_id,
+    vod.effective_profile_id,
   );
   return {
     ...decodeRow(vod),
+    profile: profile && decodeRow(profile),
+    old_templates: Boolean(vod.old_templates),
     streamers: {
       processing_enabled: Boolean(vod.processing_enabled),
       sfde_profiles: profile && decodeRow(profile),
@@ -86,10 +92,11 @@ export async function vodDetails(
 export async function plan(
   env: Env,
   vodId: number,
+  checks: Array<{sql:string;args:unknown[]}> = [],
 ): Promise<Record<string, any>[]> {
-  const vod = await one(
+  let vod = await one(
     env,
-    "SELECT v.*,s.processing_enabled FROM vods v JOIN streamers s ON s.id=v.streamer_id WHERE v.id=?",
+    "SELECT * FROM vod_processing_context WHERE id=?",
     vodId,
   );
   if (
@@ -112,17 +119,19 @@ export async function plan(
     );
     const index = existing.reduce((m, c) => Math.max(m, c.chunk_index), -1) + 1;
     if (!gaps.length) break;
+    const priority = vod.source === "twitch" ? 0 : -10;
     try {
-      await env.DB.batch([
+      await atomic(env,[...checks,{sql:"SELECT EXISTS(SELECT 1 FROM vod_processing_context WHERE id=? AND duration_seconds=? AND bazaar_chapters=? AND processing_enabled=1 AND ready_for_processing=1 AND availability='available')",args:[vodId,vod.duration_seconds,vod.bazaar_chapters]}],[
         ...gaps.map(([a, b], i) =>
           statement(
             env,
-            "INSERT INTO chunks(id,vod_id,start_seconds,end_seconds,chunk_index) VALUES(?,?,?,?,?)",
+            "INSERT INTO chunks(id,vod_id,start_seconds,end_seconds,chunk_index,priority) VALUES(?,?,?,?,?,?)",
             crypto.randomUUID(),
             vodId,
             a,
             b,
             index + i,
+            priority,
           ),
         ),
         statement(
@@ -133,8 +142,9 @@ export async function plan(
       ]);
       break;
     } catch (error) {
-      if (attempt === 2 || !String(error).includes("overlapping chunk"))
-        throw error;
+      if (attempt === 2 || !(String(error).includes("overlapping chunk") || (error instanceof HttpError && error.status===409))) throw error;
+      vod = await one(env,"SELECT * FROM vod_processing_context WHERE id=?",vodId);
+      if (!vod || !vod.processing_enabled || !vod.ready_for_processing || vod.availability !== "available") return [];
     }
   }
   return rows(
@@ -157,14 +167,11 @@ export async function recover(env: Env) {
 export async function dispatch(env: Env, vodId: number) {
   const pending = await plan(env, vodId);
   if (!pending.length) return [];
-  requireValue(
-    env.ENVIRONMENT === "dev" || env.ENVIRONMENT === "production",
-    "Dispatch requires dev or production environment",
-  );
+  const branch = dispatchBranch(env.ENVIRONMENT);
   if (env.OUTBOUND_ENABLED !== "true" || !env.GITHUB_TOKEN)
     throw new HttpError(503, "GitHub dispatch is not configured");
-  const vod = await one(env, "SELECT source_id FROM vods WHERE id=?", vodId);
-  const details = await vodDetails(env, vod!.source_id);
+  const vod = await one(env, "SELECT source,source_id FROM vods WHERE id=?", vodId);
+  const details = await vodDetails(env, vod!.source_id, vod!.source);
   const configured = await one(
     env,
     "SELECT value FROM processing_config WHERE key='max_concurrent_chunks'",
@@ -208,15 +215,13 @@ export async function dispatch(env: Env, vodId: number) {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            ref: env.ENVIRONMENT === "dev" ? "dev" : "main",
+            ref: branch,
             inputs: {
               vod_id: vod!.source_id,
+              source: vod!.source,
               chunk_uuids: JSON.stringify(ids),
               queued_at: queuedAt,
-              old_templates: String(
-                Date.parse(details.published_at) <
-                  Date.parse("2025-08-12T00:00:00Z"),
-              ),
+              old_templates: String(details.old_templates),
               sfde_profile: JSON.stringify(details.streamers.sfde_profiles),
               environment: env.ENVIRONMENT,
             },
@@ -255,7 +260,7 @@ export async function claim(
   const chunk = await one(
     env,
     `UPDATE chunks SET status='processing',claim_token=?,attempt_count=attempt_count+1,started_at=?,updated_at=?,lease_expires_at=?,last_error=NULL,completed_at=NULL
-    WHERE id=? AND status IN('pending','queued') AND (? IS NULL OR (status='queued' AND queued_at=?)) AND EXISTS(SELECT 1 FROM vods v JOIN streamers s ON s.id=v.streamer_id WHERE v.id=chunks.vod_id AND s.processing_enabled=1 AND v.ready_for_processing=1 AND v.availability='available') RETURNING id`,
+    WHERE id=? AND status IN('pending','queued') AND (? IS NULL OR (status='queued' AND queued_at=?)) AND EXISTS(SELECT 1 FROM vod_processing_context v WHERE v.id=chunks.vod_id AND v.processing_enabled=1 AND v.ready_for_processing=1 AND v.availability='available') RETURNING id`,
     token,
     time,
     time,
@@ -270,7 +275,7 @@ export async function owned(env: Env, id: string, token: string | null) {
   if (!token) throw new HttpError(409, "Claim token required");
   const chunk = await one(
     env,
-    "SELECT c.*,v.source_id,s.login AS streamer FROM chunks c JOIN vods v ON v.id=c.vod_id JOIN streamers s ON s.id=v.streamer_id WHERE c.id=? AND c.claim_token=? AND c.status='processing' AND c.lease_expires_at>?",
+    "SELECT c.*,v.source,v.source_id,v.creator_name AS streamer FROM chunks c JOIN vod_processing_context v ON v.id=c.vod_id WHERE c.id=? AND c.claim_token=? AND c.status='processing' AND c.lease_expires_at>?",
     uuid(id),
     token,
     now(),

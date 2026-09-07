@@ -7,10 +7,15 @@ import os
 import time
 from urllib.error import HTTPError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import NAMESPACE_URL, uuid5
 
 from telemetry import create_span, record_counter, record_histogram
+
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError('Backend redirects are not permitted')
 
 
 class BackendClient:
@@ -39,7 +44,7 @@ class BackendClient:
         payload = data if raw else None if data is None else json.dumps(data).encode()
         request = Request(self.url + '/api/processor/' + path, method=method, headers=headers, data=payload)
         try:
-            with urlopen(request, timeout=self.timeout) as response:
+            with build_opener(NoRedirect).open(request, timeout=self.timeout) as response:
                 return json.load(response)
         except HTTPError as error:
             # Never include authorization headers or potentially sensitive response bodies.

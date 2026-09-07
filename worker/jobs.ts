@@ -26,7 +26,7 @@ export async function processPending(env: Env) {
   await recover(env);
   const vods = await rows(
     env,
-    `SELECT v.id FROM vods v JOIN streamers s ON s.id=v.streamer_id WHERE s.processing_enabled=1 AND v.ready_for_processing=1 AND v.availability='available' AND json_array_length(v.bazaar_chapters)>0 AND v.status IN('pending','partial','failed') AND
+    `SELECT v.id FROM vod_processing_context v WHERE v.processing_enabled=1 AND v.ready_for_processing=1 AND v.availability='available' AND json_array_length(v.bazaar_chapters)>0 AND v.status IN('pending','partial','failed') AND
     (NOT EXISTS(SELECT 1 FROM chunks WHERE vod_id=v.id) OR EXISTS(SELECT 1 FROM chunks WHERE vod_id=v.id AND status='pending')) ORDER BY v.published_at DESC LIMIT 3`,
   );
   for (const v of vods) await env.JOBS.send({ type: "process", id: v.id });
@@ -54,7 +54,7 @@ const CHAT_QUERY = `query VideoCommentsByOffsetOrCursor($videoID: ID!, $contentO
 async function chat(env: Env, job: Job) {
   const vod = await one(
     env,
-    "SELECT id,source_id FROM vods WHERE id=?",
+    "SELECT id,source_id FROM vods WHERE id=? AND source='twitch'",
     job.id,
   );
   if (!vod) return;
@@ -132,7 +132,7 @@ export async function handleJob(env: Env, job: Job) {
     case "chat-all": {
       const vods = await rows(
         env,
-        "SELECT id FROM vods WHERE id>? AND published_at>=? AND availability='available' ORDER BY id LIMIT 100",
+        "SELECT id FROM vods WHERE source='twitch' AND id>? AND published_at>=? AND availability='available' ORDER BY id LIMIT 100",
         job.after || 0,
         new Date(Date.now() - 86400_000).toISOString(),
       );

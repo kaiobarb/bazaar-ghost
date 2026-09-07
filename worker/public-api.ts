@@ -1,8 +1,10 @@
 import { decodeRow, HttpError, integer, one, requireValue, rows } from "./http";
 import { search } from "./search";
+import { videoSearch, appearanceSearch } from "./appearances";
 
 // Deliberately bounded compatibility for this application's read-only PostgREST contracts.
 const views = new Set([
+  "video_detections",
   "streamers",
   "streamers_with_detections",
   "vod_stats",
@@ -130,6 +132,8 @@ export async function publicRead(req: Request, env: Env, view: string) {
   return Response.json(results, { headers });
 }
 export async function rpc(env: Env, name: string, input: Record<string, any>) {
+  if (name === "search_video_detections") return videoSearch(env,input);
+  if (name === "search_matchup_appearances") return appearanceSearch(env,input);
   if (name === "fuzzy_search_detections") return search(env, input);
   if (name === "get_global_stats")
     return one(

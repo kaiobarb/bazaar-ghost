@@ -5,6 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
 WORKDIR /app
+COPY --from=denoland/deno:bin-2.9.5 /deno /usr/local/bin/deno
 RUN --mount=type=cache,target=/var/cache/apt \
     --mount=type=cache,target=/var/lib/apt/lists \
     apt-get update && apt-get install -y --no-install-recommends ffmpeg libglib2.0-0 libgomp1 \
@@ -18,6 +19,7 @@ USER sfde
 RUN python -c "from paddleocr import PaddleOCR; PaddleOCR(text_detection_model_name='PP-OCRv5_mobile_det', text_recognition_model_name='en_PP-OCRv5_mobile_rec', use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False)"
 COPY --chown=sfde:sfde config.yaml .
 COPY --chown=sfde:sfde src/ ./src/
+COPY --chown=sfde:sfde streamlink_plugins/ ./streamlink_plugins/
 COPY --chown=sfde:sfde templates/ ./templates/
 ENTRYPOINT ["python", "-u", "src/sfde.py"]
 

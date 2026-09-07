@@ -25,6 +25,7 @@ os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
 
 # Import worker modules
 from video import timestamped_frames
+from media_source import ffmpeg_input_args, resolve_media, validate_source_id
 from frame_processor import FrameProcessor
 from backend_client import BackendClient
 from json_logger import JSONFormatter
@@ -83,6 +84,9 @@ class SFDEProcessor:
 
         # Set processing parameters from chunk details
         self.vod_id = chunk_details["vod_id"]
+        self.vod_pk = chunk_details.get("vod_pk")
+        self.source = chunk_details.get("source", "twitch")
+        validate_source_id(self.source, self.vod_id)
         self.start_time = chunk_details["start_seconds"]
         self.end_time = chunk_details["end_seconds"]
         self.streamer = chunk_details.get("streamer")
@@ -528,17 +532,10 @@ class SFDEProcessor:
         Piping a Streamlink segment rebases timestamps at a rounded segment
         boundary. Seeking the playlist itself preserves the requested offset.
         """
-        self.streamlink_proc = subprocess.Popen([
-            'streamlink', '--no-config', '--stream-url',
-            f'https://twitch.tv/videos/{self.vod_id}', self.formatted_quality,
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        stdout, _ = self.streamlink_proc.communicate(timeout=60)
-        if self.streamlink_proc.returncode:
-            raise RuntimeError(f'Streamlink resolution failed with code {self.streamlink_proc.returncode}')
-        url = stdout.decode('utf-8').strip()
-        if not url.startswith(('https://', 'http://')) or '\n' in url:
-            raise ValueError('Streamlink did not return an HTTP playlist URL')
-        return url
+        media = resolve_media(self.source, self.vod_id, self.formatted_quality)
+        self._media_input_args = ffmpeg_input_args(media)
+        self.logger.info('Media resolved with %s (%sp input)', media['resolver'], media['height'])
+        return media['url']
 
     def ffmpeg_worker(self) -> None:
         """Decode frames and enqueue each image together with its timestamp."""
@@ -552,7 +549,9 @@ class SFDEProcessor:
                 raise FileNotFoundError(f'Test video not found: {input_file}')
             cmd += ['-ss', str(self.start_time), '-i', input_file]
         else:
-            cmd += ['-rw_timeout', '30000000', '-ss', str(self.start_time), '-i', self._resolve_stream()]
+            url = self._resolve_stream()
+            cmd += self._media_input_args
+            cmd += ['-rw_timeout', '30000000', '-ss', str(self.start_time), '-i', url]
         width, height = QUALITY_RESOLUTIONS[self.quality]
         w, h, x, y = self._combined_crop
         filters = (
@@ -774,7 +773,8 @@ class SFDEProcessor:
             os.makedirs(output_dir, exist_ok=True)
             with open(os.path.join(output_dir, f'detections_{self.chunk_id}.json'), 'w') as destination:
                 json.dump({
-                    'chunk_id': self.chunk_id, 'vod_id': self.vod_id, 'streamer': self.streamer,
+                    'chunk_id': self.chunk_id, 'vod_id': self.vod_id, 'source': self.source,
+                    'vod_pk': self.vod_pk, 'streamer': self.streamer,
                     'start_time': self.start_time, 'end_time': self.end_time, 'quality': self.formatted_quality,
                     'frames_processed': self.frames_processed, 'matchups_found': len(self.all_detections),
                     'detections': self.all_detections,

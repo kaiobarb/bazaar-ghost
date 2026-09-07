@@ -1,0 +1,72 @@
+name: Ingest platforms
+on:
+  workflow_call:
+    inputs:
+      source:
+        type: string
+        default: none
+      identity:
+        type: string
+        default: ''
+      discovery:
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Optional account enrollment platform
+        type: choice
+        options: [none, youtube, bilibili]
+        default: none
+      identity:
+        description: Optional YouTube UC ID/@handle/URL or Bilibili uploader UID
+        type: string
+      discovery:
+        description: Include automatic discovery of new Bazaar creators
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: platform-ingestion-validation
+  cancel-in-progress: false
+jobs:
+  ingest:
+    if: github.ref == 'refs/heads/codex/cloudflare-validation'
+    runs-on: ubuntu-latest
+    environment: validation
+    timeout-minutes: 35
+    env:
+      ENVIRONMENT: validation
+      BAZAARGHOST_API_URL: ${{ vars.BAZAARGHOST_API_URL }}
+      BAZAARGHOST_CATALOG_KEY: ${{ secrets.BAZAARGHOST_CATALOG_KEY }}
+      SOURCE: ${{ inputs.source || 'none' }}
+      IDENTITY: ${{ inputs.identity }}
+      DISCOVERY: ${{ inputs.discovery }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verify backend environment
+        run: python scripts/backend_environment.py
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: pip install 'yt-dlp[default]>=2026.7.4,<2027'
+      - name: Enroll optional account
+        if: inputs.identity != '' && inputs.source != 'none'
+        run: python scripts/platform_ingestion.py enroll --source "$SOURCE" --identity "$IDENTITY"
+      - name: Discover, poll, wait for archives, and dispatch SFDE
+        shell: bash
+        run: |
+          args=(run --limit 30 --seconds 1200 --dispatch)
+          if [ "$DISCOVERY" != true ]; then args+=(--no-discovery); fi
+          set -o pipefail
+          python scripts/platform_ingestion.py "${args[@]}" | tee ingestion-result.jsonl
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: platform-ingestion
+          path: ingestion-result.jsonl
+          if-no-files-found: ignore

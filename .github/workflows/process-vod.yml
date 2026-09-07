@@ -5,9 +5,14 @@ on:
   workflow_dispatch:
     inputs:
       vod_id:
-        description: Twitch VOD ID
+        description: Platform video ID
         required: true
         type: string
+      source:
+        description: Video platform
+        type: choice
+        options: [twitch, youtube, bilibili]
+        default: twitch
       quality:
         description: Preferred stream quality
         default: "480p"
@@ -16,8 +21,8 @@ on:
         description: Environment
         required: true
         type: choice
-        options: [dev, production]
-        default: dev
+        options: [validation, dev, production]
+        default: validation
       sfde_profile:
         description: Optional profile JSON override (defaults to the streamer's profile)
         type: string
@@ -41,6 +46,10 @@ permissions:
 
 jobs:
   prepare:
+    if: >-
+      (inputs.environment == 'validation' && github.ref == 'refs/heads/codex/cloudflare-validation') ||
+      (inputs.environment == 'dev' && github.ref == 'refs/heads/dev') ||
+      (inputs.environment == 'production' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     timeout-minutes: 5
@@ -49,6 +58,8 @@ jobs:
       BAZAARGHOST_API_URL: ${{ vars.BAZAARGHOST_API_URL }}
       BAZAARGHOST_PROCESSOR_KEY: ${{ secrets.BAZAARGHOST_PROCESSOR_KEY }}
       VOD_ID: ${{ inputs.vod_id }}
+      VIDEO_SOURCE: ${{ inputs.source || 'twitch' }}
+      ENVIRONMENT: ${{ inputs.environment }}
       INPUT_CHUNKS: ${{ inputs.chunk_uuids }}
       REQUESTED_QUALITY: ${{ inputs.quality }}
       SFDE_PROFILE: ${{ inputs.sfde_profile }}
@@ -65,7 +76,12 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - run: pip install 'streamlink>=8,<9'
+      - name: Verify backend environment
+        run: python scripts/backend_environment.py
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: pip install 'streamlink>=8,<9' 'yt-dlp[default]>=2026.7.4,<2027'
       - id: prepare
         run: python scripts/vod_workflow.py prepare
       - if: failure()
@@ -73,12 +89,13 @@ jobs:
 
   process-chunk:
     needs: prepare
-    if: needs.prepare.outputs.chunk_uuids != '[]'
+    if: needs.prepare.result == 'success' && needs.prepare.outputs.chunk_uuids != '[]'
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
+      max-parallel: 4
       matrix:
         chunk_id: ${{ fromJson(needs.prepare.outputs.chunk_uuids) }}
     env:
@@ -91,10 +108,12 @@ jobs:
       SFDE_PROFILE: ${{ needs.prepare.outputs.sfde_profile }}
       OLD_TEMPLATES: ${{ needs.prepare.outputs.old_templates }}
       ENVIRONMENT: ${{ inputs.environment }}
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.GRAFANA_OTLP_ENDPOINT }}
-      OTEL_EXPORTER_OTLP_HEADERS: Authorization=Basic ${{ secrets.GRAFANA_OTLP_AUTH }}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${{ inputs.environment != 'validation' && secrets.GRAFANA_OTLP_ENDPOINT || '' }}
+      OTEL_EXPORTER_OTLP_HEADERS: ${{ inputs.environment != 'validation' && format('Authorization=Basic {0}', secrets.GRAFANA_OTLP_AUTH) || '' }}
     steps:
       - uses: actions/checkout@v5
+      - name: Verify backend environment
+        run: python scripts/backend_environment.py
       - uses: docker/setup-buildx-action@v3
         if: ${{ !inputs.local }}
       - uses: docker/build-push-action@v6

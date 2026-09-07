@@ -1,6 +1,6 @@
 # BazaarGhost
 
-BazaarGhost finds opponents in Twitch VODs of [The Bazaar](https://www.thebazaar.gg/) and makes their appearances searchable at [bazaarghost.stream](https://bazaarghost.stream). This repository contains the Cloudflare backend, Python OCR pipeline, and GitHub Actions. The frontend lives separately.
+BazaarGhost finds opponents in Twitch VODs and published YouTube/Bilibili recordings of [The Bazaar](https://www.thebazaar.gg/) and makes their appearances searchable at [bazaarghost.stream](https://bazaarghost.stream). This repository contains the Cloudflare backend, Python OCR pipeline, and GitHub Actions. The frontend lives separately.
 
 A detection means a sampled frame contained a rank emblem and an opponent name that passed OCR validation. It records the VOD, absolute second, rank, confidence, screenshot, truncation flags, and optional in-game day. It is not a complete match history.
 
@@ -11,6 +11,8 @@ A detection means a sampled frame contained a rank emblem and an opponent name t
 3. Signed EventSub events or scheduled work update the catalog. Eligible chunks dispatch to **GitHub Actions**.
 4. Each SFDE container atomically claims a chunk with an attempt token. Streamlink resolves the rendition; FFmpeg samples at 0.5 FPS; OpenCV and PaddleOCR extract the opponent and optional day.
 5. Required screenshots upload to R2 before detections enter D1. Completion waits for the entire pipeline to drain. Search hides unavailable VODs and low-confidence detections.
+
+YouTube and Bilibili use independent creator accounts, durable discovery/readiness jobs, and source-specific media resolution. Bilibili parts are identified by BV/CID, so reordered parts keep their identity. Reviewed cross-platform appearances can be grouped without merging raw detections. The existing Twitch frontend contracts remain separate. See [platform ingestion](docs/platform-ingestion.md).
 
 ## Local development
 
@@ -32,7 +34,7 @@ python3 -m unittest discover -s scripts/tests
 npm run build  # dry-run bundle; does not deploy
 ```
 
-See [Cloudflare setup, API contracts, migration and cutover](docs/cloudflare-migration.md) for the real local OCR smoke test and deployment prerequisites. See [SFDE usage](sfde/README.md) for processor details. Deployment is manual and gated off until explicitly activated; this migration has not been deployed.
+See [Cloudflare setup, API contracts, migration and cutover](docs/cloudflare-migration.md) for the real local OCR smoke test and deployment prerequisites. See [SFDE usage](sfde/README.md) for processor details. The dedicated `codex/cloudflare-validation` branch and GitHub `validation` environment isolate platform testing from existing dev/production. See [work log and verification](docs/platform-work-log.md) for current deployment status.
 
 ## Layout
 

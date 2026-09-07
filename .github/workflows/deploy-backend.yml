@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   deploy:
-    # Deliberately disabled until resources, credentials and cutover are reviewed.
+    # Existing dev/production cutover remains gated. Validation has its own workflow.
     if: >-
       vars.CLOUDFLARE_BACKEND_ENABLED == 'true' &&
       ((inputs.environment == 'dev' && github.ref == 'refs/heads/dev') ||
@@ -36,6 +36,6 @@ jobs:
       - run: cp .dev.vars.example .dev.vars
       - run: npm run types
       - run: npm run typecheck && npm test
-      - run: python scripts/deployment_check.py "$TARGET_ENV"
+      - run: python scripts/deployment_check.py "$TARGET_ENV" --ref "$GITHUB_REF"
       - run: npx wrangler d1 migrations apply DB --remote --config "wrangler.$TARGET_ENV.jsonc"
       - run: npx wrangler deploy --config "wrangler.$TARGET_ENV.jsonc"

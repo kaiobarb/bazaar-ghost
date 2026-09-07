@@ -25,6 +25,10 @@ import {
   scheduled,
   type Job,
 } from "./jobs";
+import { catalogRoute } from "./platforms";
+import { youtubeWebhook } from "./youtube-websub";
+import { source, videoIdentity } from "./sources";
+import { linkAppearances, unlinkAppearance } from "./appearances";
 
 async function eventsub(req: Request, env: Env) {
   const raw = await readText(req),
@@ -99,7 +103,7 @@ async function route(req: Request, env: Env): Promise<Response> {
     path = url.pathname;
   if (path === "/health" && req.method === "GET") {
     await one(env, "SELECT 1");
-    return Response.json({ ok: true, environment: env.ENVIRONMENT });
+    return Response.json({ ok: true, environment: env.ENVIRONMENT, build_commit: env.BUILD_COMMIT });
   }
   if (
     path.startsWith("/storage/v1/object/public/detections/") ||
@@ -149,6 +153,11 @@ async function route(req: Request, env: Env): Promise<Response> {
     req.headers.has("Twitch-Eventsub-Message-Type")
   )
     return eventsub(req, env);
+  if (path === "/functions/v1/youtube-webhook") return youtubeWebhook(req, env);
+  if (path.startsWith("/api/catalog/")) {
+    if (!(await authorized(req, env.CATALOG_KEY))) throw new HttpError(401,"Unauthorized");
+    return catalogRoute(req,env);
+  }
   const processor = path.startsWith("/api/processor/");
   if (!(await authorized(req, processor ? env.PROCESSOR_KEY : env.ADMIN_KEY)))
     throw new HttpError(401, "Unauthorized");
@@ -156,7 +165,7 @@ async function route(req: Request, env: Env): Promise<Response> {
     const prefix = "/api/processor";
     if (path === `${prefix}/vod` && req.method === "GET")
       return Response.json(
-        await vodDetails(env, url.searchParams.get("source_id") || ""),
+        await vodDetails(env, url.searchParams.get("source_id") || "", url.searchParams.get("source") || "twitch"),
       );
     if (path === `${prefix}/chunks` && req.method === "GET") {
       const vodId = integer(
@@ -217,7 +226,7 @@ async function route(req: Request, env: Env): Promise<Response> {
       if (!action && req.method === "GET") {
         const chunk = await one(
           env,
-          "SELECT c.id,c.start_seconds,c.end_seconds,c.status,v.source_id AS vod_id,s.login AS streamer FROM chunks c JOIN vods v ON v.id=c.vod_id JOIN streamers s ON s.id=v.streamer_id WHERE c.id=?",
+          "SELECT c.id,c.start_seconds,c.end_seconds,c.status,c.frames_processed,c.detections_count,c.last_error,c.attempt_count,c.started_at,c.completed_at,c.quality,v.id AS vod_pk,v.source,v.source_id AS vod_id,v.creator_name AS streamer FROM chunks c JOIN vod_processing_context v ON v.id=c.vod_id WHERE c.id=?",
           id,
         );
         if (!chunk) throw new HttpError(404, "Chunk not found");
@@ -252,6 +261,8 @@ async function route(req: Request, env: Env): Promise<Response> {
   }
   if (req.method !== "POST") throw new HttpError(405, "Method not allowed");
   const input = await body(req);
+  if (path === "/api/admin/appearances/link") return Response.json(await linkAppearances(env,input));
+  if (path === "/api/admin/appearances/unlink") return Response.json(await unlinkAppearance(env,input));
   if (path === "/api/admin/retry-vod")
     return Response.json(await retryVod(env, input));
   if (path === "/api/admin/streamer")
@@ -259,12 +270,13 @@ async function route(req: Request, env: Env): Promise<Response> {
   if (path === "/api/admin/profile")
     return Response.json(await setProfile(env, input));
   if (path === "/functions/v1/process-vod") {
+    if (input.expected_environment != null && input.expected_environment !== env.ENVIRONMENT) throw new HttpError(409,"Environment mismatch");
+    const platform = source(input.source ?? "twitch");
     requireValue(
       (input.vod_id == null) !== (input.source_id == null),
       "Provide one vod_id or source_id",
     );
-    if (input.source_id != null)
-      requireValue(/^\d+$/.test(String(input.source_id)), "Invalid source_id");
+    if (input.source_id != null) videoIdentity(platform, String(input.source_id));
     const vod =
       input.vod_id != null
         ? await one(
@@ -274,8 +286,8 @@ async function route(req: Request, env: Env): Promise<Response> {
           )
         : await one(
             env,
-            "SELECT id FROM vods WHERE source_id=?",
-            String(input.source_id),
+            "SELECT id FROM vods WHERE source=? AND source_id=?",
+            platform, String(input.source_id),
           );
     if (!vod) throw new HttpError(404, "VOD not found");
     requireValue(

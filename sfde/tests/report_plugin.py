@@ -193,6 +193,7 @@ def pytest_sessionfinish(session, exitstatus):
 
     report_text = "\n".join(lines) + "\n"
 
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
     with open(REPORT_PATH, "w") as f:
         f.write(report_text)
 

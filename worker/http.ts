@@ -127,6 +127,8 @@ export function decodeRow(row: Record<string, any>): Record<string, any> {
   for (const key of ["bazaar_chapters", "crop_region", "igd_crop_region"])
     if (typeof result[key] === "string") result[key] = JSON.parse(result[key]);
   for (const key of [
+    "old_templates",
+    "notifications_enabled",
     "processing_enabled",
     "ready_for_processing",
     "has_vods",

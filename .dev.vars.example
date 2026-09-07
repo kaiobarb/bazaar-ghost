@@ -1,6 +1,7 @@
 # Local credentials only. Never reuse hosted credentials for local development.
 ADMIN_KEY=local-admin-change-me
 PROCESSOR_KEY=local-processor-change-me
+CATALOG_KEY=local-catalog-change-me
 TWITCH_CLIENT_ID=
 TWITCH_CLIENT_SECRET=
 TWITCH_EVENTSUB_SECRET=local-eventsub-secret-change-me

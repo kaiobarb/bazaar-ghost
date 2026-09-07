@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """GitHub Actions preparation and reporting; inputs are data, never shell code."""
 
-from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 from typing import Any, Dict, List
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request
 from uuid import UUID
 
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'sfde' / 'src'))
+from backend_environment import open_backend, verify_backend
+from media_source import resolve_media, validate_source_id
 
 SUPPORTED = ('360p', '480p', '720p', '1080p')
 
@@ -32,6 +35,7 @@ def select_quality(streams: Dict[str, Any], preferred: str, old_templates: bool)
 
 
 def api(path: str, params: Dict[str, str] = None, body: Any = None, method: str = 'GET') -> Any:
+    verify_backend()
     url = os.environ['BAZAARGHOST_API_URL'].rstrip('/') + '/api/processor/' + path
     if params:
         url += '?' + urlencode(params)
@@ -40,7 +44,7 @@ def api(path: str, params: Dict[str, str] = None, body: Any = None, method: str 
         'apikey': key, 'Authorization': f'Bearer {key}', 'Content-Type': 'application/json',
         'Prefer': 'return=representation',
     }, data=None if body is None else json.dumps(body).encode())
-    with urlopen(request, timeout=30) as response:
+    with open_backend(request, timeout=30) as response:
         data = response.read()
     return json.loads(data) if data else None
 
@@ -54,9 +58,9 @@ def input_chunk_ids() -> List[str]:
 
 def get_vod() -> Dict[str, Any]:
     source_id = os.environ['VOD_ID']
-    if not re.fullmatch(r'\d+', source_id):
-        raise ValueError('VOD_ID must be numeric')
-    return api('vod', {'source_id': source_id})
+    source = os.getenv('VIDEO_SOURCE', 'twitch')
+    validate_source_id(source, source_id)
+    return api('vod', {'source': source, 'source_id': source_id})
 
 
 
@@ -70,8 +74,7 @@ def output(name: str, value: Any) -> None:
 
 def prepare() -> None:
     vod = get_vod()
-    streamer = vod['streamers']
-    if not streamer['processing_enabled'] or not vod['ready_for_processing'] or vod['availability'] != 'available':
+    if not vod['processing_enabled'] or not vod['ready_for_processing'] or vod['availability'] != 'available':
         raise ValueError('VOD is not eligible for processing')
     requested_ids = input_chunk_ids()
     params = {'vod_id': str(vod['id'])}
@@ -86,16 +89,19 @@ def prepare() -> None:
     output('chunk_uuids', ids)
     if not ids:
         return
-    profile = json.loads(os.environ['SFDE_PROFILE']) if os.getenv('SFDE_PROFILE') else streamer['sfde_profiles']
+    profile = json.loads(os.environ['SFDE_PROFILE']) if os.getenv('SFDE_PROFILE') else vod['profile']
     if not isinstance(profile, dict) or not isinstance(profile.get('crop_region'), list):
         raise ValueError('A valid SFDE profile is required')
-    published = vod.get('published_at')
-    old = os.getenv('OLD_TEMPLATES') == 'true' or bool(
-        published and datetime.fromisoformat(published.replace('Z', '+00:00')) < datetime(2025, 8, 12, tzinfo=timezone.utc)
-    )
+    old = os.getenv('OLD_TEMPLATES') == 'true' or vod['old_templates']
     output('old_templates', str(old).lower())
     preferred = os.getenv('REQUESTED_QUALITY', '480p')
-    if os.getenv('LOCAL') == 'true':
+    if vod['source'] in ('youtube', 'bilibili'):
+        selected = '480p' if old else preferred.removesuffix('60')
+        if selected not in SUPPORTED:
+            raise ValueError('Unsupported processing quality')
+        if os.getenv('LOCAL') != 'true':
+            resolve_media(vod['source'], os.environ['VOD_ID'], selected)
+    elif os.getenv('LOCAL') == 'true':
         selected = select_quality({preferred: {}}, preferred, old)
     else:
         result = subprocess.run(['streamlink', '--no-config', '--json', f'https://www.twitch.tv/videos/{os.environ["VOD_ID"]}'], capture_output=True, text=True, timeout=60)

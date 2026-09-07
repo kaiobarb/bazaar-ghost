@@ -10,6 +10,7 @@
   },
   "vars": {
     "ENVIRONMENT": "local",
+    "BUILD_COMMIT": "local",
     "PUBLIC_URL": "http://localhost:8787",
     "OUTBOUND_ENABLED": "false",
     "CORS_ORIGINS": "http://localhost:3000,https://bazaarghost.stream",

@@ -5,6 +5,38 @@ from unittest.mock import Mock
 import pytest
 from backend_client import BackendClient
 
+
+def test_processor_credentials_never_follow_an_http_redirect():
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import threading
+
+    received = []
+
+    class RedirectHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            received.append((self.path, self.headers.get('Authorization')))
+            self.send_response(302)
+            self.send_header('Location', '/unexpected-destination')
+            self.end_headers()
+
+        def log_message(self, *_):
+            pass
+
+    server = HTTPServer(('127.0.0.1', 0), RedirectHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = BackendClient.__new__(BackendClient)
+    client.url = f'http://127.0.0.1:{server.server_port}'
+    client.key, client.timeout, client.claims = 'disposable-test-key', 2, {}
+    try:
+        with pytest.raises(ValueError, match='redirect'):
+            client._request('chunks/example')
+        assert received == [('/api/processor/chunks/example', 'Bearer disposable-test-key')]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
 @pytest.fixture
 def client(monkeypatch):
     value = BackendClient.__new__(BackendClient)

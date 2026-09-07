@@ -1,0 +1,98 @@
+name: Catalog YouTube
+run-name: Catalog YouTube (${{ inputs.mode }})
+on:
+  workflow_dispatch:
+    inputs:
+      video:
+        description: Optional single YouTube URL or video ID (exclusive with channel/account)
+        type: string
+      templates:
+        type: choice
+        options: [auto, old, current]
+        default: auto
+      ranges:
+        description: Optional verified source-second ranges as JSON
+        type: string
+      channel:
+        description: YouTube channel ID or HTTPS channel URL (use account_id for resumable backfills)
+        type: string
+      account_id:
+        description: Existing YouTube platform account UUID
+        type: string
+      mode:
+        type: choice
+        options: [recent, backfill]
+        default: recent
+      tab:
+        type: choice
+        options: [videos, streams]
+        default: videos
+      limit:
+        description: Maximum videos to inspect (1-50)
+        type: number
+        default: 10
+      environment:
+        description: Backend environment
+        type: choice
+        options: [validation]
+        default: validation
+      enable_processing:
+        description: Enable this YouTube account for SFDE
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: youtube-catalog-validation-${{ inputs.account_id || inputs.channel }}-${{ inputs.tab }}
+  cancel-in-progress: false
+jobs:
+  catalog:
+    if: github.ref == 'refs/heads/codex/cloudflare-validation'
+    runs-on: ubuntu-latest
+    environment: validation
+    timeout-minutes: 30
+    env:
+      ENVIRONMENT: validation
+      BAZAARGHOST_API_URL: ${{ vars.BAZAARGHOST_API_URL }}
+      BAZAARGHOST_CATALOG_KEY: ${{ secrets.BAZAARGHOST_CATALOG_KEY }}
+      VIDEO: ${{ inputs.video }}
+      TEMPLATES: ${{ inputs.templates }}
+      RANGES: ${{ inputs.ranges }}
+      CHANNEL: ${{ inputs.channel }}
+      ACCOUNT_ID: ${{ inputs.account_id }}
+      MODE: ${{ inputs.mode }}
+      TAB: ${{ inputs.tab }}
+      LIMIT: ${{ inputs.limit }}
+      ENABLE_PROCESSING: ${{ inputs.enable_processing }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verify backend environment
+        run: python scripts/backend_environment.py
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: pip install 'yt-dlp[default]>=2026.7.4,<2027'
+      - name: Catalog a bounded page
+        shell: bash
+        run: |
+          args=(--mode "$MODE" --tab "$TAB" --limit "$LIMIT" --templates "$TEMPLATES")
+          count=0
+          for value in "$VIDEO" "$ACCOUNT_ID" "$CHANNEL"; do if [ -n "$value" ]; then count=$((count + 1)); fi; done
+          if [ "$count" -ne 1 ]; then echo "Provide exactly one video, account, or channel"; exit 1; fi
+          if [ -n "$RANGES" ]; then args+=(--ranges "$RANGES"); fi
+          if [ -n "$VIDEO" ]; then
+            args+=(--video "$VIDEO")
+          elif [ -n "$ACCOUNT_ID" ]; then
+            args+=(--account "$ACCOUNT_ID")
+          else
+            args+=(--channel "$CHANNEL")
+          fi
+          if [ "$ENABLE_PROCESSING" = true ]; then args+=(--enable-processing); fi
+          python scripts/catalog_youtube.py "${args[@]}" > catalog-result.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: youtube-catalog
+          path: catalog-result.json

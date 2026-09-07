@@ -13,6 +13,15 @@ from sfde import SFDEProcessor
 from video import read_jpegs, timestamped_frames
 
 
+def test_decoder_logs_redact_signed_playback_urls():
+    logger = Mock()
+    pixels = io.BytesIO(b'\xff\xd8a\xff\xd9')
+    diagnostics = io.BytesIO(b"Input #0 from 'https://cdn.example/video?token=private':\n[showinfo] pts_time:0 pos:0 \n")
+    assert len(list(timestamped_frames(pixels, diagnostics, logger))) == 1
+    assert 'private' not in str(logger.debug.call_args_list)
+    assert '[media URL]' in str(logger.debug.call_args_list)
+
+
 class FragmentedStream(io.BytesIO):
     def read(self, size=-1):
         return super().read(min(size, 1))

@@ -25,7 +25,7 @@ export function imageKey(
     timestamp >= chunk.start_seconds && timestamp < chunk.end_seconds,
     "Frame outside chunk",
   );
-  return `${chunk.source_id}/${chunk.id}/${token}/${kind}_${timestamp}.jpg`;
+  return `${chunk.source && chunk.source !== "twitch" ? `${chunk.source}/` : ""}${chunk.source_id}/${chunk.id}/${token}/${kind}_${timestamp}.jpg`;
 }
 export async function upload(
   env: Env,
