@@ -6,6 +6,19 @@ Integrate the multiplatform backend from thread `01a07a18-dac2-7571-993b-3c00d03
 
 Work branch: `codex/cloudflare-validation`, starting at migration commit `6a6d0ae`. Reviewed source platform commits: `c7c3863` and `ec4b870` on `dev`. The first integrated platform commit is `2923d2a`.
 
+## Current checkpoint — 2026-09-07, 18:00 UTC
+
+This checkpoint supersedes earlier activity entries when describing what is currently deployed. The migration goal remains active; this is not a production cutover or completion report.
+
+- **Committed and pushed:** `e30795e` includes the Cloudflare/multiplatform backend, processing coverage checks, user authentication, persistent clips, likes, private favorites, comments, reports, moderation, and visibility propagation. [CI 34149072743](https://github.com/liftaris/bazaar-ghost/actions/runs/34149072743) passed. Its deployment steps were explicitly skipped because the separate validation Cloudflare CI token is absent.
+- **Actually deployed:** validation health still reports `93c82c6`. D1 has migrations `0001`–`0003`. Applying `0004_auth.sql` failed remotely with `incomplete input: SQLITE_ERROR`; no auth/social tables were created and deployment of `e30795e` did not run. The previous Worker remains healthy. The validation auth signing secret was installed, but provider credentials, real OAuth consent, and hosted auth/social verification remain pending.
+- **Full hosted recording verified:** [OCR 34148846218](https://github.com/liftaris/bazaar-ghost/actions/runs/34148846218), running processing code `55a9deb`, completed Bilibili part `BV1K114BiE7t:33726794861` across its full cataloged `[0,2468)` timeline. Two chunks processed 900 + 334 = **1,234/1,234 expected samples**. The terminal VOD/chunk states, **13 detections**, public search results, and all **13 decodable JPEGs** match the Actions artifacts. Evidence: `.ignore/platform-validation/full-bilibili-evidence.json`. This proves sampled coverage and persistence, not exhaustive matchup recall or correctness of every OCR name.
+- **Earlier hosted recording interval verified:** `[600,1500)` of old-layout part `BV1FfL5zPEbH:29594289602`, 450/450 samples and four retrievable detections/screenshots, as recorded below. This is an interval within a longer upload.
+- **IGD on real footage:** the actual local SFDE pipeline processed 198/198 samples across eleven reviewed matchup windows from old/current Bilibili and YouTube. Ten accepted days were visually correct; one native-360p day-4 reading remained null below the existing confidence threshold. These used a recording-only backend. Both hosted Bilibili runs had IGD disabled, so hosted real-day persistence is still unverified. Evidence: `.ignore/igd-validation/README.md`.
+- **Prepared locally, not yet committed or exercised remotely:** the isolated one-job GitHub Actions runner/workflow and source-schema-3 to target-schema-6 snapshot tooling. Their helper/migration tests and the populated real local D1 import proof passed. YouTube still requests human sign-in from GitHub-hosted runners; the same public video resolves anonymously from the local container. The temporary runner has not yet been registered or dispatched.
+
+Existing dev/production resources and the separate frontend remain untouched. Validation has outbound integrations disabled and sends no Discord notifications. Its currently deployed Worker has no active Cron schedules. The auth maintenance Cron exists only in the newer, undeployed configuration. Automatic ingestion/Worker-to-GitHub dispatch and live provider callbacks still need hosted acceptance evidence.
+
 ## Execution plan
 
 - [x] Review source multiplatform changes, record defects and port contracts.
@@ -13,8 +26,8 @@ Work branch: `codex/cloudflare-validation`, starting at migration commit `6a6d0a
 - [ ] Validate the integrated pipeline locally with platform-specific tests and real OCR processing.
 - [x] Provision separate Cloudflare resources and GitHub environment, with branch-bound deployment and processing workflows.
 - [ ] Deploy only the validation environment and run hosted API, queue, database, storage, and GitHub processing checks; correct and redeploy failures.
-- [ ] Design and implement user authentication, sessions, account lifecycle, and clip identity.
-- [ ] Implement likes, comments, favorites, ownership, moderation, and abuse controls, with public/private API contracts.
+- [x] Design and implement user authentication, sessions, account lifecycle, and clip identity. Committed and tested; hosted acceptance remains below.
+- [x] Implement likes, comments, favorites, ownership, moderation, and abuse controls, with public/private API contracts. Committed and tested; hosted acceptance remains below.
 - [ ] Adversarially review implementation and tests; address findings and validate hosted functionality.
 - [ ] Publish operational documentation, API examples, deployment/test evidence, and a requirement-by-requirement completion audit.
 
@@ -25,6 +38,12 @@ Completion requires authoritative evidence for every plan item, including actual
 Production safeguards: no pushes to `main`/`dev`, no production/development resource mutations, no changes to existing provider callbacks, no real notification delivery from validation, and no broad repository rule changes when branch/environment-scoped controls suffice. New resources must have distinct names and identifiers. Keep test evidence free of credentials and personal data.
 
 ## Activity
+
+### 2026-09-07 — remote D1 migration parser correction
+
+- A disposable table in the isolated validation database reproduced the failure: a trigger containing bare `SELECT CASE ... END` fails through the remote D1 query endpoint with `incomplete input`, while the equivalent trigger-level `WHEN` guard succeeds. The probe table was removed after each attempt. Evidence: `.ignore/platform-validation/d1-parser-probe.json`.
+- Changed the three not-yet-applied authentication guard triggers to `WHEN` predicates with the same abort conditions. The full local Worker suite still passes: **165 tests across 13 files**. Existing applied migrations `0001`–`0003` are unchanged.
+- The remote behavior matches the failure described in [Cloudflare workers-sdk issue 4727](https://github.com/cloudflare/workers-sdk/issues/4727). The actual remote reproduction, rather than the older issue's status or local parser success, determines this correction.
 
 ### 2026-09-07 — initial inspection
 

@@ -48,26 +48,30 @@ CREATE INDEX auth_flows_expiresAt_idx ON auth_flows(expiresAt);
 CREATE TABLE auth_rate_limits(key TEXT PRIMARY KEY NOT NULL, count INTEGER NOT NULL, expiresAt INTEGER NOT NULL);
 CREATE INDEX auth_rate_limits_expiresAt_idx ON auth_rate_limits(expiresAt);
 
-CREATE TRIGGER auth_account_create_guard BEFORE INSERT ON user_accounts BEGIN
-  SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM app_users u WHERE u.id=NEW.userId AND u.status='active'
+-- WHEN guards avoid the remote D1 parser treating a bare CASE END as the trigger END.
+CREATE TRIGGER auth_account_create_guard BEFORE INSERT ON user_accounts
+  WHEN NOT EXISTS(SELECT 1 FROM app_users u WHERE u.id=NEW.userId AND u.status='active'
     AND ((u.registeredAt IS NULL AND NEW.linkSessionId IS NULL AND NOT EXISTS(SELECT 1 FROM user_accounts a WHERE a.userId=u.id))
       OR EXISTS(SELECT 1 FROM user_sessions s WHERE s.id=NEW.linkSessionId AND s.userId=u.id
         AND s.expiresAt>strftime('%Y-%m-%dT%H:%M:%fZ','now')
         AND s.createdAt>strftime('%Y-%m-%dT%H:%M:%fZ','now','-300 seconds'))))
-    THEN RAISE(ABORT,'Invalid account registration or link session') END;
+BEGIN
+  SELECT RAISE(ABORT,'Invalid account registration or link session');
 END;
 CREATE TRIGGER auth_account_registered AFTER INSERT ON user_accounts BEGIN
   UPDATE app_users SET registeredAt=COALESCE(registeredAt,CAST(unixepoch('subsec')*1000 AS INTEGER)) WHERE id=NEW.userId;
 END;
-CREATE TRIGGER auth_account_identity_immutable BEFORE UPDATE ON user_accounts BEGIN
-  SELECT CASE WHEN NEW.userId!=OLD.userId OR NEW.providerId!=OLD.providerId OR NEW.accountId!=OLD.accountId
+CREATE TRIGGER auth_account_identity_immutable BEFORE UPDATE ON user_accounts
+  WHEN NEW.userId!=OLD.userId OR NEW.providerId!=OLD.providerId OR NEW.accountId!=OLD.accountId
     OR NOT EXISTS(SELECT 1 FROM app_users WHERE id=NEW.userId AND status='active')
-    THEN RAISE(ABORT,'Invalid account update') END;
+BEGIN
+  SELECT RAISE(ABORT,'Invalid account update');
 END;
-CREATE TRIGGER auth_session_create_guard BEFORE INSERT ON user_sessions BEGIN
-  SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM app_users u WHERE u.id=NEW.userId AND u.status='active'
+CREATE TRIGGER auth_session_create_guard BEFORE INSERT ON user_sessions
+  WHEN NOT EXISTS(SELECT 1 FROM app_users u WHERE u.id=NEW.userId AND u.status='active'
     AND u.registeredAt IS NOT NULL AND EXISTS(SELECT 1 FROM user_accounts a WHERE a.userId=u.id))
-    THEN RAISE(ABORT,'User cannot sign in') END;
+BEGIN
+  SELECT RAISE(ABORT,'User cannot sign in');
 END;
 CREATE TRIGGER auth_suspension_revoke AFTER UPDATE OF status ON app_users WHEN NEW.status!='active' BEGIN
   DELETE FROM user_sessions WHERE userId=NEW.id;
