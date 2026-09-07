@@ -18,9 +18,15 @@ python3 -m unittest discover -s scripts/tests -p test_validation_runner.py
 
 The initial built image is `sha256:a517898e645b6b1b5ee62857cecba354c0facdac2bd45dcc66d83a63e088a63c`, based on tested SFDE image `sha256:96a66467eeb001026541e5b0025ae081c9c499f1fee85cd2decfe806944b58c6`. Offline container checks confirmed UID 1000, GitHub runner 2.337.0, Deno 2.9.5, Python OCR imports and cached models. The workflow executes `sfde/src/sfde.py` from the exact dispatched checkout, so runtime packages/models come from the image while detector code and templates come from the reviewed commit.
 
+## Observed dispatch
+
+On 2026-09-07, GitHub accepted an actual manual dispatch of this feature-branch workflow: [run 34150684415](https://github.com/liftaris/bazaar-ghost/actions/runs/34150684415), at commit `823082a4ddab9d61a2f7bed81e09138665cdd98f` on `codex/cloudflare-validation`. Its `validate` job was assigned to the ephemeral runner `bazaarghost-validation-cee8c1f478e1465a8c222d352c18ac30`.
+
+This establishes dispatch acceptance for this repository, branch and workflow after its registration push. Workflow inventory visibility alone was not used as proof. Dispatch acceptance and runner assignment do not establish successful OCR completion; the run's terminal result and validation artifacts provide that evidence.
+
 ## Operator steps
 
-1. Commit and push these files to `codex/cloudflare-validation`. Its path-scoped push trigger registers the workflow with GitHub but deliberately skips its sole job. No default-branch workflow or environment changes are needed. Ensure the validation Worker and migrations are deployed and its GitHub environment has `BAZAARGHOST_API_URL`, `BAZAARGHOST_CATALOG_KEY`, and `BAZAARGHOST_PROCESSOR_KEY`.
+1. Commit and push these files to `codex/cloudflare-validation`. Its path-scoped push trigger makes the workflow discoverable while deliberately skipping its sole job. Although GitHub [documents a default-branch requirement for manual dispatch](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow), this repository's feature-branch dispatch was actually accepted as recorded above. Confirm each real dispatch result rather than relying on inventory visibility; if a later dispatch is rejected, keep dev unchanged and review the entry point before proceeding. Ensure the validation Worker and migrations are deployed and its GitHub environment has `BAZAARGHOST_API_URL`, `BAZAARGHOST_CATALOG_KEY`, and `BAZAARGHOST_PROCESSOR_KEY`.
 2. Review one public YouTube video, its exact gameplay ranges, template era, and an existing validation crop profile. Ranges must be sorted/nonoverlapping, at most 1800 seconds each, at most three ranges and 3600 seconds total. Use 480p for old templates. The profile must already exist; the runner has no admin key and cannot create profiles.
 3. Create a private task directory and input document. The example values below are placeholders for reviewed content; no secret belongs in this document:
 
@@ -75,4 +81,4 @@ gh api repos/liftaris/bazaar-ghost/actions/runners --jq '.runners[] | {id,name,s
 gh api --method DELETE repos/liftaris/bazaar-ghost/actions/runners/REVIEWED_RUNNER_ID
 ```
 
-The image and private task input files may be retained for another reviewed run. No host credentials are copied into either. This is a temporary validation path, not a deployed autoscaling service. A future GitHub runner release may require rebuilding the pinned image; GitHub can stop dispatching to sufficiently old runners. No hosted registration, dispatch or OCR run was performed by the image-building helper itself.
+The image and private task input files may be retained for another reviewed run. No host credentials are copied into either. This is a temporary validation path, not a deployed autoscaling service. A future GitHub runner release may require rebuilding the pinned image; GitHub can stop dispatching to sufficiently old runners. Building and testing the image does not register a runner or start a workflow; registration and dispatch are explicit operator steps.

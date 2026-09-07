@@ -189,7 +189,7 @@ def main():
         profile = json.loads(prepared['sfde_profile'])
         if profile['id'] != selected['profile_id'] or prepared['old_templates'] != str(selected['templates'] == 'old').lower():
             raise ValidationFailure('Prepared profile or template era differs from the reviewed inputs')
-        report['profile'] = {key: profile.get(key) for key in ('id', 'profile_name', 'crop_region', 'igd_crop_region')}
+        report['profile'] = {key: profile.get(key) for key in ('id', 'profile_name', 'crop_region', 'igd_crop_region', 'scale', 'custom_edge', 'opaque_edge', 'from_date', 'to_date')}
         report['phase'] = 'ocr'
         summaries = []
         for chunk in sorted(chunks, key=lambda item: item['start_seconds']):

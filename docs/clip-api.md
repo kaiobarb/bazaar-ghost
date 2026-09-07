@@ -1,6 +1,6 @@
 # Clips, reactions, comments and moderation
 
-This is a backend API. The separate frontend has not been changed. User mutations use the cookie session and CSRF contract in [user-auth.md](user-auth.md); machine processor/catalog credentials cannot act as a user.
+This backend API is deployed on the dedicated validation Worker at `1c5428c`; hosted HTTP mechanics passed on 2026-09-07. The separate frontend has not been changed. User mutations use the cookie session and CSRF contract in [user-auth.md](user-auth.md); machine processor/catalog credentials cannot act as a user. Real provider login remains pending configuration and browser consent.
 
 A clip is a persistent `(vod_id, anchor_seconds)` with its own integer ID. It points to the current qualifying OCR detection at that exact video timestamp. Database migration backfills existing detections, and new publications create/reconnect clips automatically. Clearing or replacing OCR results keeps the clip ID, likes, favorites, and comments. A nearby timestamp does not automatically inherit someone else's discussion. Removing the entire video deletes its clips; marking a recording unavailable preserves the anchor, with no currently public detection attached to its response.
 
@@ -29,7 +29,7 @@ A clip is a persistent `(vod_id, anchor_seconds)` with its own integer ID. It po
 
 Comments are plain text, normalized to NFC, with 1–2000 Unicode characters. Invisible/control-only text is rejected. Clients must render the body as text rather than HTML. Public authors expose only the application user ID and display name. The original request hash prevents retrying a comment UUID with a different body or target. A retry after editing/deleting cannot restore the original text. Concurrent edits use the supplied version instead of silently overwriting one another.
 
-All user mutations verify the session, trusted Origin, CSRF token, and current database ownership in the same transaction as the write. Reaction, comment and report limits are respectively120,20,5 successful mutations per minute per user. The database stores at most three counters per user. Rejected state conflicts do not consume quota. All social/auth responses are `no-store`.
+Each user mutation verifies the cookie, exact trusted Origin, and session-bound CSRF token. Its database transaction rechecks the live session, active user, target visibility where required, and ownership together with the write. Reaction, comment and report limits are respectively 120, 20, and 5 successful requests per minute per user, including accepted idempotent retries. The database stores at most three counters per user. Rejected state conflicts do not consume quota. All social/auth responses are `no-store`.
 
 ## Administration
 
@@ -43,4 +43,15 @@ Deleting a user removes their linked identities, sessions, likes, bookmarks, com
 
 ## Verification
 
-Local integration tests cover two-user ownership, cookie/CSRF enforcement, reaction idempotency/privacy, comment retries and version conflicts, moderation/suspension, duplicate reports, account deletion, and actual processor clear/upload/publish cycles preserving social records. Hosted provider authentication still needs real configuration/consent; that requirement cannot be replaced by mocked OAuth or manually seeded test sessions.
+The hosted mechanics smoke passed on exact validation build `1c5428c68ca035bab24b43fef1a34820435a8608` on 2026-09-07. Two temporary operator-created users used actual signed session cookies over HTTP. Checks covered unique public likes, private favorites and the heart alias, bookmark removal, anonymous/cross-user privacy rejection, comment ownership, stale-version conflicts, idempotent creation/deletion, retry tombstones, report creation, CSRF/CORS, session revocation, and account-deletion cascades.
+
+Existing Bilibili clip `1` was briefly hidden and restored through the admin API. Previously requested public view/search/appearance URLs excluded the hidden detection, and screenshot GET/HEAD requests with and without ETag returned 404. Restoration returned the original 4,646-byte screenshot with SHA-256 `03bf3eb0d204ec959993845f0ba2adf7c620a7f67ef75555890386bba2aaac38`. The original clip/detection identity and all seventeen real clips/detections remained intact. Cleanup verified zero synthetic users, accounts, sessions, or owned social records; two admin audit entries remain as the actual moderation trail.
+
+Private local evidence: `.ignore/platform-validation/hosted-social-smoke.6dfcb900-8bb2-4c85-8f5f-7c8e29409973/proof.json`. This validates hosted API mechanics with operator fixtures, not real OAuth consent or a browser frontend. The provider/browser acceptance work is specified in [user-auth.md](user-auth.md#verification-and-remaining-acceptance).
+
+Local integration tests also cover moderation/suspension, report deduplication/resolution, pagination, quota boundaries, revocation/moderation races, simultaneous retries, and actual processor clear/upload/publish cycles preserving social records. Those additional branches have not all been repeated against the hosted Worker. The next bounded hosted checks should use disposable fixtures:
+
+- Run a comment/report moderation cycle: hide and restore a comment, reject an author edit while hidden, resolve its report, and verify that retrying an old decision does not overwrite the newer decision or duplicate its audit entry.
+- Suspend a fixture user and verify immediate session revocation, hidden comments, excluded likes, and restoration of public contributions without revival of old cookies. Confirm that deleting one user preserves a second user's comment and the shared clip.
+- Exercise quota boundaries and concurrent retries: a duplicate comment produces one row, competing edits produce one successful version change, a rejected quota request makes no data change, and the next time window permits another request. Check favorite/comment pagination across visible and hidden rows.
+- Process and then reprocess a disposable validation recording through the existing processor API. The exact anchor must keep its clip ID, comments, likes, and favorites; a replacement at an adjacent timestamp must not inherit them. Repeat with a hidden anchor and confirm that public search and screenshot access stay hidden. The successful smoke above deliberately did not clear or reprocess the existing real clip.
