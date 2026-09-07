@@ -2,10 +2,10 @@ name: Tests
 on:
   push:
     branches: [main, dev]
-    paths: ["sfde/**", "supabase/**", "scripts/**", ".github/workflows/**"]
+    paths: ["sfde/**", "worker/**", "package*.json", "wrangler*.jsonc", "vitest.config.ts", "tsconfig.json", "scripts/**", ".github/workflows/**"]
   pull_request:
     branches: [main, dev]
-    paths: ["sfde/**", "supabase/**", "scripts/**", ".github/workflows/**"]
+    paths: ["sfde/**", "worker/**", "package*.json", "wrangler*.jsonc", "vitest.config.ts", "tsconfig.json", "scripts/**", ".github/workflows/**"]
   workflow_dispatch:
 permissions:
   contents: read
@@ -49,15 +49,14 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
-      - uses: denoland/setup-deno@v2
+      - uses: actions/setup-node@v5
         with:
-          deno-version: v2.x
-      - run: deno check supabase/functions/*/index.ts
-      - run: deno lint --rules-exclude=no-explicit-any,no-unversioned-import supabase/functions
-      - run: deno test --allow-env supabase/functions/_shared/*_test.ts
+          node-version: "24"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: cp .dev.vars.example .dev.vars
+      - run: npm run types
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
       - run: python -m unittest discover -s scripts/tests
-      - uses: supabase/setup-cli@v1
-        with:
-          version: latest
-      - run: supabase start -x studio,postgres-meta,imgproxy,realtime,mailpit,edge-runtime,logflare,vector
-      - run: supabase test db

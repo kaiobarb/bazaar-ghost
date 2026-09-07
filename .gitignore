@@ -12,3 +12,12 @@ test_data/
 backup-prod*/
 sfde/tests/last_run.txt
 sfde/tests/last_run_summary.md
+node_modules/
+.wrangler/
+dist/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+!worker/fixtures/seed.sql
+# Generated locally and in CI by npm run types.
+worker-configuration.d.ts

@@ -164,7 +164,7 @@ def _create_metrics():
 
     _metrics["detections_uploaded"] = _meter.create_counter(
         "sfde.detections.uploaded",
-        description="Total detections uploaded to Supabase",
+        description="Total detections uploaded to backend",
         unit="1",
     )
 
@@ -235,7 +235,7 @@ def _create_metrics():
 
     # Upload duration histogram (meaningful because it's a discrete operation)
     _metrics["upload_duration"] = _meter.create_histogram(
-        "sfde.upload.duration", description="Supabase batch upload duration", unit="ms"
+        "sfde.upload.duration", description="backend batch upload duration", unit="ms"
     )
 
     # Gauges (using UpDownCounter as proxy)

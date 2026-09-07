@@ -28,6 +28,9 @@ on:
       chunk_uuids:
         description: Optional JSON array of chunk UUIDs
         type: string
+      queued_at:
+        description: Dispatch timestamp supplied by the backend (leave blank for manual runs)
+        type: string
       old_templates:
         description: Use pre-August-2025 templates (480p only)
         type: boolean
@@ -42,8 +45,9 @@ jobs:
     environment: ${{ inputs.environment }}
     timeout-minutes: 5
     env:
-      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
-      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      QUEUED_AT: ${{ inputs.queued_at }}
+      BAZAARGHOST_API_URL: ${{ vars.BAZAARGHOST_API_URL }}
+      BAZAARGHOST_PROCESSOR_KEY: ${{ secrets.BAZAARGHOST_PROCESSOR_KEY }}
       VOD_ID: ${{ inputs.vod_id }}
       INPUT_CHUNKS: ${{ inputs.chunk_uuids }}
       REQUESTED_QUALITY: ${{ inputs.quality }}
@@ -78,8 +82,9 @@ jobs:
       matrix:
         chunk_id: ${{ fromJson(needs.prepare.outputs.chunk_uuids) }}
     env:
-      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
-      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      QUEUED_AT: ${{ inputs.queued_at }}
+      BAZAARGHOST_API_URL: ${{ vars.BAZAARGHOST_API_URL }}
+      BAZAARGHOST_PROCESSOR_KEY: ${{ secrets.BAZAARGHOST_PROCESSOR_KEY }}
       CHUNK_ID: ${{ matrix.chunk_id }}
       QUALITY: ${{ needs.prepare.outputs.quality }}
       VIDEO_FPS: ${{ needs.prepare.outputs.video_fps }}
@@ -107,7 +112,7 @@ jobs:
           chmod 777 output
           docker run --rm --network host \
             -v "$PWD/output:/app/output" \
-            -e SUPABASE_URL -e SUPABASE_SECRET_KEY -e CHUNK_ID \
+            -e BAZAARGHOST_API_URL -e BAZAARGHOST_PROCESSOR_KEY -e CHUNK_ID -e QUEUED_AT \
             -e QUALITY -e VIDEO_FPS -e SFDE_PROFILE -e OLD_TEMPLATES \
             -e ENVIRONMENT -e OTEL_EXPORTER_OTLP_ENDPOINT -e OTEL_EXPORTER_OTLP_HEADERS \
             sfde:dev

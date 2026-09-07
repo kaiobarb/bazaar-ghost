@@ -1,56 +1,55 @@
-"""Persistence failures must not publish broken images or duplicate notifications."""
+"""HTTP persistence must fail closed and retry with stable detection identities."""
 import base64
 import logging
-from types import SimpleNamespace
 from unittest.mock import Mock
-
 import pytest
-from supabase_client import SupabaseClient
-
+from backend_client import BackendClient
 
 @pytest.fixture
 def client(monkeypatch):
-    value = SupabaseClient.__new__(SupabaseClient)
-    value.client = Mock()
+    value = BackendClient.__new__(BackendClient)
     value.logger = logging.getLogger('test')
-    value.quality = '480p'
-    value.test_mode = False
-    value.streamer = 'example'
-    value.storage_bucket = 'detections'
-    value.retry_attempts = 2
-    value.client.table.return_value.select.return_value.eq.return_value.eq.return_value.single.return_value.execute.return_value = SimpleNamespace(data={'id': 1})
-    monkeypatch.setattr('supabase_client.time.sleep', lambda _: None)
+    value.quality, value.streamer = '480p', 'example'
+    value.retry_attempts, value.claims = 2, {'abc': 'claim-token'}
+    value._request = Mock(return_value={'storage_path': '/detections/123/abc/claim-token/detection_14.jpg'})
+    monkeypatch.setattr('backend_client.time.sleep', lambda _: None)
     return value
-
 
 def matchup():
     return {'vod_id': '123', 'chunk_id': 'abc', 'timestamp': 14, 'username': 'Opponent',
-            'frame_base64': base64.b64encode(b'jpeg').decode()}
+            'confidence': .95, 'igd': 9, 'frame_base64': base64.b64encode(b'jpeg').decode()}
 
-
-def test_lost_insert_response_reuses_id_and_ignores_duplicate(client):
+def test_lost_insert_response_reuses_id(client):
     records = []
-    def upsert(rows, **options):
-        records.append(rows)
-        assert options == {'on_conflict': 'id', 'ignore_duplicates': True}
+    def request(path, method, data, chunk, **kwargs):
+        if method == 'PUT':
+            return {'storage_path': '/detections/123/abc/claim-token/detection_14.jpg'}
+        records.append(data['detections'])
         if len(records) == 1:
-            return SimpleNamespace(execute=Mock(side_effect=TimeoutError('response lost')))
-        return SimpleNamespace(execute=Mock())
-    client.client.table.return_value.upsert.side_effect = upsert
+            raise TimeoutError('response lost')
+        return {'published': 1}
+    client._request.side_effect = request
     assert client.upload_batch([matchup()])
     assert records[0] == records[1]
-    assert records[0][0]['storage_path'] == '/detections/123/14.jpg'
-
+    assert records[0][0]['igd'] == 9
 
 def test_image_failure_never_publishes_detection(client):
-    client.client.storage.from_.return_value.upload.side_effect = RuntimeError('storage unavailable')
+    client._request.side_effect = RuntimeError('storage unavailable')
     with pytest.raises(RuntimeError, match='storage unavailable'):
         client.upload_batch([matchup()])
-    client.client.table.return_value.upsert.assert_not_called()
+    assert all(call.args[1] == 'PUT' for call in client._request.call_args_list)
 
+def test_missing_screenshot_is_not_published(client):
+    item = matchup()
+    del item['frame_base64']
+    with pytest.raises(ValueError, match='screenshot'):
+        client.upload_batch([item])
+    client._request.assert_not_called()
 
-def test_lookup_failure_is_not_a_silently_empty_batch(client):
-    client.client.table.return_value.select.return_value.eq.return_value.eq.return_value.single.return_value.execute.side_effect = RuntimeError('missing VOD')
-    with pytest.raises(RuntimeError, match='missing VOD'):
-        client.upload_batch([matchup()])
-    client.client.table.return_value.upsert.assert_not_called()
+def test_claim_token_is_kept_only_after_success(client):
+    client._request.return_value = {'claimed': False, 'claim_token': None}
+    assert not client.claim_chunk('new')
+    assert 'new' not in client.claims
+    client._request.return_value = {'claimed': True, 'claim_token': 'new-token'}
+    assert client.claim_chunk('new')
+    assert client.claims['new'] == 'new-token'

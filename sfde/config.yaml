@@ -19,8 +19,7 @@ ocr:
   confidence_threshold: 0.5
   min_matchup_interval: 10
 
-supabase:
-  storage_bucket: "detections"
+backend:
   batch_size: 10
   connection_timeout: 30
   retry_attempts: 3

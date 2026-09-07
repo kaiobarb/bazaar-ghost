@@ -32,10 +32,10 @@ def select_quality(streams: Dict[str, Any], preferred: str, old_templates: bool)
 
 
 def api(path: str, params: Dict[str, str] = None, body: Any = None, method: str = 'GET') -> Any:
-    url = os.environ['SUPABASE_URL'].rstrip('/') + '/rest/v1/' + path
+    url = os.environ['BAZAARGHOST_API_URL'].rstrip('/') + '/api/processor/' + path
     if params:
         url += '?' + urlencode(params)
-    key = os.environ['SUPABASE_SECRET_KEY']
+    key = os.environ['BAZAARGHOST_PROCESSOR_KEY']
     request = Request(url, method=method, headers={
         'apikey': key, 'Authorization': f'Bearer {key}', 'Content-Type': 'application/json',
         'Prefer': 'return=representation',
@@ -56,13 +56,8 @@ def get_vod() -> Dict[str, Any]:
     source_id = os.environ['VOD_ID']
     if not re.fullmatch(r'\d+', source_id):
         raise ValueError('VOD_ID must be numeric')
-    vods = api('vods', {
-        'source': 'eq.twitch', 'source_id': f'eq.{source_id}',
-        'select': 'id,availability,ready_for_processing,published_at,streamers!inner(processing_enabled,sfde_profiles!inner(*))',
-    })
-    if len(vods) != 1:
-        raise ValueError('VOD was not found')
-    return vods[0]
+    return api('vod', {'source_id': source_id})
+
 
 
 def output(name: str, value: Any) -> None:
@@ -79,9 +74,11 @@ def prepare() -> None:
     if not streamer['processing_enabled'] or not vod['ready_for_processing'] or vod['availability'] != 'available':
         raise ValueError('VOD is not eligible for processing')
     requested_ids = input_chunk_ids()
-    params = {'vod_id': f'eq.{vod["id"]}', 'status': 'in.(pending,queued)', 'select': 'id', 'order': 'chunk_index'}
+    params = {'vod_id': str(vod['id'])}
     if requested_ids:
-        params['id'] = 'in.(' + ','.join(requested_ids) + ')'
+        params['ids'] = json.dumps(requested_ids)
+    if os.getenv('QUEUED_AT'):
+        params['queued_at'] = os.environ['QUEUED_AT']
     chunks = api('chunks', params)
     ids = [chunk['id'] for chunk in chunks]
     if len(ids) > 256:
@@ -116,15 +113,12 @@ def fail_queued() -> None:
     ids = input_chunk_ids()
     if not ids:
         return
-    vod = get_vod()
-    api('chunks', {'vod_id': f'eq.{vod["id"]}', 'id': 'in.(' + ','.join(ids) + ')', 'status': 'eq.queued'},
-        {'status': 'failed', 'last_error': 'Workflow preparation failed'}, 'PATCH')
+    api('fail-queued', body={'ids': ids, 'queued_at': os.getenv('QUEUED_AT'), 'error': 'Workflow preparation failed'}, method='POST')
 
 
 def fail_chunk() -> None:
     chunk_id = str(UUID(os.environ['CHUNK_ID']))
-    api('chunks', {'id': f'eq.{chunk_id}', 'status': 'eq.queued'},
-        {'status': 'failed', 'last_error': 'Runner failed before claiming chunk'}, 'PATCH')
+    api('fail-queued', body={'ids': [chunk_id], 'queued_at': os.getenv('QUEUED_AT'), 'error': 'Runner failed before claiming chunk'}, method='POST')
 
 
 def summarize() -> None:

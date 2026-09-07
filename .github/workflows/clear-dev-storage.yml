@@ -1,31 +1,23 @@
 name: Clear Dev Storage
-
 on:
   schedule:
     - cron: "0 10 * * 0"
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
   group: clear-dev-storage
   cancel-in-progress: false
-
 jobs:
   clear:
+    # Keep the schedule on GitHub. Explicit activation follows the eventual cutover.
+    if: vars.CLOUDFLARE_BACKEND_ENABLED == 'true'
     runs-on: ubuntu-latest
     environment: dev
-    timeout-minutes: 30
+    timeout-minutes: 5
     env:
-      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
-      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      BAZAARGHOST_API_URL: ${{ vars.BAZAARGHOST_API_URL }}
+      BAZAARGHOST_ADMIN_KEY: ${{ secrets.BAZAARGHOST_ADMIN_KEY }}
     steps:
       - uses: actions/checkout@v5
-        with:
-          ref: dev
-      - uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-      - name: Delete dev screenshots
-        run: deno run --allow-env --allow-net scripts/clear-detections-bucket.ts --dev-only --execute
+      - run: python scripts/clear_dev_storage.py

@@ -33,7 +33,7 @@ docker run --rm --network host --env-file .env.dev \
   sfde:dev
 ```
 
-For a rerun, reset only an inactive local chunk to `pending`; do not reset a running worker. `force_process_vod` rejects VODs with active workers and preserves existing chunk identities. A normal successful run exports `/app/output/detections_<chunk-id>.json`; mount a writable output directory to retain it. The image runs as user `sfde` (UID 1000).
+For a rerun, reset only an inactive local chunk to `pending`; do not reset a running worker. The Worker admin `retry-vod` endpoint rejects active workers and preserves chunk identities. A normal successful run exports `/app/output/detections_<chunk-id>.json`; mount a writable output directory to retain it. The image runs as user `sfde` (UID 1000).
 
 To use an existing video instead of Twitch:
 
@@ -44,7 +44,7 @@ docker run --rm --network host --env-file .env.dev \
   -e TEST_MODE=true -e TEST_VIDEO=/video.mp4 sfde:dev
 ```
 
-`TEST_MODE` changes video input and screenshot prefixes; it still writes to the connected database's `public` schema. Use a full VOD file, or a synthetic local chunk beginning at zero, because seeking uses the database's absolute range. It is not a dry run. Credentials are never auto-loaded by Python.
+`TEST_MODE` changes video input; it still publishes detections and screenshots to the configured Worker. Use a full VOD file, or a synthetic local chunk beginning at zero, because seeking uses the database's absolute range. It is not a dry run. Credentials are never auto-loaded by Python.
 
 `docker compose -f sfde/docker-compose.yml up --build` provides a one-shot equivalent using `.env.dev`, `CHUNK_ID`, and `SFDE_PROFILE`. The helper `sfde/build.sh` builds locally; `--test` runs the suite, and `--push` explicitly publishes the image.
 

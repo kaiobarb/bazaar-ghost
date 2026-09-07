@@ -49,7 +49,7 @@ def processor(monkeypatch, tmp_path):
         'vod_id': '123', 'start_seconds': 0, 'end_seconds': 300, 'status': 'pending',
     }
     db.claim_chunk.return_value = True
-    monkeypatch.setattr(sfde, 'SupabaseClient', Mock(return_value=db))
+    monkeypatch.setattr(sfde, 'BackendClient', Mock(return_value=db))
     reader = SimpleNamespace(process_frame=lambda frame, timestamp, vod, chunk: {
         'username': 'Opponent', 'timestamp': timestamp, 'is_matchup': True,
     })
@@ -74,7 +74,7 @@ def test_eof_drains_frames_results_and_final_batch(processor):
     assert result['frames_processed'] == 101
     assert len(processor.all_detections) == 101
     assert [item['timestamp'] for item in processor.all_detections] == list(range(101))
-    assert processor.supabase.upload_batch.call_count == 11
+    assert processor.backend.upload_batch.call_count == 11
     assert not any(thread.is_alive() for thread in processor.threads)
 
 
@@ -85,15 +85,15 @@ def test_decoder_error_after_frames_fails_chunk(processor):
     processor.ffmpeg_worker = decode
     with pytest.raises(RuntimeError, match='decoder failure'):
         processor.process_vod_chunk()
-    assert processor.supabase.update_chunk.call_args.args[1] == 'failed'
+    assert processor.backend.update_chunk.call_args.args[1] == 'failed'
 
 
 def test_upload_error_is_not_reported_as_completion(processor):
     processor.ffmpeg_worker = lambda: processor._put(processor.frame_queue, (b'frame', 0))
-    processor.supabase.upload_batch.side_effect = RuntimeError('database unavailable')
+    processor.backend.upload_batch.side_effect = RuntimeError('database unavailable')
     with pytest.raises(RuntimeError, match='database unavailable'):
         processor.process_vod_chunk()
-    assert processor.supabase.update_chunk.call_args.args[1] == 'failed'
+    assert processor.backend.update_chunk.call_args.args[1] == 'failed'
 
 
 def test_empty_decode_fails_chunk(processor):
@@ -103,11 +103,11 @@ def test_empty_decode_fails_chunk(processor):
 
 
 def test_unclaimed_chunk_does_not_delete_or_rewrite_other_worker(processor):
-    processor.supabase.claim_chunk.return_value = False
+    processor.backend.claim_chunk.return_value = False
     with pytest.raises(ValueError, match='not pending or queued'):
         processor.process_vod_chunk()
-    processor.supabase.delete_chunk_detections.assert_not_called()
-    processor.supabase.update_chunk.assert_not_called()
+    processor.backend.delete_chunk_detections.assert_not_called()
+    processor.backend.update_chunk.assert_not_called()
 
 
 def test_deadline_cancels_workers(processor):

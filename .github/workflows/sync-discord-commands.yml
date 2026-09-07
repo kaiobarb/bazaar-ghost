@@ -7,7 +7,7 @@ on:
       - main
       - dev
     paths:
-      - "supabase/functions/ghost-bot/commands.json"
+      - "worker/discord/commands.json"
   workflow_dispatch:
 
 jobs:
@@ -29,5 +29,5 @@ jobs:
           curl --fail-with-body --silent --show-error -X PUT \
             -H 'Content-Type: application/json' \
             -H "Authorization: Bot ${{ secrets.DISCORD_BOT_TOKEN }}" \
-            -d @supabase/functions/ghost-bot/commands.json \
+            -d @worker/discord/commands.json \
             "$URL"

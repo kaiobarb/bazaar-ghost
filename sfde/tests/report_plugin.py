@@ -12,6 +12,7 @@ can show inline image previews on hover.
 """
 
 import re
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,8 +20,9 @@ from typing import Any, Dict, List
 
 import pytest
 
-REPORT_PATH = Path(__file__).resolve().parent / "last_run.txt"
-SUMMARY_MD_PATH = Path(__file__).resolve().parent / "last_run_summary.md"
+REPORT_DIR = Path(os.getenv("SFDE_TEST_REPORT_DIR", str(Path(__file__).resolve().parent)))
+REPORT_PATH = REPORT_DIR / "last_run.txt"
+SUMMARY_MD_PATH = REPORT_DIR / "last_run_summary.md"
 
 # Pattern: vod_id/frame.jpg where vod_id is digits, frame is digits.jpg
 _FRAME_REF_RE = re.compile(r"(\d+)/(\d+\.jpg)")

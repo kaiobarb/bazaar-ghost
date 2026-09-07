@@ -26,7 +26,7 @@ os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
 # Import worker modules
 from video import timestamped_frames
 from frame_processor import FrameProcessor
-from supabase_client import SupabaseClient
+from backend_client import BackendClient
 from json_logger import JSONFormatter
 from telemetry import (
     init_telemetry,
@@ -71,13 +71,13 @@ class SFDEProcessor:
         # Parse SFDE profile from environment variable
         self.profile = self._parse_sfde_profile()
 
-        # Initialize Supabase client first to fetch chunk details
-        self.supabase = SupabaseClient(
+        # Initialize backend client first to fetch chunk details
+        self.backend = BackendClient(
             self.config, test_mode=self.test_mode, quality=self.quality
         )
 
         # Fetch chunk details from database
-        chunk_details = self.supabase.get_chunk_details(self.chunk_id)
+        chunk_details = self.backend.get_chunk_details(self.chunk_id)
         if not chunk_details:
             raise ValueError(f"Could not fetch details for chunk {self.chunk_id}")
 
@@ -89,8 +89,8 @@ class SFDEProcessor:
         if not self.vod_id or not 0 <= self.start_time < self.end_time:
             raise ValueError('Chunk must identify a VOD and a positive time range')
 
-        # Set streamer on supabase client for metric attribution
-        self.supabase.set_streamer(self.streamer)
+        # Set streamer on backend client for metric attribution
+        self.backend.set_streamer(self.streamer)
 
         # Initialize components
         self.frame_queue = queue.Queue(maxsize=self.config["processing"]["queue_size"])
@@ -167,13 +167,13 @@ class SFDEProcessor:
             config = yaml.safe_load(f)
 
         # Override with environment variables if present
-        if os.getenv("SUPABASE_URL"):
-            config["supabase"]["url"] = os.getenv("SUPABASE_URL")
-        if os.getenv("SUPABASE_SECRET_KEY"):
-            config["supabase"]["secret_key"] = os.getenv("SUPABASE_SECRET_KEY")
+        if os.getenv("BAZAARGHOST_API_URL"):
+            config["backend"]["url"] = os.getenv("BAZAARGHOST_API_URL")
+        if os.getenv("BAZAARGHOST_PROCESSOR_KEY"):
+            config["backend"]["secret_key"] = os.getenv("BAZAARGHOST_PROCESSOR_KEY")
 
         for section, names in [('processing', ['queue_size', 'timeout', 'frame_rate']),
-                               ('supabase', ['batch_size', 'connection_timeout'])]:
+                               ('backend', ['batch_size', 'connection_timeout'])]:
             for name in names:
                 value = config[section][name]
                 if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
@@ -377,11 +377,11 @@ class SFDEProcessor:
         # Wrap entire processing in a root span
         with create_span("process_chunk", attributes=self.span_attributes, context=self.trace_context) as root_span:
             try:
-                if not self.supabase.claim_chunk(self.chunk_id):
+                if not self.backend.claim_chunk(self.chunk_id):
                     raise ValueError(f'Chunk {self.chunk_id} is not pending or queued')
                 claimed = True
-                self.supabase.delete_chunk_detections(self.chunk_id)
-                self.supabase.update_chunk(self.chunk_id, 'processing', quality=self.formatted_quality)
+                self.backend.delete_chunk_detections(self.chunk_id)
+                self.backend.update_chunk(self.chunk_id, 'processing', quality=self.formatted_quality)
 
                 # Pre-compute combined crop and subregion slices so both
                 # ffmpeg_worker and opencv_worker have them before they start.
@@ -455,7 +455,7 @@ class SFDEProcessor:
                     root_span.set_attribute("duration.ms", duration_ms)
                     root_span.set_attribute("status", status)
 
-                self.supabase.update_chunk(
+                self.backend.update_chunk(
                     self.chunk_id, 'completed', frames_processed=self.frames_processed,
                     detections_count=len(self.all_detections), quality=self.formatted_quality,
                     processing_duration_ms=round(duration_ms),
@@ -491,7 +491,7 @@ class SFDEProcessor:
                 )
                 if claimed:
                     try:
-                        self.supabase.update_chunk(self.chunk_id, 'failed', error=str(e), quality=self.formatted_quality)
+                        self.backend.update_chunk(self.chunk_id, 'failed', error=str(e), quality=self.formatted_quality)
                     except Exception as update_error:
                         self.logger.error('Failed to persist chunk failure: %s', update_error)
                 raise
@@ -751,7 +751,7 @@ class SFDEProcessor:
                     break
                 continue
             self.result_batch.append(result)
-            if len(self.result_batch) >= self.config['supabase']['batch_size']:
+            if len(self.result_batch) >= self.config['backend']['batch_size']:
                 self._flush_results()
         if not self.shutdown.is_set():
             self._flush_results()
@@ -759,7 +759,7 @@ class SFDEProcessor:
     def _flush_results(self) -> None:
         if not self.result_batch:
             return
-        self.supabase.upload_batch(self.result_batch)
+        self.backend.upload_batch(self.result_batch)
         for result in self.result_batch:
             self.all_detections.append({
                 'timestamp': result['timestamp'], 'username': result['username'],
