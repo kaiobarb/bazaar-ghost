@@ -24,6 +24,14 @@ Deno.serve(async (req) => {
         return new Response("Unauthorized", { status: 401 });
       }
 
+      if (Deno.env.get("ENV") === "dev") {
+        return Response.json({
+          success: true,
+          notifications_sent: 0,
+          skipped: "dev_environment",
+        });
+      }
+
       const {
         username,
         frame_time_seconds,
@@ -32,7 +40,7 @@ Deno.serve(async (req) => {
         streamer_name,
       } = json;
 
-      // Find matching subscriptions (case-sensitive exact match)
+      // Find enabled subscriptions using case-insensitive exact matching.
       const { data: subscriptions } = await supabase
         .from("notification_subscriptions")
         .select("discord_user_id, notify_type, guild_id")
