@@ -61,7 +61,27 @@ Delivery digest tombstones are retained for the account lifetime. WebSub deliver
 
 ## Dedicated migration workflow
 
-`ingest-platforms.yml` accepts `workflow_dispatch` and `workflow_call`, requires `refs/heads/codex/cloudflare-validation`, uses GitHub environment `validation`, and serializes its runs. Discovery defaults off so initial platform tests can start with selected creators/recordings. Optional enrollment runs before a bounded thirty-job/twenty-minute drain. The runner starts no new job after its budget, though an already-running bounded metadata operation may finish later.
+`ingest-platforms.yml` accepts `workflow_dispatch` and `workflow_call`, requires `refs/heads/codex/cloudflare-validation`, uses GitHub environment `validation`, and serializes its runs. Both triggers expose the same controls:
+
+| Input | Default | Behavior |
+|---|---|---|
+| `source` | `none` | Optional enrollment platform: `none`, `youtube`, or `bilibili` |
+| `identity` | empty | Optional creator identity to enroll before draining jobs |
+| `discovery` | `false` | Include broad discovery jobs when true |
+| `dispatch` | `true` | Dispatch OCR for up to three due videos after draining jobs when true |
+| `limit` | `30` | Maximum ingestion jobs to claim; integer from 1 through 100 |
+| `seconds` | `1200` | Budget for starting ingestion jobs; integer from 30 through 1200 |
+
+Discovery defaults off so initial platform tests can start with selected creators/recordings. The default drain remains thirty jobs/twenty minutes with OCR dispatch enabled. The CLI rejects out-of-range or noninteger budgets. It starts no new job after the budget expires, though an already-running bounded metadata operation may finish later. OCR dispatch, when enabled, happens after this drain and is separate from its time/job budget.
+
+For a short run of existing account/candidate jobs without broad discovery or OCR dispatch:
+
+```bash
+gh workflow run ingest-platforms.yml --ref codex/cloudflare-validation \
+  -f source=none -f discovery=false -f dispatch=false -f limit=3 -f seconds=90
+```
+
+This run still claims durable jobs and writes catalog/retry state; `dispatch=false` is not a dry run. Inputs enter task-specific environment variables and a quoted shell argument array, so numeric validation remains in the CLI and a false dispatch input does not fall back to true.
 
 The workflow has no automatic default-branch schedule. GitHub scheduled workflows are activated from the default branch; merely checking out a feature branch would not make a separate schedule exist. The validation pipeline can call ingestion after deployment, or the isolated control plane can explicitly dispatch it once platform behavior is verified. Initial validation must not require changes to the running production/default-branch workflow.
 

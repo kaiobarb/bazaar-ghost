@@ -11,6 +11,15 @@ on:
       discovery:
         type: boolean
         default: false
+      dispatch:
+        type: boolean
+        default: true
+      limit:
+        type: number
+        default: 30
+      seconds:
+        type: number
+        default: 1200
   workflow_dispatch:
     inputs:
       source:
@@ -25,6 +34,18 @@ on:
         description: Include automatic discovery of new Bazaar creators
         type: boolean
         default: false
+      dispatch:
+        description: Dispatch OCR for up to three due videos after ingestion
+        type: boolean
+        default: true
+      limit:
+        description: Maximum ingestion jobs to claim (1–100)
+        type: number
+        default: 30
+      seconds:
+        description: Time budget for starting ingestion jobs (30–1200 seconds)
+        type: number
+        default: 1200
 permissions:
   contents: read
 concurrency:
@@ -43,6 +64,9 @@ jobs:
       SOURCE: ${{ inputs.source || 'none' }}
       IDENTITY: ${{ inputs.identity }}
       DISCOVERY: ${{ inputs.discovery }}
+      INGEST_DISPATCH: ${{ inputs.dispatch }}
+      INGEST_LIMIT: ${{ inputs.limit }}
+      INGEST_SECONDS: ${{ inputs.seconds }}
     steps:
       - uses: actions/checkout@v5
       - name: Verify backend environment
@@ -57,10 +81,11 @@ jobs:
       - name: Enroll optional account
         if: inputs.identity != '' && inputs.source != 'none'
         run: python scripts/platform_ingestion.py enroll --source "$SOURCE" --identity "$IDENTITY"
-      - name: Discover, poll, wait for archives, and dispatch SFDE
+      - name: Run bounded platform ingestion
         shell: bash
         run: |
-          args=(run --limit 30 --seconds 1200 --dispatch)
+          args=(run --limit "$INGEST_LIMIT" --seconds "$INGEST_SECONDS")
+          if [ "$INGEST_DISPATCH" = true ]; then args+=(--dispatch); fi
           if [ "$DISCOVERY" != true ]; then args+=(--no-discovery); fi
           set -o pipefail
           python scripts/platform_ingestion.py "${args[@]}" | tee ingestion-result.jsonl
