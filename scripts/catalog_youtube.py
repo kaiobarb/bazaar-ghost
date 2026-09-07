@@ -106,6 +106,11 @@ def channel_page(channel: str, start: int, limit: int, tab: str) -> Dict[str, An
                                '--playlist-start', str(start), '--playlist-end', str(start + limit - 1),
                                '--socket-timeout', '30', url], capture_output=True, text=True, timeout=180)
     if response.returncode:
+        # yt-dlp explicitly distinguishes an absent tab from transport/access failures.
+        # Upload-only or archive-only creators are valid accounts; retry absent tabs on future polls.
+        if f'This channel does not have a {tab} tab' in response.stderr:
+            return {'entries': [], 'channel_id': channel if re.fullmatch(r'UC[A-Za-z0-9_-]{22}', channel) else None,
+                    'tab_absent': True}
         raise RuntimeError(f'Channel enumeration failed (exit {response.returncode})')
     return json.loads(response.stdout)
 

@@ -1,0 +1,61 @@
+name: Ingest platforms
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Optional account enrollment platform
+        type: choice
+        options: [none, youtube, bilibili]
+        default: none
+      identity:
+        description: Optional YouTube UC ID/@handle/URL or Bilibili uploader UID
+        type: string
+      discovery:
+        description: Include automatic discovery of new Bazaar creators
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: platform-ingestion-dev
+  cancel-in-progress: false
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 35
+    env:
+      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      SOURCE: ${{ inputs.source || 'none' }}
+      IDENTITY: ${{ inputs.identity }}
+      DISCOVERY: ${{ github.event_name == 'schedule' || inputs.discovery }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: dev
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: pip install 'yt-dlp[default]>=2026.7.4,<2027'
+      - name: Enroll optional account
+        if: inputs.identity != '' && inputs.source != 'none'
+        run: python scripts/platform_ingestion.py enroll --source "$SOURCE" --identity "$IDENTITY"
+      - name: Discover, poll, wait for archives, and dispatch SFDE
+        shell: bash
+        run: |
+          args=(run --limit 30 --seconds 1200 --dispatch)
+          if [ "$DISCOVERY" != true ]; then args+=(--no-discovery); fi
+          set -o pipefail
+          python scripts/platform_ingestion.py "${args[@]}" | tee ingestion-result.jsonl
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: platform-ingestion
+          path: ingestion-result.jsonl
+          if-no-files-found: ignore

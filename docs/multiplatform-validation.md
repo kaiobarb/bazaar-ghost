@@ -47,15 +47,15 @@ This was a reviewed test pair, not an automatic duplicate detector. No title-bas
 | Check | Result |
 |---|---|
 | Complete offline SFDE suite, final platform worker image | 96 passed |
-| Python catalog/resolver/workflow tests | 20 passed |
-| Shared Deno tests | 9 passed |
-| Local PostgreSQL/pgTAP contracts | 61 passed across five files |
+| Python catalog/resolver/workflow/ingestion tests | 33 passed |
+| Shared Deno tests including signed YouTube callbacks | 13 passed |
+| Local PostgreSQL/pgTAP contracts | 78 passed across six files |
 | All edge-function type checks | Passed |
 | Deno lint | Passed |
 | Changed workflow YAML parsing | Passed |
 | Whitespace/diff checks | Passed |
 
-The SQL checks include 23 existing processing contracts, 5 existing search contracts, 14 YouTube contracts, 9 Bilibili contracts, and 10 overlap contracts. All fixtures roll back. New migrations were created through the Supabase CLI and applied additively to local Supabase.
+The SQL checks include 23 existing processing contracts, 5 existing search contracts, 14 YouTube contracts, 9 Bilibili contracts, 10 overlap contracts, and 17 automatic-ingestion contracts. All fixtures roll back. New migrations were created through the Supabase CLI and applied additively to local Supabase. The 96-test SFDE image result is from the prior media implementation; the ingestion follow-up changed no SFDE worker code and reran the affected Python, Deno, and SQL checks.
 
 The local CLI's `supabase test db` wrapper encountered a Docker-network naming mismatch; the same pgTAP SQL files were executed directly through `psql` in the verified local database container, and all TAP results were checked. This did not require resetting existing local data.
 
@@ -63,4 +63,19 @@ Scratch logs, metadata, summaries, and comparison images are under `.ignore/yout
 
 ## Not yet validated
 
-GitHub-hosted playback, sustained unattended catalog operation, rate limits under load, Chinese in-game OCR, arbitrary Bilibili uploader enumeration, automatic availability recovery, same-duration edit detection, and automatic overlap alignment remain outside these test results. See [multiplatform-backend.md](multiplatform-backend.md) for the implemented operating scope.
+GitHub-hosted playback, real Google hub subscription/renewal, a real stream finishing during unattended operation, sustained catalog operation, rate limits under load, Chinese in-game OCR, reliable arbitrary Bilibili uploader enumeration, automatic availability recovery, same-duration edit detection, and automatic overlap alignment remain outside these test results. See [multiplatform-backend.md](multiplatform-backend.md) for the implemented operating scope.
+
+## Automatic ingestion follow-up
+
+The new [ingestion worker](platform-ingestion.md) was exercised with public metadata and the confirmed local Supabase instance:
+
+- Explicit YouTube `@Kripparrian` and Bilibili UID `2663423` enrollment resolved the expected immutable identities and scheduled account scans.
+- Bounded recent searches returned 19 YouTube candidates and 13 Bilibili candidates. Two from each were queued and cataloged. MabiVsGames (`UCK79KkzpFhr3MntmZFGN6-g`) and `_yswc` (`631453528`) were enrolled automatically from verified metadata.
+- Four source candidates completed: `AI_UwoktAGE`, `FwFtvty14hk`, `BV1XQbT6QEvj`, and `BV1cvbT6eEm7`. This inserted three new playable source rows and refreshed the existing Kripp upload. No additional SFDE footage was processed in this follow-up.
+- Real YouTube `videos` and `streams` catalog scans worked for Kripp. Retromation's explicit missing-streams-tab response exposed an upload-only account case, which was fixed and rechecked against that channel; it now returns an absent tab without hiding network failures.
+- Bilibili uploader `2663423` succeeded during the integrated run after earlier HTTP 412/API rejection failures. Uploader `2561817` remained blocked and retained a waiting job with an error. General uploader reliability is not established.
+- The local HTTP YouTube callback returned 200 for a pending verification, 404 for its repeated completed challenge, 403 for unsigned delivery, and 204 for signed delivery. Replaying that body left one receipt and one video job. Wrong-account XML returned 400; hub denial was recorded; expired delivery returned 403; a disabled account returned 404. Temporary fixtures were removed after the check.
+- The new due-work RPC selected pending YouTube and Bilibili videos. The actual `process-vod` HTTP handler produced dev dry-run plans with two, one, and two chunks; an explicit environment mismatch returned 409. The server's network permissions allowed only localhost, preventing external dispatch.
+- Local vault-secret and cron-job counts were both zero. No external hub subscription, GitHub dispatch, Discord message, hosted migration, or deployment occurred.
+
+New scratch evidence is under `.ignore/ingestion/`. Credentials were consumed from local CLI status in memory by a wrapper that rejects non-local API URLs. Public extractor metadata and job summaries were saved; local credentials and subscription secrets were not.

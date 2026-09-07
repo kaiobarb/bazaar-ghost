@@ -9,10 +9,12 @@ The original design research is in [multiplatform-spike.md](multiplatform-spike.
 | Source | Catalog input | Processing identity | Media path |
 |---|---|---|---|
 | Twitch | Existing discovery, EventSub, and VOD catalog | Existing numeric source ID | Streamlink → FFmpeg |
-| YouTube | Video IDs/URLs; bounded channel `videos` or `streams` pages | Case-sensitive video ID | Streamlink → FFmpeg; yt-dlp fallback when Streamlink cannot resolve |
-| Bilibili | Published BV submissions and explicit `?p=N` parts | `BV:cid`, independent of part position | Bundled Streamlink UGC adapter → FFmpeg |
+| YouTube | Explicit enrollment, game-video discovery, signed WebSub, scheduled channel polling, and manual backfills | Case-sensitive video ID | Streamlink → FFmpeg; yt-dlp fallback when Streamlink cannot resolve |
+| Bilibili | Uploader enrollment/polling, game-video discovery, and curated BV/part backfills | `BV:cid`, independent of part position | Bundled Streamlink UGC adapter → FFmpeg |
 
-YouTube uploads and finalized livestream archives are supported. Active streams, scheduled videos, and archives still processing are skipped. A later recent scan can admit the finished archive. Metadata extraction uses yt-dlp; it does not download a video during cataloging. The worker resolves a fresh media URL for each chunk.
+YouTube uploads and finalized livestream archives are supported. The automatic ingestion queue retains active streams, scheduled videos, and archives still processing for later readiness checks. The manual one-shot catalog command skips them. Metadata extraction uses yt-dlp; it does not download a video during cataloging. The worker resolves a fresh media URL for each chunk.
+
+The complete enrollment, notification, polling, discovery, scheduling, and retry contract is in [platform-ingestion.md](platform-ingestion.md), including the difference between stream end and replay publication. Its implementation is locally validated; hosted scheduling and a real Google hub callback have not been activated in this task.
 
 Bilibili supports public ordinary uploads and published replay submissions. Each `cid` gets a separate `vods` row, its own duration, and a timeline starting at zero. Part order is metadata, not identity. Unpublished replay dashboards, active live rooms, paid/supporter-only media, interactive videos, and legacy fragmented FLV playback are excluded. The adapter checks that playback duration matches the complete part, rejecting previews.
 
@@ -70,9 +72,9 @@ python scripts/catalog_bilibili.py \
   --video BV1FfL5zPEbH --start-part 2 --limit 2 --templates old
 ```
 
-Repeat `--video` for a curated batch of submissions. Creator-wide Bilibili space enumeration is not implemented. The first release uses curated BV submissions and their multipart backlogs.
+Repeat `--video` for a curated batch of submissions. Automatic recent uploader enumeration is implemented separately in the ingestion worker. Its public extractor can be blocked; one local uploader poll succeeded and another failed with a durable retry. Complete historical uploader enumeration is not claimed.
 
-Both catalog commands accept `--profile-id`, optional `--streamer-id`, `--ranges '[600,1500]'`, `--templates old|current|auto`, and `--dry-run`. Accounts begin disabled unless explicitly enabled. Enabling an existing account creates any missing chunks. New catalog work has priority `-10`, below ordinary Twitch work.
+Both catalog commands accept `--profile-id`, optional `--streamer-id`, `--ranges '[600,1500]'`, `--templates old|current|auto`, and `--dry-run`. Manual catalog accounts begin disabled unless explicitly enabled. The separate enrollment command and verified automatic discovery enable new accounts, preserving existing operator disables. Enabled accounts receive polling jobs. Cataloging an enabled source creates any missing chunks. New catalog work has priority `-10`, below ordinary Twitch work.
 
 Title/tag evidence identifies YouTube Bazaar candidates; Bilibili accepts `Bazaar` or `大巴扎` in submission/part titles. Titles are a coarse admission signal, not a classifier for every frame. Use verified ranges for mixed-game recordings. `--assume-bazaar` is an explicit operator override.
 
@@ -135,7 +137,7 @@ Automatic video alignment, image fingerprinting, duplicate-candidate ranking, an
 
 ## Operational scope and validation
 
-Discovery and availability refresh for the new platforms are operator-driven catalog runs in this release. There is no new scheduled YouTube/Bilibili polling daemon. Recataloging refreshes reachable media; transient resolution errors do not mark videos deleted. Source removal can be recorded through the existing `vods.availability` field. Automatic removal/recovery classification and same-duration edit detection remain follow-up work before unattended production operation.
+Automatic discovery, account polling, archive readiness retries, and a dev ingestion workflow are implemented; see [platform-ingestion.md](platform-ingestion.md) for activation and measured access limits. Recataloging refreshes reachable media; transient resolution errors do not mark videos deleted. Source removal can be recorded through the existing `vods.availability` field. Automatic removal/recovery classification and same-duration edit detection remain follow-up work before unattended production operation.
 
 YouTube/Bilibili detection notifications are suppressed, including historical backfills. Existing Twitch notification behavior remains in place. No Discord messages were sent during testing.
 

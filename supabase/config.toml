@@ -411,3 +411,8 @@ import_map = "./functions/search-chat-mentions/deno.json"
 entrypoint = "./functions/search-chat-mentions/index.ts"
 
 # [functions.eventsub-webhook] - REMOVED: EventSub webhook handling merged into process-vod
+
+[functions.youtube-webhook]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/youtube-webhook/index.ts"

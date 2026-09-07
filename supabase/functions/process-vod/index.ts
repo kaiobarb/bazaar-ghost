@@ -103,8 +103,23 @@ Deno.serve(async (req) => {
     if (!verifySecretKey(req)) {
       return new Response("Unauthorized", { status: 401 });
     }
-    const { vod_id, source_id, source = "twitch", dry_run = false } = await req
+    const {
+      vod_id,
+      source_id,
+      source = "twitch",
+      dry_run = false,
+      expected_environment,
+    } = await req
       .json();
+    if (
+      expected_environment != null &&
+      expected_environment !== (Deno.env.get("ENV") || "production")
+    ) {
+      return Response.json({ error: "Processing environment mismatch" }, {
+        status: 409,
+        headers: corsHeaders,
+      });
+    }
     const sourcePattern = source === "bilibili"
       ? /^BV[A-Za-z0-9]{10}:[1-9][0-9]*$/
       : source === "youtube"

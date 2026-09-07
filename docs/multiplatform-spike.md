@@ -4,6 +4,8 @@ Research date: September 6, 2026, Pacific time; source retrieval continued into 
 
 Implementation follow-up (September 7): [backend operating guide](multiplatform-backend.md) and [real-video validation](multiplatform-validation.md). This spike retains the original research snapshot; the follow-up documents the implemented subset and experimentally verified playback behavior.
 
+Discovery and stream-completion follow-up (September 7): [automatic platform ingestion](platform-ingestion.md) expands the original treatment into a required platform capability and documents the locally implemented queue, YouTube WebSub, account polling, creator enrollment/discovery, and SFDE dispatch. Bilibili publication polling has experimentally variable access; no universal public stream-ended webhook is assumed. This capability is part of the initial platform scope, not an optional extension after manual video ingestion.
+
 ## Recommendation
 
 **Expand BazaarGhost around a platform-independent video catalog and matchup index. Pilot YouTube first, then Bilibili published videos and published livestream replays. Make overlapping footage a first-class relationship: one matchup can have several playable appearances.**
@@ -498,8 +500,8 @@ Record distributions and sample sizes, not just averages. Distinguish “no matc
 | P0 | Media adapter and timestamp contract | `sfde.py`, `video.py`, Docker dependencies | Twitch regression and non-Twitch seek fixtures pass |
 | P0 | Video/part/revision catalog | New adapters and catalog jobs | Idempotent public/supplied video registration and multipart identity |
 | P0 | Source appearances and canonical results | Detection persistence and search RPCs | One encounter can return multiple correctly scoped source links |
-| P1 | YouTube discovery/readiness | New edge functions, scheduler | Resumable channel backfill and reconciliation |
-| P1 | Bilibili ingestion | New adapter and creator configuration | Authorized/curated UGC and replay pilot works, including parts |
+| P0 | YouTube creator enrollment, discovery, and readiness | WebSub callback, account polling, durable queue, scheduler | New creators can be added/discovered; unfinished archives retry; cataloged recordings reach SFDE |
+| P0 | Bilibili creator enrollment, discovery, and publication polling | Uploader/search adapters, durable queue, scheduler | Published replays and parts are found automatically; blocked feeds remain visible and retryable |
 | P1 | Profiles and historical templates | Processing planner, workflow preparation, frame processor | Upload date no longer incorrectly decides footage era |
 | P1 | Player abstraction and routes | Website embed provider, search hooks, share routes | Source-specific playback and legacy links work |
 | P1 | Availability and revision recovery | Availability checker and catalog refresh | Temporary failure, embedding restriction, removal and edit are distinct |
