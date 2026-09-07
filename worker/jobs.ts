@@ -1,6 +1,6 @@
 import { one, rows, statement, requireValue } from "./http";
 import { Twitch, type CatalogStats } from "./twitch";
-import { dispatch, plan, recover } from "./processing";
+import { dispatch, pendingVideos, plan, recover } from "./processing";
 import { notify } from "./discord";
 
 export type Job = {
@@ -24,11 +24,7 @@ export async function enqueueCatalog(env: Env, after = 0) {
 }
 export async function processPending(env: Env) {
   await recover(env);
-  const vods = await rows(
-    env,
-    `SELECT v.id FROM vod_processing_context v WHERE v.processing_enabled=1 AND v.ready_for_processing=1 AND v.availability='available' AND json_array_length(v.bazaar_chapters)>0 AND v.status IN('pending','partial','failed') AND
-    (NOT EXISTS(SELECT 1 FROM chunks WHERE vod_id=v.id) OR EXISTS(SELECT 1 FROM chunks WHERE vod_id=v.id AND status='pending')) ORDER BY v.published_at DESC LIMIT 3`,
-  );
+  const vods = await pendingVideos(env);
   for (const v of vods) await env.JOBS.send({ type: "process", id: v.id });
   const outbox = await rows(
     env,

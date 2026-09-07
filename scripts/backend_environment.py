@@ -8,6 +8,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 BRANCHES = {'validation': 'codex/cloudflare-validation', 'dev': 'dev', 'production': 'main'}
+USER_AGENT = 'BazaarGhost/1.0 (+https://github.com/liftaris/bazaar-ghost)'
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -17,6 +18,8 @@ class NoRedirect(HTTPRedirectHandler):
 
 def open_backend(request, timeout=30):
     """A backend credential must never follow a redirect to another origin."""
+    # Cloudflare rejects urllib's generic default signature on the hosted endpoint.
+    request.add_header('User-Agent', USER_AGENT)
     return build_opener(NoRedirect).open(request, timeout=timeout)
 
 

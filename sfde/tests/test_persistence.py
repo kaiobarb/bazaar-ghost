@@ -14,7 +14,7 @@ def test_processor_credentials_never_follow_an_http_redirect():
 
     class RedirectHandler(BaseHTTPRequestHandler):
         def do_GET(self):
-            received.append((self.path, self.headers.get('Authorization')))
+            received.append((self.path, self.headers.get('Authorization'), self.headers.get('User-Agent')))
             self.send_response(302)
             self.send_header('Location', '/unexpected-destination')
             self.end_headers()
@@ -31,7 +31,8 @@ def test_processor_credentials_never_follow_an_http_redirect():
     try:
         with pytest.raises(ValueError, match='redirect'):
             client._request('chunks/example')
-        assert received == [('/api/processor/chunks/example', 'Bearer disposable-test-key')]
+        assert received == [('/api/processor/chunks/example', 'Bearer disposable-test-key',
+                             'BazaarGhost/1.0 (+https://github.com/liftaris/bazaar-ghost)')]
     finally:
         server.shutdown()
         server.server_close()

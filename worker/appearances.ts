@@ -23,13 +23,24 @@ export async function appearanceSearch(env:Env,input:Input) {
   const {where,args,limit,offset}=filters(input);
   const visible=`WITH visible AS (SELECT coalesce(a.matchup_id,d.detection_id) AS group_id,d.* FROM video_detections d LEFT JOIN matchup_appearances a ON a.detection_id=d.detection_id)`;
   // Select matched groups before pagination, then include all available copies of each matched group.
-  const groups=await rows(env,`${visible}, matched AS(SELECT DISTINCT group_id FROM visible ${where})
-    SELECT v.group_id,max(v.indexed_at) AS latest,count(*) OVER() AS total_count FROM visible v JOIN matched m USING(group_id)
-    GROUP BY v.group_id ORDER BY latest DESC,v.group_id LIMIT ? OFFSET ?`,...args,limit,offset);
-  if(!groups.length)return [];
-  const copies=await rows(env,`${visible} SELECT * FROM visible WHERE group_id IN(SELECT value FROM json_each(?)) ORDER BY confidence DESC,detection_id`,JSON.stringify(groups.map(g=>g.group_id)));
+  const fields = [
+    'detection_id','username','confidence','rank','frame_time_seconds','storage_path',
+    'no_right_edge','truncated','igd','indexed_at','vod_id','source','source_id',
+    'source_video_id','source_part_id','source_part_index','title','published_at',
+    'recorded_at','platform_account_id','streamer_id','creator_name','video_url','embed_url','recorded_timestamp',
+  ];
+  const jsonObject = fields.map(field => `'${field}',${field}`).join(',');
+  // One SQL statement provides one snapshot for group selection and all of its copies.
+  const groups=await rows(env,`${visible}, matched AS(SELECT DISTINCT group_id FROM visible ${where}),
+    selected AS (SELECT v.group_id,max(v.indexed_at) AS latest,count(*) OVER() AS total_count
+      FROM visible v JOIN matched m USING(group_id) GROUP BY v.group_id
+      ORDER BY latest DESC,v.group_id LIMIT ? OFFSET ?)
+    SELECT selected.group_id,selected.total_count,
+      (SELECT json_group_array(json_object(${jsonObject})) FROM
+        (SELECT * FROM visible WHERE group_id=selected.group_id ORDER BY confidence DESC,detection_id)) AS copies
+    FROM selected ORDER BY selected.latest DESC,selected.group_id`,...args,limit,offset);
   return groups.map(group=>{
-    const appearances=copies.filter(d=>d.group_id===group.group_id).map(({group_id,...d})=>decodeRow(d));
+    const appearances = (JSON.parse(group.copies) as Record<string,unknown>[]).map(decodeRow);
     return {matchup_id:group.group_id,username:appearances[0].username,appearances,total_count:group.total_count};
   });
 }

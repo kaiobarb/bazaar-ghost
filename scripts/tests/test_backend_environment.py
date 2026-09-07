@@ -12,6 +12,7 @@ from urllib.request import Request
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import backend_environment as backend
 import catalog_api
+import clear_dev_storage
 
 
 class EnvironmentTests(unittest.TestCase):
@@ -62,6 +63,23 @@ class EnvironmentTests(unittest.TestCase):
         request = Request('https://worker.example/api/catalog/accounts', headers={'Authorization': 'Bearer test'})
         with self.assertRaisesRegex(ValueError, 'redirect'):
             backend.NoRedirect().redirect_request(request, None, 302, '', {}, 'https://other.example')
+
+    def test_backend_request_identifies_application_without_changing_credentials(self):
+        request = Request('https://worker.example/health', headers={'Authorization': 'Bearer disposable-test'})
+        with patch.object(backend, 'build_opener') as factory:
+            backend.open_backend(request, timeout=15)
+            outgoing = factory.return_value.open.call_args.args[0]
+        self.assertEqual(outgoing.get_header('User-agent'), backend.USER_AGENT)
+        self.assertEqual(outgoing.get_header('Authorization'), 'Bearer disposable-test')
+
+    def test_storage_sweep_verifies_dev_before_using_admin_key(self):
+        for environment in ('validation', 'production'):
+            with self.subTest(environment=environment), patch.object(
+                    clear_dev_storage, 'selected_environment', return_value=('https://worker.example', environment)), patch.object(
+                    clear_dev_storage, 'open_backend') as opener:
+                with self.assertRaisesRegex(SystemExit, 'outside dev'):
+                    clear_dev_storage.main()
+                opener.assert_not_called()
 
     def test_local_cannot_impersonate_a_hosted_environment(self):
         with patch.dict(os.environ, {'BAZAARGHOST_API_URL': 'http://127.0.0.1:8787', 'ENVIRONMENT': 'production'}, clear=True):

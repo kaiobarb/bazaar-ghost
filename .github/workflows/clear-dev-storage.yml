@@ -16,6 +16,7 @@ jobs:
     environment: dev
     timeout-minutes: 5
     env:
+      ENVIRONMENT: dev
       BAZAARGHOST_API_URL: ${{ vars.BAZAARGHOST_API_URL }}
       BAZAARGHOST_ADMIN_KEY: ${{ secrets.BAZAARGHOST_ADMIN_KEY }}
     steps:

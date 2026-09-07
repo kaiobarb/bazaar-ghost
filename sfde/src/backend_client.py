@@ -38,6 +38,7 @@ class BackendClient:
 
     def _request(self, path, method='GET', data=None, chunk_id=None, raw=False):
         headers = {'Authorization': f'Bearer {self.key}',
+                   'User-Agent': 'BazaarGhost/1.0 (+https://github.com/liftaris/bazaar-ghost)',
                    'Content-Type': 'image/jpeg' if raw else 'application/json'}
         if chunk_id in self.claims:
             headers['X-Claim-Token'] = self.claims[chunk_id]

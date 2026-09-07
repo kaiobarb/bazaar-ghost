@@ -1,7 +1,7 @@
 import { atomic } from './atomic';
 import { body, decodeRow, HttpError, integer, now, one, requireValue, rows, statement, uuid } from './http';
 import { accountIdentity, source, videoIdentity } from './sources';
-import { dispatch, normalizeRanges, plan } from './processing';
+import { dispatch, normalizeRanges, pendingVideos, plan, recover } from './processing';
 import { renewSubscription } from './youtube-websub';
 
 type Input = Record<string, any>;
@@ -38,21 +38,25 @@ export async function upsertAccount(env: Env, input: Input) {
   if(input.streamer_id != null) integer(input.streamer_id,'streamer ID',1);
   const automatic = input.job_id != null || input.lease_token != null;
   requireValue(!automatic || (input.sfde_profile_id == null && input.streamer_id == null), 'Automatic catalog cannot change operator profile/link settings');
+  const previous=await one(env,'SELECT * FROM platform_accounts WHERE source=? AND source_id=?',platform,identity);
+  const accountId=previous?.id??crypto.randomUUID();
   const checks=jobChecks(input, `AND j.source=? AND j.kind='video' AND (j.account_id IS NULL OR EXISTS(
     SELECT 1 FROM platform_accounts a WHERE a.id=j.account_id AND a.source=? AND a.source_id=?))`, [platform,platform,identity]);
+  checks.push({sql:'SELECT NOT EXISTS(SELECT 1 FROM platform_accounts WHERE source=? AND source_id=? AND id<>?)',args:[platform,identity,accountId]});
   await atomic(env,checks,[statement(env,`INSERT INTO platform_accounts(id,source,source_id,display_name,processing_enabled,sfde_profile_id,streamer_id)
     VALUES(?,?,?,?,?,?,?) ON CONFLICT(source,source_id) DO UPDATE SET display_name=excluded.display_name,
     processing_enabled=CASE WHEN ? OR ? IS NULL THEN platform_accounts.processing_enabled ELSE excluded.processing_enabled END,
     sfde_profile_id=coalesce(?,platform_accounts.sfde_profile_id),streamer_id=coalesce(?,platform_accounts.streamer_id)`,
-    crypto.randomUUID(),platform,identity,name,input.processing_enabled??false,input.sfde_profile_id??1,input.streamer_id,
-    automatic || (input.preserve_disabled??false),input.processing_enabled,input.sfde_profile_id,input.streamer_id)]);
+    accountId,platform,identity,name,input.processing_enabled??false,input.sfde_profile_id??1,input.streamer_id,
+    automatic || (input.preserve_disabled??false),input.processing_enabled,input.sfde_profile_id,input.streamer_id),
+    enqueueStatement(env,{source:platform,kind:'account',source_id:identity,account_id:accountId},true)]);
   const account=(await one(env,'SELECT * FROM platform_accounts WHERE source=? AND source_id=?',platform,identity))!;
-  if(account.processing_enabled) await enqueueJob(env,{source:platform,kind:'account',source_id:identity,account_id:account.id, ...fenceFields(input)});
   return decoded(account);
 }
-function fenceFields(input: Input) {return {job_id:input.job_id,lease_token:input.lease_token};}
 export async function updateAccount(env: Env,id:string,input: Input) {
   uuid(id);
+  const previous=await one(env,'SELECT * FROM platform_accounts WHERE id=?',id);
+  if(!previous) throw new HttpError(404,'Account not found');
   const fields:Input={};
   for(const key of ['catalog_cursor','archive_cursor','sfde_profile_id','streamer_id'])
     if(input[key]!=null) fields[key]=integer(input[key],key,1);
@@ -64,10 +68,11 @@ export async function updateAccount(env: Env,id:string,input: Input) {
     ['processing_enabled','sfde_profile_id','streamer_id'].every(key => input[key] == null), 'Automatic catalog cannot change operator settings');
   const checks=jobChecks(input, `AND j.kind='account' AND j.account_id=? AND EXISTS(
     SELECT 1 FROM platform_accounts a WHERE a.id=j.account_id AND a.source=j.source AND a.processing_enabled=1)`, [id]);
-  await atomic(env,checks,[statement(env,`UPDATE platform_accounts SET ${Object.keys(fields).map(k=>`${k}=?`).join(',')} WHERE id=?`,...Object.values(fields),id)]);
+  checks.push({sql:'SELECT EXISTS(SELECT 1 FROM platform_accounts WHERE id=?)',args:[id]});
+  await atomic(env,checks,[statement(env,`UPDATE platform_accounts SET ${Object.keys(fields).map(k=>`${k}=?`).join(',')} WHERE id=?`,...Object.values(fields),id),
+    ...(input.processing_enabled===true?[enqueueStatement(env,{source:previous.source,kind:'account',source_id:previous.source_id,account_id:id,wake:true},true)]:[])]);
   const account=await one(env,'SELECT * FROM platform_accounts WHERE id=?',id);
   if(!account) throw new HttpError(404,'Account not found');
-  if(input.processing_enabled===true) await enqueueJob(env,{source:account.source,kind:'account',source_id:account.source_id,account_id:id,wake:true,...fenceFields(input)});
   return decoded(account);
 }
 export async function saveVideo(env: Env,input: Input) {
@@ -120,13 +125,16 @@ function jobIdentity(input: Input) {
   requireValue(input.wake==null||typeof input.wake==='boolean','Invalid wake');
   return {platform,identity};
 }
-export function enqueueStatement(env: Env,input: Input) {
+export function enqueueStatement(env: Env,input: Input, onlyEnabledAccount = false) {
   const {platform,identity}=jobIdentity(input), time=now(),cutoff=new Date(Date.now()-86400_000).toISOString();
-  return statement(env,`INSERT INTO platform_ingestion_jobs(id,source,kind,source_id,account_id) VALUES(?,?,?,?,?)
+  const insert = onlyEnabledAccount
+    ? `SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM platform_accounts WHERE id=? AND processing_enabled=1)`
+    : `VALUES(?,?,?,?,?)`;
+  return statement(env,`INSERT INTO platform_ingestion_jobs(id,source,kind,source_id,account_id) ${insert}
     ON CONFLICT(source,kind,source_id) DO UPDATE SET account_id=coalesce(platform_ingestion_jobs.account_id,excluded.account_id),
     status=CASE WHEN status<>'processing' AND (? OR (status IN('completed','skipped') AND completed_at<?)) THEN 'pending' ELSE status END,
     next_attempt_at=CASE WHEN ? OR (status IN('completed','skipped') AND completed_at<?) THEN ? ELSE next_attempt_at END,
-    rerun_requested=rerun_requested OR (? AND status='processing')`,crypto.randomUUID(),platform,input.kind,identity,input.account_id,input.wake??false,cutoff,input.wake??false,cutoff,time,input.wake??false);
+    rerun_requested=rerun_requested OR (? AND status='processing')`,crypto.randomUUID(),platform,input.kind,identity,input.account_id,...(onlyEnabledAccount?[input.account_id]:[]),input.wake??false,cutoff,input.wake??false,cutoff,time,input.wake??false);
 }
 export async function enqueueJob(env: Env,input: Input) {
   const {platform,identity}=jobIdentity(input),checks=jobChecks(input, `AND j.source=? AND (
@@ -193,7 +201,9 @@ export async function catalogRoute(req:Request,env:Env) {
   } else if(path==='/dispatch') {
     requireValue(data.expected_environment===env.ENVIRONMENT,'Environment mismatch');
     requireValue(data.dry_run==null||typeof data.dry_run==='boolean','Invalid dry_run');
-    const limit=integer(data.limit??3,'limit',1,3),due=await rows(env,`SELECT DISTINCT v.id FROM vod_processing_context v JOIN chunks c ON c.vod_id=v.id WHERE v.source IN('youtube','bilibili') AND v.processing_enabled=1 AND v.ready_for_processing=1 AND v.availability='available' AND c.status='pending' AND (c.scheduled_for IS NULL OR c.scheduled_for<=?) ORDER BY v.id LIMIT ?`,now(),limit);
+    const limit=integer(data.limit??3,'limit',1,3);
+    await recover(env);
+    const due=await pendingVideos(env,limit,true);
     let count=0;
     for(const v of due) {if(data.dry_run) await plan(env,v.id);else if((await dispatch(env,v.id)).length) count++;}
     result={dispatched:count};

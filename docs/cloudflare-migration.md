@@ -1,6 +1,6 @@
 # Cloudflare backend migration
 
-This worktree replaces the backend's Supabase runtime with one Cloudflare Worker, D1, R2, Queues, and Cron Triggers. OCR, Docker builds, tests, processing jobs, Discord command registration, deployment execution, and the weekly dev storage purge remain in **GitHub Actions**. The frontend repository is untouched. Nothing has been deployed.
+This worktree replaces the backend's Supabase runtime with one Cloudflare Worker, D1, R2, Queues, and Cron Triggers. OCR, Docker builds, tests, processing jobs, Discord command registration, deployment execution, and the weekly dev storage purge remain in **GitHub Actions**. The frontend repository is untouched. The original migration at `6a6d0ae` was local only; the subsequent multiplatform commit `2923d2a` is deployed to the isolated [validation Worker](https://bazaarghost-validation.kaio-8df.workers.dev/health). Existing dev/production services have not been migrated. See the [current work log](platform-work-log.md) for deployment evidence and unfinished hosted checks.
 
 ## Service mapping
 
@@ -115,15 +115,15 @@ Processor endpoints under `/api/processor/` use `PROCESSOR_KEY`; attempt mutatio
 
 The old `generate-seed-data` endpoint is replaced by the offline snapshot tools below. PostgreSQL migration history remains under `scripts/migration/postgres/` as source-schema evidence; it is not executable Cloudflare infrastructure. Active Supabase functions, configuration, deployment workflows, and sync scripts are removed.
 
-## Preparing an eventual deployment
+## Preparing the eventual dev/production cutover
 
-No commands in this section were executed against hosted resources.
+These steps describe the eventual dev/production cutover. Those existing environments remain untouched. The separate validation environment has already been provisioned and deployed using `wrangler.validation.jsonc`; its hosted processing checks are still incomplete.
 
 1. Provision separate dev/production D1 databases, R2 `detections` and `logs` buckets, a queue and dead-letter queue per environment. Use the names in `wrangler.dev.jsonc` and `wrangler.production.jsonc`.
 2. Fill in each D1 ID and public HTTPS URL. Configure a Worker route/custom domain, or deliberately enable `workers_dev` and use that URL. Both are disabled/unset in the templates.
 3. Set Worker secrets: `ADMIN_KEY`, `PROCESSOR_KEY`, `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`, `TWITCH_EVENTSUB_SECRET`, `GITHUB_TOKEN`, `DISCORD_PUBLIC_KEY`, and `DISCORD_BOT_TOKEN`. Use distinct dev/production credentials. GitHub dispatch needs Actions write access to this repository.
 4. Keep `OUTBOUND_ENABLED=false` during data migration and initial read verification. Apply D1 migrations and import data, then verify counts, search examples, profiles, foreign keys, and object samples.
-5. Configure GitHub environments with the new URL and keys. The optional deploy workflow needs a scoped Cloudflare API token/account ID and `CLOUDFLARE_BACKEND_ENABLED=true`. It is manual-only, requires the matching `dev`/`main` branch, and validates the target config and separation of dev/production databases and buckets. Protect the production GitHub environment. Nothing automatically deploys on push in this worktree.
+5. Configure GitHub environments with the new URL and keys. The optional dev/production deploy workflow needs a scoped Cloudflare API token/account ID and `CLOUDFLARE_BACKEND_ENABLED=true`. It is manual-only, requires the matching `dev`/`main` branch, and validates the target config and separation of dev/production databases and buckets. Protect the production GitHub environment. The dedicated validation branch has its own push pipeline; it does not enable these dev/production deployments.
 6. Point Twitch/Discord callbacks at the Worker. **Clear imported EventSub subscription IDs only after the new callback is ready**, then run discovery/cataloging to register subscriptions for the new callback. Retire the old callback subscriptions to avoid dual catalogers.
 7. In the separate frontend repository, update the backend origin and Next.js image host allowlist. The SDK can keep its existing public anon value during transition; these Worker reads do not use it as authentication. Confirm CORS origins. No frontend change was made here.
 8. Enable outbound integrations in dev, run actual GitHub VOD jobs, inspect their images/IGD/search results, and verify the dead-letter queue is empty before production cutover. This hosted verification remains necessary; local mocks cannot validate provider permissions, Twitch account behavior, or remote limits.
@@ -145,7 +145,7 @@ Copy storage separately with an S3-compatible transfer tool (for example rclone 
 
 Keep Supabase intact and paused through the cutover window. A rollback can restore the old frontend origin and webhook/schedule configuration, but detections/subscriptions created after cutover need export/reconciliation first; there is no dual-write system. D1 Time Travel and R2 durability replace portions of Supabase backup infrastructure, not a complete application rollback plan.
 
-## Verified locally (2026-09-07)
+## Original local verification at `6a6d0ae` (2026-09-07)
 
 - 27 Worker integration tests passed in the Cloudflare runtime with real local D1/R2 bindings.
 - 96 Python/OCR tests passed offline in the newly built `sfde:cloudflare-test` image.
@@ -153,9 +153,9 @@ Keep Supabase intact and paused through the cutover window. A rollback can resto
 - Three synthetic videos each completed all six sampled frames and produced the expected name/rank: `sakura.` / diamond, `CapMoura` / gold, and `wsd1050458961` / gold. Each JPEG was fetched and verified from R2 through the Worker.
 - The actual GitHub preparation script resolved three planned chunks, a valid profile, and 480p/30 FPS using the local API.
 - The separate frontend's installed Supabase SDK successfully exercised stats, streamer lookup, missing-row lookup, paginated VODs, matchup search, top streamers, and embed data against localhost. No frontend files changed.
-- Type checking, workflow YAML parsing, and Wrangler bundle dry-runs for local/dev/production passed. No hosted resources, callbacks, notifications, or GitHub jobs were changed or invoked.
+- Type checking, workflow YAML parsing, and Wrangler bundle dry-runs for local/dev/production passed. At this original local milestone, no hosted resources, callbacks, notifications, or GitHub jobs had been changed or invoked. Later isolated deployment evidence is recorded in the [platform work log](platform-work-log.md).
 
-The local smoke evidence is in `.ignore/cloudflare-local-evidence.json` and `.ignore/cloudflare-ocr-smoke.log`. Local VODs 10–12 remain completed, while VOD 1 has three pending chunks for exploration.
+The original local smoke evidence is in `.ignore/cloudflare-local-evidence.json` and `.ignore/cloudflare-ocr-smoke.log`. At that milestone, local VODs 10–12 were completed and VOD 1 had three pending chunks for exploration; subsequent tests may change local runtime state.
 
 ## Cost context
 

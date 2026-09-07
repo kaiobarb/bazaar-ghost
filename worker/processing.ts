@@ -164,6 +164,18 @@ export async function recover(env: Env) {
     new Date(Date.now() - 35 * 60_000).toISOString(),
   ).run();
 }
+export async function pendingVideos(env: Env, limit = 3, platformsOnly = false) {
+  const time = now();
+  return rows(env, `SELECT v.id FROM vod_processing_context v
+    WHERE v.processing_enabled=1 AND v.ready_for_processing=1 AND v.availability='available'
+    AND v.status IN('pending','partial','failed') AND json_array_length(v.bazaar_chapters)>0
+    ${platformsOnly ? "AND v.source IN('youtube','bilibili')" : ''}
+    AND (NOT EXISTS(SELECT 1 FROM chunks WHERE vod_id=v.id) OR EXISTS(
+      SELECT 1 FROM chunks WHERE vod_id=v.id AND status='pending' AND (scheduled_for IS NULL OR scheduled_for<=?)))
+    ORDER BY coalesce((SELECT max(priority) FROM chunks WHERE vod_id=v.id AND status='pending'
+      AND (scheduled_for IS NULL OR scheduled_for<=?)),CASE WHEN v.source='twitch' THEN 0 ELSE -10 END) DESC,
+      v.published_at DESC,v.id LIMIT ?`, time,time,integer(limit,'pending video limit',1,100));
+}
 export async function dispatch(env: Env, vodId: number) {
   const pending = await plan(env, vodId);
   if (!pending.length) return [];
@@ -191,10 +203,11 @@ export async function dispatch(env: Env, vodId: number) {
         .map((c) =>
           statement(
             env,
-            "UPDATE chunks SET status='queued',queued_at=?,updated_at=? WHERE id=? AND status='pending' AND (SELECT count(*) FROM chunks WHERE status IN('queued','processing'))<? RETURNING id",
+            "UPDATE chunks SET status='queued',queued_at=?,updated_at=? WHERE id=? AND status='pending' AND (scheduled_for IS NULL OR scheduled_for<=?) AND EXISTS(SELECT 1 FROM vod_processing_context v WHERE v.id=chunks.vod_id AND v.processing_enabled=1 AND v.ready_for_processing=1 AND v.availability='available') AND (SELECT count(*) FROM chunks WHERE status IN('queued','processing'))<? RETURNING id",
             queuedAt,
             queuedAt,
             c.id,
+            queuedAt,
             maxActive,
           ),
         ),

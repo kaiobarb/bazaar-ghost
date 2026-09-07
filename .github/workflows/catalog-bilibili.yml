@@ -19,6 +19,9 @@ on:
         type: choice
         options: [auto, old, current]
         default: auto
+      ranges:
+        description: Optional verified source-second ranges as JSON
+        type: string
       enable_processing:
         description: Enable this Bilibili uploader for SFDE
         type: boolean
@@ -42,6 +45,7 @@ jobs:
       START_PART: ${{ inputs.start_part }}
       LIMIT: ${{ inputs.limit }}
       TEMPLATES: ${{ inputs.templates }}
+      RANGES: ${{ inputs.ranges }}
       ENABLE_PROCESSING: ${{ inputs.enable_processing }}
     steps:
       - uses: actions/checkout@v5
@@ -54,6 +58,7 @@ jobs:
         shell: bash
         run: |
           args=(--video "$VIDEO" --start-part "$START_PART" --limit "$LIMIT" --templates "$TEMPLATES")
+          if [ -n "$RANGES" ]; then args+=(--ranges "$RANGES"); fi
           if [ "$ENABLE_PROCESSING" = true ]; then args+=(--enable-processing); fi
           python scripts/catalog_bilibili.py "${args[@]}" > catalog-result.json
       - uses: actions/upload-artifact@v4
