@@ -1,18 +1,16 @@
 # BazaarGhost
 
-BazaarGhost finds opponents in Twitch VODs of [The Bazaar](https://www.thebazaar.gg/) and makes those appearances searchable at [bazaarghost.stream](https://bazaarghost.stream). This repository contains the cataloger, processing pipeline, database, and Discord integration. The website is maintained separately.
+BazaarGhost finds opponents in Twitch VODs of [The Bazaar](https://www.thebazaar.gg/) and makes those appearances searchable at [bazaarghost.stream](https://bazaarghost.stream). This repository contains the cataloger, processing pipeline, database, and Discord bot integration.
 
 ## Processing contract
 
 A detection means a sampled frame contained a rank emblem and an opponent name that passed OCR validation. It includes the source VOD, absolute second, rank, OCR confidence, screenshot, truncation flags, and optional in-game day. It is not a complete match history or a claim that OCR is always correct.
 
-1. Twitch discovery catalogs streamers with processing **disabled**. Enable a streamer after checking its SFDE crop profile.
+1. Twitch discovery catalogs new streamers with processing **enabled** and creates their EventSub subscriptions.
 2. The cataloger identifies Bazaar chapter ranges. PostgreSQL plans missing work in chunks of at most 1,800 seconds, including short tails. An empty Bazaar range list creates no work.
 3. EventSub or the scheduler asks `process-vod` to dispatch pending chunks to GitHub Actions. Only available, ready VODs belonging to enabled streamers qualify.
 4. Each SFDE container atomically claims one chunk. Streamlink resolves the rendition; FFmpeg seeks the HLS playlist, crops, and samples at 0.5 FPS. OpenCV detects the nameplate and PaddleOCR reads the opponent.
 5. The result worker uploads screenshots before inserting detections. A chunk completes only after all frames and the final result batch drain successfully. Search RPCs hide unavailable VODs.
-
-See [the review and validation record](docs/codebase-review.md) for the previous failure modes, resulting design, and limits of local verification.
 
 ## Layout
 

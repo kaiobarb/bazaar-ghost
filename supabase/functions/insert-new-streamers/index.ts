@@ -7,6 +7,7 @@ import {
   syncStreamerIdentity,
   verifySecretKey,
 } from "../_shared/supabase.ts";
+import { ensureEventSubSubscription } from "../_shared/eventsub.ts";
 import { getBazaarGameId, twitchApiCall } from "../_shared/twitch.ts";
 import { log, recordCounter } from "../_shared/telemetry.ts";
 
@@ -141,7 +142,7 @@ async function insertNewStreamers(): Promise<InsertNewStreamersResult> {
         login: user.login,
         display_name: user.display_name,
         profile_image_url: user.profile_image_url,
-        processing_enabled: false,
+        processing_enabled: true,
       });
 
       if (insertError) {
@@ -170,7 +171,8 @@ async function insertNewStreamers(): Promise<InsertNewStreamersResult> {
           display_name: user.display_name,
         });
 
-        // Processing is enabled explicitly after choosing a suitable SFDE profile.
+        // Create EventSub subscription for the new processing-enabled streamer
+        await ensureEventSubSubscription(parseInt(user.id), user.login);
       }
 
       // Rate limiting: wait 100ms between streamer checks

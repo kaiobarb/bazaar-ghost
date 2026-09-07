@@ -75,7 +75,7 @@ export async function dispatchProcessing(
     if (!ids.length) continue;
     try {
       const response = await fetch(
-        "https://api.github.com/repos/kaiobarb/bazaar-ghost/actions/workflows/process-vod.yml/dispatches",
+        "https://api.github.com/repos/liftaris/bazaar-ghost/actions/workflows/process-vod.yml/dispatches",
         {
           method: "POST",
           headers: {

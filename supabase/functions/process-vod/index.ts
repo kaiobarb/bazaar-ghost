@@ -140,7 +140,7 @@ Deno.serve(async (req) => {
       old_templates: plan.old_templates,
       github_run_url: dry_run || !ids.length
         ? undefined
-        : "https://github.com/kaiobarb/bazaar-ghost/actions/workflows/process-vod.yml",
+        : "https://github.com/liftaris/bazaar-ghost/actions/workflows/process-vod.yml",
     }, { headers: corsHeaders });
   } catch (error: any) {
     console.error("Process VOD failed:", error);

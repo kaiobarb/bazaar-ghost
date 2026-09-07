@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
-IMAGE_NAME="${IMAGE_NAME:-ghcr.io/kaiobarb/bazaar-ghost/sfde}"
+IMAGE_NAME="${IMAGE_NAME:-ghcr.io/liftaris/bazaar-ghost/sfde}"
 VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
 case "${1:-}" in
   --test)
