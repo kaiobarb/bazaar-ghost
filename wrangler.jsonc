@@ -13,6 +13,7 @@
     "BUILD_COMMIT": "local",
     "PUBLIC_URL": "http://localhost:8787",
     "OUTBOUND_ENABLED": "false",
+    "AUTH_ENABLED": "false",
     "CORS_ORIGINS": "http://localhost:3000,https://bazaarghost.stream",
   },
   "d1_databases": [
@@ -51,6 +52,7 @@
   },
   "triggers": {
     "crons": [
+      "17 * * * *",
       "*/3 * * * *",
       "0 * * * *",
       "0 0,12 * * *",

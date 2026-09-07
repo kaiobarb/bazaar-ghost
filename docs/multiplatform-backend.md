@@ -55,6 +55,16 @@ Title/tag evidence nominates candidates; it does not classify every frame of a r
 
 Accounts have independent processing flags and profiles. An optional Twitch streamer link records a verified creator relationship; a reuploader is not automatically the original streamer. Profile precedence is video override, platform account, linked streamer, then profile 1. Configure a real default crop before enabling discovery; the original local full-frame fixture profile is not a production crop profile.
 
+Reviewed settings can be changed without fetching upstream media again:
+
+```bash
+python scripts/catalog_settings.py account '<account-uuid>' --clear-streamer
+python scripts/catalog_settings.py video 123 --account-id '<account-uuid>' --profile-id 3
+python scripts/catalog_settings.py video 123 --account-id '<account-uuid>' --clear-profile
+```
+
+The video command takes the internal numeric ID returned by cataloging and requires the expected owning account. Clearing a video override restores account-profile inheritance; clearing a creator link also removes that link from its existing recordings. Omitted settings remain unchanged. Automatic jobs cannot set or clear operator profile/link fields. Effective profile changes are rejected while affected chunks are queued or processing; no-ops and account changes that do not affect an overridden video remain allowed. These settings affect future processing and do not automatically reprocess completed chunks.
+
 `published_at` is publication time. `recorded_at` is an optional known start for the playable timeline. The backend does not invent a recording date from a recent reupload. `template_version=old|current` is explicit. In `auto`, Twitch uses its publication cutoff; YouTube/Bilibili use a known recording date and otherwise default to current. Known pre-August-12-2025 footage should use `--templates old`; old templates require 480p. A Bilibili recording timestamp must refer to one explicit part, not a copied timestamp across all parts.
 
 The Worker validates source identity, ownership, account settings, duration, and ranges. Catalog updates and lease checks use guarded D1 transactions; a client-side read followed by a blind PATCH is no longer the revision boundary. Once chunks exist, duration/range changes are rejected for explicit operator handling. Routine recataloging preserves verified ranges and template/date overrides. Same-duration edits cannot currently be identified automatically.
@@ -66,6 +76,8 @@ The processor resolves a VOD by `(source, source_id)` or its internal ID. Its no
 The existing processing workflow accepts `source=twitch|youtube|bilibili`, with the platform's external ID in `vod_id`. The Worker dispatches that workflow on the branch paired with its environment. A global chunk cap bounds active work, and the workflow runs at most four matrix workers simultaneously.
 
 Cloudflare's existing ownership safeguards remain: atomic claim tokens, queued-at dispatch fencing, bounded streamed uploads, screenshot-before-detection validation, deterministic detection IDs, and stale-runner rejection. R2 paths add a platform namespace for new non-Twitch images while retaining chunk and attempt identity. Imported screenshot keys remain readable at their historical paths. Signed playback locators are resolved per chunk and are not stored in the catalog or printed in decoder logs.
+
+Successful completion requires a continuous sampled timestamp sequence across the requested range and processing of every decoded sample. Clean early EOF fails the chunk. Logs and exported summaries include requested bounds, first/last sample timestamps, expected sample count, and decoded count. This verifies sampled coverage; it does not establish exhaustive matchup recall.
 
 IGD extraction remains configurable through the profile's `igd_crop_region`. The OCR alphabet is unchanged; Chinese uploader names are preserved, but arbitrary Chinese in-game username recognition is not established by this port. Quality selection normalizes media to the template geometry; native resolution may differ from processing resolution.
 
@@ -79,6 +91,7 @@ All routes below require `CATALOG_KEY`, supplied by runners as `BAZAARGHOST_CATA
 | `POST /accounts/upsert` | Validate and persist account metadata/settings; atomically preserve disables during discovery |
 | `PATCH /accounts/<id>` | Update allowed operator fields or manual backfill progress |
 | `POST /videos` | Guarded catalog upsert, revision checks, and missing-work planning |
+| `PATCH /videos/<internal-id>` | Manual profile set/clear; requires `account_id` and `sfde_profile_id` (ID or null) |
 | `POST /jobs/enqueue`, `/jobs/claim`, `/jobs/finish`, `/jobs/attach-account` | Durable ingestion queue and lease operations |
 | `POST /subscriptions/renew` | Worker-owned hub subscription/renewal, without returning callback secrets |
 | `POST /dispatch` | Dispatch bounded due platform work after checking expected environment |

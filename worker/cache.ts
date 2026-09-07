@@ -1,3 +1,5 @@
+import { publicRevision } from "./visibility";
+
 /** Cache only public reads. Credentials never participate in these read contracts. */
 export async function publicCache(
   request: Request,
@@ -7,6 +9,7 @@ export async function publicCache(
 ): Promise<Response> {
   if (env.ENVIRONMENT === "local") return load();
   const url = new URL(request.url);
+  url.searchParams.set("visibility-revision", await publicRevision(env));
   if (request.method === "POST") {
     const digest = await crypto.subtle.digest(
       "SHA-256",
@@ -27,7 +30,7 @@ export async function publicCache(
   const key = new Request(url, { method: "GET" });
   try {
     const hit = await caches.default.match(key);
-    if (hit) return hit;
+    if (hit) return browserResponse(hit);
   } catch (error) {
     console.warn("Public cache read failed", String(error));
   }
@@ -40,5 +43,12 @@ export async function publicCache(
   } catch (error) {
     console.warn("Public cache write failed", String(error));
   }
+  return browserResponse(result);
+}
+function browserResponse(response: Response) {
+  const result = new Response(response.body, response);
+  // Every browser request revalidates against the Worker. The internal edge copy can
+  // live for 30 seconds because its key includes the current moderation revision.
+  result.headers.set("Cache-Control", "public,max-age=0,must-revalidate");
   return result;
 }

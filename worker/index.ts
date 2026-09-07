@@ -29,6 +29,9 @@ import { catalogRoute } from "./platforms";
 import { youtubeWebhook } from "./youtube-websub";
 import { source, videoIdentity } from "./sources";
 import { linkAppearances, unlinkAppearance } from "./appearances";
+import { authRoute, authenticated } from "./auth";
+import { socialRoute } from "./social";
+import { publicImageVisible } from "./visibility";
 
 async function eventsub(req: Request, env: Env) {
   const raw = await readText(req),
@@ -105,6 +108,9 @@ async function route(req: Request, env: Env): Promise<Response> {
     await one(env, "SELECT 1");
     return Response.json({ ok: true, environment: env.ENVIRONMENT, build_commit: env.BUILD_COMMIT });
   }
+  if (path === "/api/auth" || path.startsWith("/api/auth/")) return authRoute(req, env);
+  if (path === "/api/v1/me" && req.method === "GET") return Response.json(await authenticated(req, env));
+  if (path.startsWith("/api/v1/") || path.startsWith("/api/admin/social/")) return socialRoute(req, env);
   if (
     path.startsWith("/storage/v1/object/public/detections/") ||
     path.startsWith("/detections/")
@@ -116,10 +122,11 @@ async function route(req: Request, env: Env): Promise<Response> {
         .replace(/^\/storage\/v1\/object\/public\/detections\//, "")
         .replace(/^\/detections\//, ""),
     );
+    if (!(await publicImageVisible(env, key))) throw new HttpError(404, "Screenshot not found");
     const object = await env.DETECTIONS.get(key);
     if (!object) throw new HttpError(404, "Screenshot not found");
     const headers = new Headers({
-      "Cache-Control": "public,max-age=3600",
+      "Cache-Control": "public,max-age=0,must-revalidate",
       "X-Content-Type-Options": "nosniff",
     });
     object.writeHttpMetadata(headers);
@@ -359,8 +366,11 @@ async function route(req: Request, env: Env): Promise<Response> {
 }
 export default {
   async fetch(req: Request, env: Env) {
+    const path = new URL(req.url).pathname;
+    const userRoute = path === "/api/auth" || path.startsWith("/api/auth/") || path.startsWith("/api/v1/");
     const origin = req.headers.get("Origin"),
-      allowed = env.CORS_ORIGINS.split(",").includes(origin || "");
+      allowed = [...env.CORS_ORIGINS.split(",").map(value => value.trim()).filter(Boolean),
+        new URL(env.PUBLIC_URL).origin].includes(origin || "");
     let response: Response;
     try {
       response =
@@ -374,7 +384,7 @@ export default {
           : error instanceof SyntaxError
             ? 400
             : 500;
-      if (status === 500) console.error(error);
+      if (status === 500) console.error(userRoute ? { event: "user_api_failed", path } : error);
       response = Response.json(
         {
           error:
@@ -386,14 +396,18 @@ export default {
       );
     }
     const headers = new Headers(response.headers);
-    headers.set("Vary", "Origin");
+    const vary = new Set((headers.get("Vary") || "").split(",").map(value => value.trim()).filter(Boolean));
+    vary.add("Origin");
+    headers.set("Vary", [...vary].join(", "));
     headers.set("X-Content-Type-Options", "nosniff");
+    if (userRoute) headers.set("Cache-Control", "no-store");
     if (allowed) {
       headers.set("Access-Control-Allow-Origin", origin!);
-      headers.set("Access-Control-Allow-Methods", "GET,HEAD,POST,OPTIONS");
+      headers.set("Access-Control-Allow-Methods", userRoute ? "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS" : "GET,HEAD,POST,OPTIONS");
+      if (userRoute) headers.set("Access-Control-Allow-Credentials", "true");
       headers.set(
         "Access-Control-Allow-Headers",
-        "authorization,apikey,content-type,x-client-info,range,prefer",
+        "authorization,apikey,content-type,x-client-info,range,prefer" + (userRoute ? ",x-csrf-token" : ""),
       );
       headers.set("Access-Control-Expose-Headers", "Content-Range");
     }

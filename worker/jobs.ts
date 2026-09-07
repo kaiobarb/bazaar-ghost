@@ -2,6 +2,7 @@ import { one, rows, statement, requireValue } from "./http";
 import { Twitch, type CatalogStats } from "./twitch";
 import { dispatch, pendingVideos, plan, recover } from "./processing";
 import { notify } from "./discord";
+import { cleanupAuth } from "./auth";
 
 export type Job = {
   type: string;
@@ -142,6 +143,12 @@ export async function handleJob(env: Env, job: Job) {
   }
 }
 export async function scheduled(event: ScheduledController, env: Env) {
+  if (event.cron === "17 * * * *") {
+    // Internal expiry cleanup has no provider/network calls and remains useful
+    // while login and outbound integrations are temporarily disabled.
+    await cleanupAuth(env);
+    return;
+  }
   if (env.OUTBOUND_ENABLED !== "true") {
     console.log(
       JSON.stringify({

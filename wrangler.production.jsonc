@@ -12,7 +12,8 @@
     "ENVIRONMENT": "production",
     "PUBLIC_URL": "https://REPLACE_ME",
     "OUTBOUND_ENABLED": "false",
-    "CORS_ORIGINS": "http://localhost:3000,https://bazaarghost.stream",
+    "AUTH_ENABLED": "false",
+    "CORS_ORIGINS": "https://bazaarghost.stream",
   },
   "d1_databases": [
     {
@@ -50,6 +51,7 @@
   },
   "triggers": {
     "crons": [
+      "17 * * * *",
       "*/3 * * * *",
       "0 * * * *",
       "0 0,12 * * *",

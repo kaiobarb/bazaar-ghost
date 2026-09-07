@@ -22,6 +22,21 @@ function date(value: unknown) {
 function decoded(value: Input): Input {
   return { ...decodeRow(value), ...(typeof value.state === 'string' ? {state: JSON.parse(value.state)} : {}) };
 }
+function accountSettingChecks(id:string,input:Input) {
+  const checks:Array<{sql:string;args:unknown[]}>=[];
+  if(input.sfde_profile_id!=null) checks.push(
+    {sql:'SELECT EXISTS(SELECT 1 FROM sfde_profiles WHERE id=?)',args:[input.sfde_profile_id]},
+    {sql:`SELECT NOT EXISTS(SELECT 1 FROM vod_processing_context v JOIN chunks c ON c.vod_id=v.id
+      WHERE v.platform_account_id=? AND v.sfde_profile_id IS NULL AND v.effective_profile_id<>?
+      AND c.status IN('queued','processing'))`,args:[id,input.sfde_profile_id]},
+  );
+  if(input.streamer_id!=null) checks.push({sql:'SELECT EXISTS(SELECT 1 FROM streamers WHERE id=?)',args:[input.streamer_id]});
+  return checks;
+}
+function accountLinkStatements(env:Env,id:string,input:Input) {
+  return Object.hasOwn(input,'streamer_id') ? [statement(env,
+    'UPDATE vods SET streamer_id=?,updated_at=? WHERE platform_account_id=?',input.streamer_id,now(),id)] : [];
+}
 export async function accounts(env: Env, params: URLSearchParams) {
   if (params.has('id')) return rows(env, 'SELECT * FROM platform_accounts WHERE id=?', uuid(params.get('id'))).then(r=>r.map(decoded));
   const platform = source(params.get('source'));
@@ -37,18 +52,20 @@ export async function upsertAccount(env: Env, input: Input) {
   if(input.sfde_profile_id != null) integer(input.sfde_profile_id,'profile ID',1);
   if(input.streamer_id != null) integer(input.streamer_id,'streamer ID',1);
   const automatic = input.job_id != null || input.lease_token != null;
-  requireValue(!automatic || (input.sfde_profile_id == null && input.streamer_id == null), 'Automatic catalog cannot change operator profile/link settings');
+  requireValue(!automatic || (!Object.hasOwn(input,'sfde_profile_id') && !Object.hasOwn(input,'streamer_id')), 'Automatic catalog cannot change operator profile/link settings');
   const previous=await one(env,'SELECT * FROM platform_accounts WHERE source=? AND source_id=?',platform,identity);
   const accountId=previous?.id??crypto.randomUUID();
   const checks=jobChecks(input, `AND j.source=? AND j.kind='video' AND (j.account_id IS NULL OR EXISTS(
     SELECT 1 FROM platform_accounts a WHERE a.id=j.account_id AND a.source=? AND a.source_id=?))`, [platform,platform,identity]);
   checks.push({sql:'SELECT NOT EXISTS(SELECT 1 FROM platform_accounts WHERE source=? AND source_id=? AND id<>?)',args:[platform,identity,accountId]});
+  checks.push(...accountSettingChecks(accountId,input));
   await atomic(env,checks,[statement(env,`INSERT INTO platform_accounts(id,source,source_id,display_name,processing_enabled,sfde_profile_id,streamer_id)
     VALUES(?,?,?,?,?,?,?) ON CONFLICT(source,source_id) DO UPDATE SET display_name=excluded.display_name,
     processing_enabled=CASE WHEN ? OR ? IS NULL THEN platform_accounts.processing_enabled ELSE excluded.processing_enabled END,
-    sfde_profile_id=coalesce(?,platform_accounts.sfde_profile_id),streamer_id=coalesce(?,platform_accounts.streamer_id)`,
+    sfde_profile_id=coalesce(?,platform_accounts.sfde_profile_id),streamer_id=CASE WHEN ? THEN excluded.streamer_id ELSE platform_accounts.streamer_id END`,
     accountId,platform,identity,name,input.processing_enabled??false,input.sfde_profile_id??1,input.streamer_id,
-    automatic || (input.preserve_disabled??false),input.processing_enabled,input.sfde_profile_id,input.streamer_id),
+    automatic || (input.preserve_disabled??false),input.processing_enabled,input.sfde_profile_id,Object.hasOwn(input,'streamer_id')),
+    ...accountLinkStatements(env,accountId,input),
     enqueueStatement(env,{source:platform,kind:'account',source_id:identity,account_id:accountId},true)]);
   const account=(await one(env,'SELECT * FROM platform_accounts WHERE source=? AND source_id=?',platform,identity))!;
   return decoded(account);
@@ -58,26 +75,46 @@ export async function updateAccount(env: Env,id:string,input: Input) {
   const previous=await one(env,'SELECT * FROM platform_accounts WHERE id=?',id);
   if(!previous) throw new HttpError(404,'Account not found');
   const fields:Input={};
-  for(const key of ['catalog_cursor','archive_cursor','sfde_profile_id','streamer_id'])
+  for(const key of ['catalog_cursor','archive_cursor','sfde_profile_id'])
     if(input[key]!=null) fields[key]=integer(input[key],key,1);
+  if(Object.hasOwn(input,'streamer_id')) fields.streamer_id=input.streamer_id===null?null:integer(input.streamer_id,'streamer_id',1);
   if(input.processing_enabled!=null) {requireValue(typeof input.processing_enabled==='boolean','Invalid enablement'); fields.processing_enabled=input.processing_enabled;}
   if(input.display_name!=null) fields.display_name=text(input.display_name,'display name');
   if(input.last_cataloged_at!=null) fields.last_cataloged_at=date(input.last_cataloged_at);
   requireValue(Object.keys(fields).length>0,'No account changes');
   requireValue(input.job_id == null && input.lease_token == null ||
-    ['processing_enabled','sfde_profile_id','streamer_id'].every(key => input[key] == null), 'Automatic catalog cannot change operator settings');
+    ['processing_enabled','sfde_profile_id','streamer_id'].every(key => !Object.hasOwn(input,key)), 'Automatic catalog cannot change operator settings');
   const checks=jobChecks(input, `AND j.kind='account' AND j.account_id=? AND EXISTS(
     SELECT 1 FROM platform_accounts a WHERE a.id=j.account_id AND a.source=j.source AND a.processing_enabled=1)`, [id]);
   checks.push({sql:'SELECT EXISTS(SELECT 1 FROM platform_accounts WHERE id=?)',args:[id]});
+  checks.push(...accountSettingChecks(id,input));
   await atomic(env,checks,[statement(env,`UPDATE platform_accounts SET ${Object.keys(fields).map(k=>`${k}=?`).join(',')} WHERE id=?`,...Object.values(fields),id),
+    ...accountLinkStatements(env,id,input),
     ...(input.processing_enabled===true?[enqueueStatement(env,{source:previous.source,kind:'account',source_id:previous.source_id,account_id:id,wake:true},true)]:[])]);
   const account=await one(env,'SELECT * FROM platform_accounts WHERE id=?',id);
   if(!account) throw new HttpError(404,'Account not found');
   return decoded(account);
 }
+export async function updateVideoProfile(env:Env,id:number,input:Input) {
+  integer(id,'video ID',1);
+  requireValue(!Object.hasOwn(input,'job_id') && !Object.hasOwn(input,'lease_token'),'Automatic catalog cannot change video profile settings');
+  requireValue(Object.keys(input).every(key=>['account_id','sfde_profile_id'].includes(key)),'Unknown video profile setting');
+  requireValue(Object.hasOwn(input,'sfde_profile_id'),'Provide a video profile ID or null to clear it');
+  const accountId=uuid(input.account_id),profileId=input.sfde_profile_id===null?null:integer(input.sfde_profile_id,'profile ID',1);
+  const checks=[
+    {sql:"SELECT EXISTS(SELECT 1 FROM vods WHERE id=? AND platform_account_id=? AND source IN('youtube','bilibili'))",args:[id,accountId]},
+    {sql:`SELECT NOT EXISTS(SELECT 1 FROM vod_processing_context v JOIN platform_accounts a ON a.id=v.platform_account_id
+      JOIN chunks c ON c.vod_id=v.id WHERE v.id=? AND v.effective_profile_id<>coalesce(?,a.sfde_profile_id)
+      AND c.status IN('queued','processing'))`,args:[id,profileId]},
+    ...(profileId===null?[]:[{sql:'SELECT EXISTS(SELECT 1 FROM sfde_profiles WHERE id=?)',args:[profileId]}]),
+  ];
+  await atomic(env,checks,[statement(env,'UPDATE vods SET sfde_profile_id=?,updated_at=? WHERE id=? AND platform_account_id=?',profileId,now(),id,accountId)]);
+  return decoded((await one(env,'SELECT * FROM vods WHERE id=?',id))!);
+}
 export async function saveVideo(env: Env,input: Input) {
   const video=input.video;
   requireValue(video && typeof video==='object' && !Array.isArray(video),'Expected video');
+  requireValue(!Object.hasOwn(video,'sfde_profile_id'),'Use the manual video-profile endpoint to change operator settings');
   const platform=source(video.source);
   requireValue(platform!=='twitch','Twitch uses its chapter catalog');
   const identity=videoIdentity(platform,video.source_id), account=await one(env,'SELECT * FROM platform_accounts WHERE id=? AND source=?',uuid(input.account_id),platform);
@@ -102,12 +139,12 @@ export async function saveVideo(env: Env,input: Input) {
     v.platform_account_id<>? OR (EXISTS(SELECT 1 FROM chunks WHERE vod_id=v.id) AND (v.duration_seconds<>? OR (? AND v.bazaar_chapters<>?) OR (? IS NOT NULL AND v.recorded_at IS NOT ?) OR (?<>'auto' AND v.template_version<>?)))))`,
     args:[platform,identity,account.id,duration,input.explicit_ranges??false,chapters,recorded,recorded,template,template]});
   await atomic(env,checks,[statement(env,`INSERT INTO vods(source,source_id,platform_account_id,streamer_id,title,duration_seconds,published_at,recorded_at,template_version,content_kind,bazaar_chapters,ready_for_processing,notifications_enabled,source_video_id,source_part_id,source_part_index,last_availability_check)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?) ON CONFLICT(source,source_id) DO UPDATE SET
+    VALUES(?,?,?,(SELECT streamer_id FROM platform_accounts WHERE id=?),?,?,?,?,?,?,?,1,0,?,?,?,?) ON CONFLICT(source,source_id) DO UPDATE SET
     title=excluded.title,duration_seconds=excluded.duration_seconds,published_at=excluded.published_at,
     recorded_at=coalesce(excluded.recorded_at,vods.recorded_at),template_version=CASE WHEN excluded.template_version='auto' THEN vods.template_version ELSE excluded.template_version END,
     content_kind=excluded.content_kind,bazaar_chapters=CASE WHEN ? THEN excluded.bazaar_chapters ELSE vods.bazaar_chapters END,
     source_part_index=excluded.source_part_index,availability='available',unavailable_since=NULL,last_availability_check=excluded.last_availability_check,ready_for_processing=1,updated_at=?`,
-    platform,identity,account.id,account.streamer_id,title,duration,published,recorded,template,video.content_kind??'archive',chapters,bv,cid,part,now(),input.explicit_ranges??false,now())]);
+    platform,identity,account.id,account.id,title,duration,published,recorded,template,video.content_kind??'archive',chapters,bv,cid,part,now(),input.explicit_ranges??false,now())]);
   const saved=(await one(env,'SELECT * FROM vods WHERE source=? AND source_id=?',platform,identity))!;
   await plan(env,saved.id,checks);
   return decoded(saved);
@@ -181,6 +218,7 @@ export async function catalogRoute(req:Request,env:Env) {
   let result:unknown;
   if(path==='/accounts/upsert'&&req.method==='POST') result=await upsertAccount(env,data);
   else if(/^\/accounts\/[^/]+$/.test(path)&&req.method==='PATCH') result=await updateAccount(env,path.split('/')[2],data);
+  else if(/^\/videos\/\d+$/.test(path)&&req.method==='PATCH') result=await updateVideoProfile(env,Number(path.split('/')[2]),data);
   else if(path==='/videos') result=await saveVideo(env,data);
   else if(path==='/jobs/enqueue') result=await enqueueJob(env,data);
   else if(path==='/jobs/claim') result=await claimJob(env,data);

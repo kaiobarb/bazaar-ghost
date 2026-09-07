@@ -218,7 +218,7 @@ it("public caching distinguishes request bodies and single-object response shape
       testEnv,
     );
   const many = await call("cache_test");
-  expect(many.headers.get("cache-control")).toContain("max-age=30");
+  expect(many.headers.get("cache-control")).toBe("public,max-age=0,must-revalidate");
   expect(Array.isArray(await many.json())).toBe(true);
   const single = await call("cache_test", "application/vnd.pgrst.object+json");
   expect((await single.json<any>()).login).toBe("cache_test");

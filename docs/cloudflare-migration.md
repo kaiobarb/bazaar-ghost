@@ -15,7 +15,7 @@ This worktree replaces the backend's Supabase runtime with one Cloudflare Worker
 | Vault secrets / service-role credentials | Worker secrets; separate admin and processor keys |
 | Supabase `detections` bucket | Private R2 bucket served by the Worker at the existing public URL shape |
 | Supabase historical `logs` bucket | Separate private R2 archival bucket; current logs use Workers observability and GitHub logs |
-| Supabase Auth / Realtime | No application usage to migrate; no replacement dependency introduced |
+| Supabase Auth / Realtime | No existing application usage to migrate; new user authentication is implemented with Better Auth on Workers/D1 |
 | GitHub Actions / PaddleOCR / FFmpeg | Remain on GitHub Actions |
 | Vercel frontend | Outside this worktree's scope |
 
@@ -91,7 +91,7 @@ The Linux host-network mode lets the container reach localhost. Docker Desktop n
 
 ## API contracts
 
-Public reads retain these resources: `streamers`, `streamers_with_detections`, `vod_stats`, `vod_embed_info`, `detection_search`, and `streamer_detection_stats`. Supported query syntax: `select`, `eq`, `gt/gte/lt/lte`, `ilike`, bounded `or`, ordering, limit/offset, and Range headers. Single-object responses and Content-Range support the existing Supabase SDK reads. Private tables and internal columns are not exposed. Dev/production public reads are cached for up to 30 seconds to reduce repeated D1 scans; local reads remain uncached. This is intentionally not a general PostgREST server.
+Public reads retain these resources: `streamers`, `streamers_with_detections`, `vod_stats`, `vod_embed_info`, `detection_search`, and `streamer_detection_stats`. Supported query syntax: `select`, `eq`, `gt/gte/lt/lte`, `ilike`, bounded `or`, ordering, limit/offset, and Range headers. Single-object responses and Content-Range support the existing Supabase SDK reads. Private tables and internal columns are not exposed. Hosted public reads use a 30-second internal edge cache with a transactionally updated moderation revision; browsers revalidate each time. Local reads remain uncached. This is intentionally not a general PostgREST server.
 
 Public RPCs: `fuzzy_search_detections`, `get_global_stats`, and `get_top_streamers_with_recent_detections`. Existing screenshot URLs work after replacing the origin: `/storage/v1/object/public/detections/<key>`. New responses also work at `/detections/<key>`.
 

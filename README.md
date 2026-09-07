@@ -14,6 +14,8 @@ A detection means a sampled frame contained a rank emblem and an opponent name t
 
 YouTube and Bilibili use independent creator accounts, durable discovery/readiness jobs, and source-specific media resolution. Bilibili parts are identified by BV/CID, so reordered parts keep their identity. Reviewed cross-platform appearances can be grouped without merging raw detections. The existing Twitch frontend contracts remain separate. See [platform ingestion](docs/platform-ingestion.md).
 
+The backend also provides persistent clip anchors, likes, private hearts/favorites, comments, reports, and moderation. Clip identity survives OCR replacement at the same video timestamp. User writes use Discord/Twitch login and cookie sessions; actual provider setup is required. See the [auth setup](docs/user-auth.md) and [clip API](docs/clip-api.md). These APIs do not add UI to the separate frontend.
+
 ## Local development
 
 ```bash

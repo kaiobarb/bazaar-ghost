@@ -203,11 +203,12 @@ export async function dispatch(env: Env, vodId: number) {
         .map((c) =>
           statement(
             env,
-            "UPDATE chunks SET status='queued',queued_at=?,updated_at=? WHERE id=? AND status='pending' AND (scheduled_for IS NULL OR scheduled_for<=?) AND EXISTS(SELECT 1 FROM vod_processing_context v WHERE v.id=chunks.vod_id AND v.processing_enabled=1 AND v.ready_for_processing=1 AND v.availability='available') AND (SELECT count(*) FROM chunks WHERE status IN('queued','processing'))<? RETURNING id",
+            "UPDATE chunks SET status='queued',queued_at=?,updated_at=? WHERE id=? AND status='pending' AND (scheduled_for IS NULL OR scheduled_for<=?) AND EXISTS(SELECT 1 FROM vod_processing_context v WHERE v.id=chunks.vod_id AND v.processing_enabled=1 AND v.ready_for_processing=1 AND v.availability='available' AND v.effective_profile_id=?) AND (SELECT count(*) FROM chunks WHERE status IN('queued','processing'))<? RETURNING id",
             queuedAt,
             queuedAt,
             c.id,
             queuedAt,
+            details.profile.id,
             maxActive,
           ),
         ),
