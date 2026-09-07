@@ -19,6 +19,7 @@ from backend_environment import verify_backend
 from game_evidence import bazaar_evidence
 from video_catalog import save_video
 from media_source import youtube_id, youtube_metadata
+from extraction_errors import ExtractionError, extraction_error, safe_error_category
 
 
 def published_at(metadata: Dict[str, Any]) -> Optional[str]:
@@ -102,17 +103,26 @@ def channel_page(channel: str, start: int, limit: int, tab: str) -> Dict[str, An
         if not re.fullmatch(r'/(@[\w.-]+|channel/UC[A-Za-z0-9_-]{22})', path):
             raise ValueError('Expected an @handle or /channel/ channel URL')
         url = f'https://www.youtube.com{path}/{tab}'
-    response = subprocess.run(['yt-dlp', '--ignore-config', '--flat-playlist', '--dump-single-json',
-                               '--playlist-start', str(start), '--playlist-end', str(start + limit - 1),
-                               '--socket-timeout', '30', url], capture_output=True, text=True, timeout=180)
+    try:
+        response = subprocess.run(['yt-dlp', '--ignore-config', '--flat-playlist', '--dump-single-json',
+                                   '--playlist-start', str(start), '--playlist-end', str(start + limit - 1),
+                                   '--socket-timeout', '30', url], capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.TimeoutExpired, UnicodeError) as error:
+        raise ExtractionError(safe_error_category(error)) from None
     if response.returncode:
         # yt-dlp explicitly distinguishes an absent tab from transport/access failures.
         # Upload-only or archive-only creators are valid accounts; retry absent tabs on future polls.
         if f'This channel does not have a {tab} tab' in response.stderr:
             return {'entries': [], 'channel_id': channel if re.fullmatch(r'UC[A-Za-z0-9_-]{22}', channel) else None,
                     'tab_absent': True}
-        raise RuntimeError(f'Channel enumeration failed (exit {response.returncode})')
-    return json.loads(response.stdout)
+        raise extraction_error(response.stderr)
+    try:
+        page = json.loads(response.stdout)
+    except json.JSONDecodeError:
+        raise ExtractionError('invalid_response') from None
+    if not isinstance(page, dict):
+        raise ExtractionError('invalid_response')
+    return page
 
 
 def main() -> None:

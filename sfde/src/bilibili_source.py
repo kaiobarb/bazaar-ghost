@@ -4,8 +4,11 @@ import json
 import math
 import re
 from typing import Any, Dict, Optional, Tuple
+from urllib.error import URLError
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
+
+from extraction_errors import ExtractionError, provider_api_error, safe_error_category
 
 
 BVID_PATTERN = r'BV[A-Za-z0-9]{10}'
@@ -42,13 +45,23 @@ def public_api(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
     if path not in ('/x/web-interface/view', '/x/player/playurl'):
         raise ValueError('Unsupported Bilibili metadata endpoint')
     request = Request('https://api.bilibili.com' + path + '?' + urlencode(params), headers=HEADERS)
-    with urlopen(request, timeout=30) as response:
-        payload = response.read(2_000_001)
+    try:
+        with urlopen(request, timeout=30) as response:
+            payload = response.read(2_000_001)
+    except (URLError, TimeoutError) as error:
+        raise ExtractionError(safe_error_category(error)) from None
     if len(payload) > 2_000_000:
         raise ValueError('Bilibili metadata exceeded the response limit')
-    result = json.loads(payload)
-    if result.get('code') != 0 or not isinstance(result.get('data'), dict):
-        raise RuntimeError(f'Bilibili metadata request failed (code {result.get("code")})')
+    try:
+        result = json.loads(payload)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise ExtractionError('invalid_response') from None
+    if not isinstance(result, dict):
+        raise ExtractionError('invalid_response')
+    if result.get('code') != 0:
+        raise provider_api_error(result.get('code'))
+    if not isinstance(result.get('data'), dict):
+        raise ExtractionError('invalid_response')
     return result['data']
 
 

@@ -6,14 +6,16 @@ Integrate the multiplatform backend from thread `01a07a18-dac2-7571-993b-3c00d03
 
 Work branch: `codex/cloudflare-validation`, starting at migration commit `6a6d0ae`. Reviewed source platform commits: `c7c3863` and `ec4b870` on `dev`. The first integrated platform commit is `2923d2a`.
 
-## Current state — 2026-09-07, after hosted auth and YouTube validation
+## Current state — 2026-09-07, after recording, social and ingestion checks
 
 - Validation runs `1c5428c` with all six database migrations applied. Auth/social routes and the hourly auth cleanup Cron are deployed; outbound integrations remain disabled and provider credentials are absent.
 - Hosted session/social mechanics passed with two short-lived synthetic identities, including CSRF/privacy/ownership, deletion/revocation, and public search/screenshot moderation. All fixture identities and owned rows were removed, and the real clip/image were restored unchanged. Real OAuth consent/browser behavior remains pending.
 - Three complete source recordings passed: Bilibili `[0,2468)`, YouTube `0C6bxQsDj-s` `[0,2718)`, and YouTube `yS_mgLwtITA` `[0,2467)`. Together they processed 3,827 expected samples and published 39 detections/screenshots; the YouTube runs persisted 23 IGD readings. The Bilibili recording is a reviewed copy of the second YouTube recording, so these represent two distinct gameplay recordings across three source uploads. The earlier old-layout Bilibili interval adds 450 samples/four detections. Detailed evidence and accuracy limits appear below.
+- Thirteen reviewed duplicate-fight groups are applied and both source-filtered public searches verified the corresponding 26 appearances. A fresh remote D1 audit at 18:44 UTC confirmed all four planned recordings/ranges completed, zero unfinished chunks, 43 clips/detections, 13 groups, no remaining user/session fixtures, and no foreign-key errors. Evidence: `.ignore/platform-validation/hosted-state-20260907.json`.
+- Hosted automatic ingestion polled YouTube successfully and queued forty readiness candidates, but both Bilibili uploader feeds were rejected. All three leases finished; no OCR was dispatched. Independent local probes establish HTTP 412 and provider JSON −352 rejections. Automatic ingestion/provider access remains an open capability gap, independent of successful manual recording checks.
 - The reviewed branch-only workflow accepted real dispatch and ran successfully in the disposable GitHub Actions runner. The container exited and was removed after its one job. Ordinary validation CI passed for both `1c5428c` and `823082a`; unattended Worker deployment still requires the separate Cloudflare CI token.
 - Full-schema snapshot tooling is committed and locally verified; creating a separate disposable database for remote import rehearsal awaits explicit approval after automatic approval review rejected that resource creation. No import-proof database was created.
-- Existing dev/production and the separate frontend remain untouched. Remaining work includes additional recording/grouping verification, automatic ingestion and dispatch/provider callbacks, real provider login, and the final acceptance audit.
+- Existing dev/production and the separate frontend remain untouched. Remaining work includes hosted reprocessing with social records, automatic ingestion and dispatch/provider callbacks, real provider login, remote import rehearsal, and the final acceptance audit.
 
 ## Earlier checkpoint reported to the user — 2026-09-07, 18:00 UTC
 
@@ -47,6 +49,12 @@ Completion requires authoritative evidence for every plan item, including actual
 Production safeguards: no pushes to `main`/`dev`, no production/development resource mutations, no changes to existing provider callbacks, no real notification delivery from validation, and no broad repository rule changes when branch/environment-scoped controls suffice. New resources must have distinct names and identifiers. Keep test evidence free of credentials and personal data.
 
 ## Activity
+
+### 2026-09-07 — automatic ingestion and safe provider diagnostics
+
+- [Run 34152338750](https://github.com/liftaris/bazaar-ghost/actions/runs/34152338750) used the committed bounded workflow controls (`limit=3`, `seconds=90`, discovery/dispatch disabled). Both Bilibili account jobs finished into retryable waiting states with errors. The YouTube account poll finished without an error and persisted forty candidate readiness jobs. The aggregate run failed for the two feed errors, with zero OCR dispatches. No cursor/backoff was reset to force another provider request.
+- Independent probes with the exact application feed URLs and installed yt-dlp 2026.08.19 reproduced Bilibili HTTP 412 and JSON −352 locally. The URLs are supported by the extractor; public feed access, rather than a demonstrated URL-adapter bug, prevents automatic polling. Known individual recordings remain accessible. Evidence: `.ignore/feed-evidence/README.md`, `feed-probe.json`, and `.ignore/platform-validation/ingestion-34152338750/platform-ingestion/ingestion-result.jsonl`.
+- Added finite typed diagnostics at metadata/feed extraction boundaries and propagated them through durable ingestion errors and JSON summaries. Arbitrary response bodies, subprocess stderr, URLs, and exception messages cannot become diagnostic output. Failed scans preserve their cursors/backoff and healthy later work continues. The local script suite ran 99 tests: 97 passed and two were explicitly skipped (optional local D1 import proof and unavailable host Pillow). All six diagnostic tests also passed with `ResourceWarning` treated as an error. Remote validation of this diagnostic revision is still pending.
 
 ### 2026-09-07 — three full source recordings and reviewed duplicate groups
 

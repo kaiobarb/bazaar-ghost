@@ -12,6 +12,7 @@ from game_evidence import bazaar_evidence
 from catalog_youtube import ensure_account as youtube_account, normalize_video, channel_page
 from catalog_bilibili import ensure_account as bilibili_account, normalize_part
 from media_source import youtube_metadata
+from extraction_errors import safe_error_category
 from bilibili_source import video_metadata
 from platform_discovery import account_page, bazaar_title, bilibili_api, discover
 from video_catalog import save_video
@@ -53,6 +54,7 @@ def poll_account(job: Dict[str, Any]) -> Dict[str, Any]:
     account = api('accounts', {'id': job['account_id']})[0]
     state = dict(job['state'])
     errors = []
+    error_categories = []
     catching_up = False
     for tab in (('videos', 'streams') if source == 'youtube' else ('videos',)):
         cursor = dict(state.get(tab, {}))
@@ -70,19 +72,24 @@ def poll_account(job: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 state[tab] = {'head': head, 'start': 1}
         except Exception as error:
-            errors.append(f'{tab}: {type(error).__name__}; public catalog unavailable')
+            category = safe_error_category(error)
+            errors.append(f'{tab}: {category}; public catalog unavailable')
+            error_categories.append(category)
     if source == 'youtube':
         try:
             renew_subscription(account, job=job)
         except Exception as error:
-            errors.append(f'websub: {type(error).__name__}; subscription persistence failed')
+            category = safe_error_category(error)
+            errors.append(f'websub: {category}; subscription persistence failed')
+            error_categories.append(category)
     delay = 900
     if errors:
         delay *= 2 ** min(max(job.get('attempts', 1) - 1, 0), 4)
     if catching_up:
         delay = 60
     return {'status': 'waiting', 'delay': delay,
-            'state': state, 'error': '; '.join(errors) or None}
+            'state': state, 'error': '; '.join(errors) or None,
+            'error_categories': sorted(set(error_categories))}
 
 
 def verified_account(source: str, metadata: Dict[str, Any], job: Dict[str, Any]) -> Dict[str, Any]:
@@ -169,9 +176,11 @@ def run(limit: int, seconds: int, discovery: bool = True, dispatch: bool = False
         try:
             result = handle_job(job)
         except Exception as error:
-            # Error classes suffice for health; no signed URLs, callback tokens, or HTTP bodies in logs.
+            # Only finite categories cross the boundary; upstream exceptions may contain credentials.
+            category = safe_error_category(error)
             result = {'status': 'waiting', 'delay': min(21600, 300 * 2 ** min(job['attempts'], 6)),
-                      'state': job['state'], 'error': type(error).__name__ + ': ingestion failed; retry scheduled'}
+                      'state': job['state'], 'error': category + ': ingestion failed; retry scheduled',
+                      'error_categories': [category]}
         finished = api('jobs/finish', body={'id': job['id'], 'token': job['lease_token'],
                        'status': result['status'], 'delay_seconds': result.get('delay', 900),
                        'error': result.get('error'), 'state': result.get('state', {})}, method='POST')
@@ -179,7 +188,8 @@ def run(limit: int, seconds: int, discovery: bool = True, dispatch: bool = False
         summary['errors'] += int(bool(result.get('error')) or not finished)
         summary['cataloged'] += len(result.get('vod_ids', []))
         print(json.dumps({'job_id': job['id'], 'source': job['source'], 'kind': job['kind'],
-                          'status': result['status'], 'error': result.get('error'), 'lease_finished': finished}), flush=True)
+                          'status': result['status'], 'error': result.get('error'),
+                          'error_categories': result.get('error_categories', []), 'lease_finished': finished}), flush=True)
     if dispatch:
         summary['dispatched'] = dispatch_pending(3)
     # The Worker retains WebSub digest tombstones for each account's lifetime: deliveries have no signed timestamp.

@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 from bilibili_source import split_identity
+from extraction_errors import ExtractionError, extraction_error, safe_error_category
 
 
 logger = logging.getLogger('sfde.media')
@@ -136,31 +137,26 @@ def resolve_media(source: str, source_id: str, quality: str = '480p') -> Dict[st
 
 def extraction_failure(stderr: str) -> str:
     """Classify actionable failures without emitting upstream URLs or credentials."""
-    message = stderr.lower().replace('\u2019', "'")
-    categories = (
-        (("confirm you're not a bot", 'confirm you are not a bot'), 'provider requires human sign-in from this runner'),
-        (('sign in to confirm your age', 'age-restricted'), 'age-restricted recording'),
-        (('private video', 'members-only', 'join this channel', 'premium-only'), 'recording requires account access'),
-        (('http error 429', 'too many requests'), 'provider rate limit'),
-        (('http error 403', 'forbidden'), 'provider denied access'),
-        (('no supported javascript runtime', 'javascript runtime'), 'JavaScript runtime unavailable'),
-        (('challenge solving failed', 'signature extraction failed', 'nsig extraction failed'), 'player challenge extraction failed'),
-        (('video unavailable', 'video has been removed'), 'recording unavailable to this runner'),
-        (('timed out', 'temporary failure', 'unable to download webpage'), 'provider transport failure'),
-    )
-    return next((category for markers, category in categories if any(marker in message for marker in markers)),
-                'unclassified provider extraction failure')
+    return str(extraction_error(stderr))
 
 
 def youtube_metadata(source_id: str) -> Dict[str, Any]:
     """Fetch metadata without downloading media or using ambient user configuration."""
     url = watch_url('youtube', source_id)
-    response = subprocess.run(['yt-dlp', '--ignore-config', '--no-playlist', '--skip-download',
-                               '--dump-single-json', '--socket-timeout', '30', url],
-                              capture_output=True, text=True, timeout=120, check=False)
+    try:
+        response = subprocess.run(['yt-dlp', '--ignore-config', '--no-playlist', '--skip-download',
+                                   '--dump-single-json', '--socket-timeout', '30', url],
+                                  capture_output=True, text=True, timeout=120, check=False)
+    except (OSError, subprocess.TimeoutExpired, UnicodeError) as error:
+        raise ExtractionError(safe_error_category(error)) from None
     if response.returncode:
-        raise RuntimeError(f'YouTube metadata extraction failed: {extraction_failure(response.stderr)} (exit {response.returncode})')
-    data = json.loads(response.stdout)
+        raise extraction_error(response.stderr)
+    try:
+        data = json.loads(response.stdout)
+    except json.JSONDecodeError:
+        raise ExtractionError('invalid_response') from None
+    if not isinstance(data, dict):
+        raise ExtractionError('invalid_response')
     if data.get('id') != source_id:
         raise ValueError('YouTube metadata identity mismatch')
     return data
