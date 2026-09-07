@@ -1,0 +1,31 @@
+name: Clear Dev Storage
+
+on:
+  schedule:
+    - cron: "0 10 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clear-dev-storage
+  cancel-in-progress: false
+
+jobs:
+  clear:
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 30
+    env:
+      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: dev
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Delete dev screenshots
+        run: deno run --allow-env --allow-net scripts/clear-detections-bucket.ts --dev-only --execute

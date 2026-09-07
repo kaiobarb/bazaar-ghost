@@ -69,6 +69,7 @@ Internal edge endpoints validate `apikey` or bearer secret credentials in applic
 - `seed-from-prod.sh` requires an explicit `PROD_DB_URL`. It reads a bounded catalog snapshot into `supabase/seed.sql`, uses current column names, and disables processing in the generated seed. Storage objects are not copied.
 - `sync-prod-to-dev.sh` requires explicit source/destination connections and confirmation. It imports that catalog in one transaction, preserving migration-managed schemas, roles, and Vault. Apply the same migrations to dev first. This is a catalog refresh, not a full database clone.
 - `clear-detections-bucket.ts` lists files by default. `--execute` deletes them. It paginates and stops on errors. Supply `SUPABASE_URL` and `SUPABASE_SECRET_KEY` explicitly.
+- `Clear Dev Storage` empties the dev `detections` bucket every Sunday at 10:00 UTC. It uses dev credentials and refuses any other project URL. Detection records remain searchable, but their old screenshots are deleted.
 - `setup_test_fixtures.py` copies validated local annotations and images into the committed fixture corpus.
 
 Production connections are unnecessary for local tests. Put experiments and generated output in `.ignore/`.

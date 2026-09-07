@@ -5,6 +5,12 @@ const key = Deno.env.get("SUPABASE_SECRET_KEY");
 if (!url || !key) {
   throw new Error("SUPABASE_URL and SUPABASE_SECRET_KEY are required");
 }
+if (
+  Deno.args.includes("--dev-only") &&
+  new URL(url).origin !== "https://lcqtbxpdiskkssvspnku.supabase.co"
+) {
+  throw new Error("Weekly cleanup is restricted to the BazaarGhost dev project");
+}
 const bucket = createClient(url, key).storage.from("detections");
 const pageSize = 1000;
 
