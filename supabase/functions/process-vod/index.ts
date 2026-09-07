@@ -103,22 +103,30 @@ Deno.serve(async (req) => {
     if (!verifySecretKey(req)) {
       return new Response("Unauthorized", { status: 401 });
     }
-    const { vod_id, source_id, dry_run = false } = await req.json();
+    const { vod_id, source_id, source = "twitch", dry_run = false } = await req
+      .json();
+    const sourcePattern = source === "bilibili"
+      ? /^BV[A-Za-z0-9]{10}:[1-9][0-9]*$/
+      : source === "youtube"
+      ? /^[A-Za-z0-9_-]{11}$/
+      : /^\d+$/;
     if (
       (vod_id == null) === (source_id == null) ||
       (vod_id != null &&
         (!Number.isSafeInteger(Number(vod_id)) || Number(vod_id) <= 0)) ||
-      (source_id != null && !/^\d+$/.test(String(source_id))) ||
+      !["twitch", "youtube", "bilibili"].includes(source) ||
+      (source_id != null && !sourcePattern.test(String(source_id))) ||
       typeof dry_run !== "boolean"
     ) {
       return Response.json({
         error:
-          "Provide one positive vod_id or numeric source_id, and a boolean dry_run",
+          "Provide one positive vod_id or platform source_id, source (twitch/youtube/bilibili), and a boolean dry_run",
       }, { status: 400, headers: corsHeaders });
     }
     const plan = await planProcessing(
       vod_id == null ? undefined : Number(vod_id),
       source_id == null ? undefined : String(source_id),
+      source,
     );
     if (!plan) {
       return Response.json({
@@ -134,6 +142,7 @@ Deno.serve(async (req) => {
       success: true,
       vod_id: plan.vod_id,
       source_id: plan.source_id,
+      source: plan.source,
       chunks_found: ids.length,
       chunk_uuids: ids,
       message: dry_run ? "Dry run: processing plan" : "Processing queued",

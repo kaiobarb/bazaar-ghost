@@ -7,9 +7,10 @@ Deno.env.set("SUPABASE_URL", "http://localhost:54321");
 Deno.env.set("SUPABASE_SECRET_KEY", "test-only-key");
 Deno.env.set("GITHUB_TOKEN", "test-only-token");
 Deno.env.set("ENV", "dev");
-const { dispatchProcessing } = await import("./processing.ts");
+const { dispatchProcessing, planProcessing } = await import("./processing.ts");
 const plan = {
   vod_id: 1,
+  source: "twitch",
   source_id: "123",
   old_templates: false,
   profile: { crop_region: [0, 0, 1, 1] },
@@ -69,6 +70,57 @@ Deno.test("failed GitHub dispatch rolls back only its own queued rows", async ()
       failed = true;
     }
     assert(failed && rolledBack);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+Deno.test("YouTube planning scopes the external ID and dispatches its platform", async () => {
+  const original = globalThis.fetch;
+  let dispatched = false;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+    if (url.pathname.endsWith("/vods")) {
+      assert(url.searchParams.get("source") === "eq.youtube");
+      assert(url.searchParams.get("source_id") === "eq.0C6bxQsDj-s");
+      return Response.json({ id: 42 });
+    }
+    if (url.pathname.endsWith("/get_pending_chunks_for_vod")) {
+      assert(body.p_vod_id === 42 && body.p_source_id === null);
+      return Response.json([{
+        chunk_id: "a",
+        vod_id: 42,
+        source_id: "0C6bxQsDj-s",
+      }]);
+    }
+    if (url.pathname.endsWith("/vod_processing_context")) {
+      return Response.json({
+        source: "youtube",
+        old_templates: false,
+        profile: plan.profile,
+      });
+    }
+    if (url.host === "api.github.com") {
+      assert(
+        body.inputs.source === "youtube" &&
+          body.inputs.vod_id === "0C6bxQsDj-s",
+      );
+      assert(body.inputs.environment === "dev" && body.ref === "dev");
+      dispatched = true;
+      return new Response(null, { status: 204 });
+    }
+    return Response.json([{ id: "a" }]);
+  };
+  try {
+    const youtubePlan = await planProcessing(
+      undefined,
+      "0C6bxQsDj-s",
+      "youtube",
+    );
+    assert(youtubePlan?.vod_id === 42);
+    await dispatchProcessing(youtubePlan);
+    assert(dispatched);
   } finally {
     globalThis.fetch = original;
   }

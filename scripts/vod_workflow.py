@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """GitHub Actions preparation and reporting; inputs are data, never shell code."""
 
-from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 from typing import Any, Dict, List
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from uuid import UUID
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'sfde' / 'src'))
+from media_source import resolve_media, validate_source_id
 
 
 SUPPORTED = ('360p', '480p', '720p', '1080p')
@@ -31,14 +32,15 @@ def select_quality(streams: Dict[str, Any], preferred: str, old_templates: bool)
     raise ValueError('No supported rendition is available for these templates')
 
 
-def api(path: str, params: Dict[str, str] = None, body: Any = None, method: str = 'GET') -> Any:
+def api(path: str, params: Dict[str, str] = None, body: Any = None, method: str = 'GET',
+        prefer: str = 'return=representation') -> Any:
     url = os.environ['SUPABASE_URL'].rstrip('/') + '/rest/v1/' + path
     if params:
         url += '?' + urlencode(params)
     key = os.environ['SUPABASE_SECRET_KEY']
     request = Request(url, method=method, headers={
         'apikey': key, 'Authorization': f'Bearer {key}', 'Content-Type': 'application/json',
-        'Prefer': 'return=representation',
+        'Prefer': prefer,
     }, data=None if body is None else json.dumps(body).encode())
     with urlopen(request, timeout=30) as response:
         data = response.read()
@@ -54,11 +56,10 @@ def input_chunk_ids() -> List[str]:
 
 def get_vod() -> Dict[str, Any]:
     source_id = os.environ['VOD_ID']
-    if not re.fullmatch(r'\d+', source_id):
-        raise ValueError('VOD_ID must be numeric')
-    vods = api('vods', {
-        'source': 'eq.twitch', 'source_id': f'eq.{source_id}',
-        'select': 'id,availability,ready_for_processing,published_at,streamers!inner(processing_enabled,sfde_profiles!inner(*))',
+    source = os.getenv('VIDEO_SOURCE', 'twitch')
+    validate_source_id(source, source_id)
+    vods = api('vod_processing_context', {
+        'source': f'eq.{source}', 'source_id': f'eq.{source_id}', 'select': '*',
     })
     if len(vods) != 1:
         raise ValueError('VOD was not found')
@@ -75,8 +76,7 @@ def output(name: str, value: Any) -> None:
 
 def prepare() -> None:
     vod = get_vod()
-    streamer = vod['streamers']
-    if not streamer['processing_enabled'] or not vod['ready_for_processing'] or vod['availability'] != 'available':
+    if not vod['processing_enabled'] or not vod['ready_for_processing'] or vod['availability'] != 'available':
         raise ValueError('VOD is not eligible for processing')
     requested_ids = input_chunk_ids()
     params = {'vod_id': f'eq.{vod["id"]}', 'status': 'in.(pending,queued)', 'select': 'id', 'order': 'chunk_index'}
@@ -89,16 +89,20 @@ def prepare() -> None:
     output('chunk_uuids', ids)
     if not ids:
         return
-    profile = json.loads(os.environ['SFDE_PROFILE']) if os.getenv('SFDE_PROFILE') else streamer['sfde_profiles']
+    profile = json.loads(os.environ['SFDE_PROFILE']) if os.getenv('SFDE_PROFILE') else vod['profile']
     if not isinstance(profile, dict) or not isinstance(profile.get('crop_region'), list):
         raise ValueError('A valid SFDE profile is required')
-    published = vod.get('published_at')
-    old = os.getenv('OLD_TEMPLATES') == 'true' or bool(
-        published and datetime.fromisoformat(published.replace('Z', '+00:00')) < datetime(2025, 8, 12, tzinfo=timezone.utc)
-    )
+    old = os.getenv('OLD_TEMPLATES') == 'true' or vod['old_templates']
     output('old_templates', str(old).lower())
     preferred = os.getenv('REQUESTED_QUALITY', '480p')
-    if os.getenv('LOCAL') == 'true':
+    if vod['source'] in ('youtube', 'bilibili'):
+        # The decoded geometry is independent of each platform's native rendition names.
+        selected = '480p' if old else preferred.removesuffix('60')
+        if selected not in SUPPORTED:
+            raise ValueError('Unsupported processing quality')
+        if os.getenv('LOCAL') != 'true':
+            resolve_media(vod['source'], os.environ['VOD_ID'], selected)
+    elif os.getenv('LOCAL') == 'true':
         selected = select_quality({preferred: {}}, preferred, old)
     else:
         result = subprocess.run(['streamlink', '--no-config', '--json', f'https://www.twitch.tv/videos/{os.environ["VOD_ID"]}'], capture_output=True, text=True, timeout=60)

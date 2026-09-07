@@ -8,6 +8,7 @@ export interface PendingChunk {
 
 export interface ProcessingPlan {
   vod_id: number;
+  source: string;
   source_id: string;
   chunks: PendingChunk[];
   old_templates: boolean;
@@ -17,35 +18,41 @@ export interface ProcessingPlan {
 export async function planProcessing(
   vodId?: number,
   sourceId?: string,
+  source = "twitch",
 ): Promise<ProcessingPlan | null> {
+  if (sourceId != null) {
+    const { data: identity, error: identityError } = await supabase.from("vods")
+      .select("id").eq("source", source).eq("source_id", sourceId)
+      .maybeSingle();
+    if (identityError) throw new Error(identityError.message);
+    if (!identity) return null;
+    vodId = identity.id;
+  }
   const { data: chunks, error } = await supabase.rpc(
     "get_pending_chunks_for_vod",
     {
       p_vod_id: vodId ?? null,
-      p_source_id: sourceId ?? null,
+      p_source_id: null,
     },
   );
   if (error) throw new Error(`Failed to find chunks: ${error.message}`);
   if (!chunks?.length) return null;
-  const { data: vod, error: vodError } = await supabase.from("vods")
-    .select("published_at, streamers!inner(sfde_profiles!inner(*))")
+  const { data: vod, error: vodError } = await supabase.from(
+    "vod_processing_context",
+  )
+    .select("source, old_templates, profile")
     .eq("id", chunks[0].vod_id).single();
   if (vodError) {
     throw new Error(`Failed to load processing profile: ${vodError.message}`);
   }
-  const streamer = Array.isArray(vod.streamers)
-    ? vod.streamers[0]
-    : vod.streamers;
-  const profile = Array.isArray(streamer.sfde_profiles)
-    ? streamer.sfde_profiles[0]
-    : streamer.sfde_profiles;
+  const profile = vod.profile;
   if (!profile) throw new Error("Missing SFDE profile");
   return {
     vod_id: chunks[0].vod_id,
+    source: vod.source,
     source_id: chunks[0].source_id,
     chunks,
-    old_templates: vod.published_at != null &&
-      Date.parse(vod.published_at) < Date.parse("2025-08-12T00:00:00Z"),
+    old_templates: vod.old_templates,
     profile,
   };
 }
@@ -88,6 +95,7 @@ export async function dispatchProcessing(
             ref: environment === "dev" ? "dev" : "main",
             inputs: {
               vod_id: plan.source_id,
+              source: plan.source,
               chunk_uuids: JSON.stringify(ids),
               old_templates: String(plan.old_templates),
               sfde_profile: JSON.stringify(plan.profile),

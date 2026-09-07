@@ -1,0 +1,75 @@
+name: Catalog YouTube
+run-name: Catalog YouTube (${{ inputs.mode }})
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: YouTube channel ID or HTTPS channel URL (use account_id for resumable backfills)
+        type: string
+      account_id:
+        description: Existing YouTube platform account UUID
+        type: string
+      mode:
+        type: choice
+        options: [recent, backfill]
+        default: recent
+      tab:
+        type: choice
+        options: [videos, streams]
+        default: videos
+      limit:
+        description: Maximum videos to inspect (1-50)
+        type: number
+        default: 10
+      environment:
+        description: Backend environment
+        type: choice
+        options: [dev]
+        default: dev
+      enable_processing:
+        description: Enable this YouTube account for SFDE
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: youtube-catalog-${{ inputs.account_id || inputs.channel }}-${{ inputs.tab }}
+  cancel-in-progress: false
+jobs:
+  catalog:
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 30
+    env:
+      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      CHANNEL: ${{ inputs.channel }}
+      ACCOUNT_ID: ${{ inputs.account_id }}
+      MODE: ${{ inputs.mode }}
+      TAB: ${{ inputs.tab }}
+      LIMIT: ${{ inputs.limit }}
+      ENABLE_PROCESSING: ${{ inputs.enable_processing }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: pip install 'yt-dlp[default]>=2026.7.4,<2027'
+      - name: Catalog a bounded page
+        shell: bash
+        run: |
+          args=(--mode "$MODE" --tab "$TAB" --limit "$LIMIT")
+          if [ -n "$ACCOUNT_ID" ]; then
+            args+=(--account "$ACCOUNT_ID")
+          else
+            args+=(--channel "$CHANNEL")
+          fi
+          if [ "$ENABLE_PROCESSING" = true ]; then args+=(--enable-processing); fi
+          python scripts/catalog_youtube.py "${args[@]}" > catalog-result.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: youtube-catalog
+          path: catalog-result.json

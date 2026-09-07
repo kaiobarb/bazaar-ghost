@@ -65,7 +65,7 @@ class SupabaseClient:
             # Fetch chunk with joined VOD and streamer data
             response = (
                 self.client.table("chunks")
-                .select("*, vods(source_id, streamer_id, streamers(login))")
+                .select("*, vods(id, source, source_id, streamer_id, streamers(login), platform_accounts(display_name))")
                 .eq("id", chunk_id)
                 .single()
                 .execute()
@@ -81,6 +81,8 @@ class SupabaseClient:
                     "start_seconds": chunk_data["start_seconds"],
                     "end_seconds": chunk_data["end_seconds"],
                     "status": chunk_data.get("status"),
+                    "vod_pk": chunk_data['vods']['id'],
+                    "source": chunk_data['vods']['source'],
                     "vod_id": chunk_data["vods"]["source_id"]
                     if chunk_data.get("vods")
                     else None,
@@ -88,6 +90,9 @@ class SupabaseClient:
                     if chunk_data.get("vods") and chunk_data["vods"].get("streamers")
                     else None,
                 }
+                account = chunk_data['vods'].get('platform_accounts')
+                if account:
+                    result['streamer'] = account['display_name']
                 return result
             else:
                 self.logger.error(f"No chunk found with ID {chunk_id}")
@@ -155,21 +160,26 @@ class SupabaseClient:
                         if not matchup.get('username'):
                             continue
                         source_id = str(matchup['vod_id'])
-                        if source_id not in vod_ids:
+                        source = matchup.get('source', 'twitch')
+                        identity = (source, source_id)
+                        if matchup.get('vod_pk') is not None:
+                            vod_ids[identity] = matchup['vod_pk']
+                        if identity not in vod_ids:
                             response = (self.client.table('vods').select('id')
-                                        .eq('source', 'twitch').eq('source_id', source_id).single().execute())
-                            vod_ids[source_id] = response.data['id']
+                                        .eq('source', source).eq('source_id', source_id).single().execute())
+                            vod_ids[identity] = response.data['id']
                         timestamp = matchup['timestamp']
+                        storage_id = source_id if source == 'twitch' else f'{source}/{source_id}'
                         image_path = None
                         for field, kind in [('frame_base64', 'detection'), ('ocr_debug_frame', 'ocr_debug'),
                                             ('emblem_boxes_frame', 'emblem_boxes')]:
                             if matchup.get(field):
-                                self._upload_image(source_id, timestamp, matchup[field], kind)
+                                self._upload_image(storage_id, timestamp, matchup[field], kind)
                                 if kind == 'detection':
-                                    image_path = f'/{self.storage_bucket}/{self._image_path(source_id, timestamp)}'
+                                    image_path = f'/{self.storage_bucket}/{self._image_path(storage_id, timestamp)}'
                         records.append({
                             'id': str(uuid5(NAMESPACE_URL, f"bazaarghost:{matchup['chunk_id']}:{timestamp}")),
-                            'vod_id': vod_ids[source_id], 'chunk_id': matchup['chunk_id'],
+                            'vod_id': vod_ids[identity], 'chunk_id': matchup['chunk_id'],
                             'frame_time_seconds': timestamp, 'username': matchup['username'],
                             'confidence': matchup.get('confidence', 0), 'rank': matchup.get('detected_rank'),
                             'storage_path': image_path, 'no_right_edge': matchup.get('no_right_edge', False),

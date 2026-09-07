@@ -5,9 +5,14 @@ on:
   workflow_dispatch:
     inputs:
       vod_id:
-        description: Twitch VOD ID
+        description: Platform video ID
         required: true
         type: string
+      source:
+        description: Video platform
+        type: choice
+        options: [twitch, youtube, bilibili]
+        default: twitch
       quality:
         description: Preferred stream quality
         default: "480p"
@@ -45,6 +50,7 @@ jobs:
       SUPABASE_URL: ${{ vars.SUPABASE_URL }}
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       VOD_ID: ${{ inputs.vod_id }}
+      VIDEO_SOURCE: ${{ inputs.source || 'twitch' }}
       INPUT_CHUNKS: ${{ inputs.chunk_uuids }}
       REQUESTED_QUALITY: ${{ inputs.quality }}
       SFDE_PROFILE: ${{ inputs.sfde_profile }}
@@ -61,7 +67,10 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - run: pip install 'streamlink>=8,<9'
+      - run: pip install 'streamlink>=8,<9' 'yt-dlp[default]>=2026.7.4,<2027'
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
       - id: prepare
         run: python scripts/vod_workflow.py prepare
       - if: failure()
@@ -75,6 +84,7 @@ jobs:
     timeout-minutes: 45
     strategy:
       fail-fast: false
+      max-parallel: 4
       matrix:
         chunk_id: ${{ fromJson(needs.prepare.outputs.chunk_uuids) }}
     env:

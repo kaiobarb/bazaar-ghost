@@ -1,0 +1,58 @@
+name: Catalog Bilibili
+run-name: Catalog Bilibili submission
+on:
+  workflow_dispatch:
+    inputs:
+      video:
+        description: BV ID or HTTPS video URL; add ?p=N to select a part
+        required: true
+        type: string
+      start_part:
+        description: First part position for a resumable submission backlog
+        type: number
+        default: 1
+      limit:
+        description: Maximum parts to catalog (1-50)
+        type: number
+        default: 10
+      templates:
+        type: choice
+        options: [auto, old, current]
+        default: auto
+      enable_processing:
+        description: Enable this Bilibili uploader for SFDE
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: bilibili-catalog-dev
+  cancel-in-progress: false
+jobs:
+  catalog:
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 15
+    env:
+      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      VIDEO: ${{ inputs.video }}
+      START_PART: ${{ inputs.start_part }}
+      LIMIT: ${{ inputs.limit }}
+      TEMPLATES: ${{ inputs.templates }}
+      ENABLE_PROCESSING: ${{ inputs.enable_processing }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Catalog a bounded set of parts
+        shell: bash
+        run: |
+          args=(--video "$VIDEO" --start-part "$START_PART" --limit "$LIMIT" --templates "$TEMPLATES")
+          if [ "$ENABLE_PROCESSING" = true ]; then args+=(--enable-processing); fi
+          python scripts/catalog_bilibili.py "${args[@]}" > catalog-result.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bilibili-catalog
+          path: catalog-result.json

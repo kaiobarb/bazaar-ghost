@@ -8,7 +8,9 @@ const SECRET_KEY = Deno.env.get("SUPABASE_SECRET_KEY") ||
   Deno.env.get("SECRET_KEY");
 const CLIENT_KEY = SECRET_KEY || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-export const supabase = createClient(SUPABASE_URL, CLIENT_KEY);
+export const supabase = createClient(SUPABASE_URL, CLIENT_KEY, {
+  global: { fetch: (input, init) => globalThis.fetch(input, init) },
+});
 
 export function verifySecretKey(req: Request): boolean {
   return hasSecretKey(

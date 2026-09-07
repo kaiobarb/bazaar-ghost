@@ -54,3 +54,12 @@ def test_lookup_failure_is_not_a_silently_empty_batch(client):
     with pytest.raises(RuntimeError, match='missing VOD'):
         client.upload_batch([matchup()])
     client.client.table.return_value.upsert.assert_not_called()
+
+
+def test_youtube_uses_internal_identity_and_platform_storage_path(client):
+    detection = {**matchup(), 'source': 'youtube', 'vod_id': '0C6bxQsDj-s', 'vod_pk': 219035}
+    assert client.upload_batch([detection])
+    record = client.client.table.return_value.upsert.call_args.args[0][0]
+    assert record['vod_id'] == 219035
+    assert record['storage_path'] == '/detections/youtube/0C6bxQsDj-s/14.jpg'
+    client.client.table.return_value.select.assert_not_called()
