@@ -7,6 +7,7 @@ import {
   statement,
 } from "./http";
 import { plan } from "./processing";
+import { atomic } from "./atomic";
 
 export async function retryVod(env: Env, input: Record<string, any>) {
   const id = integer(input.vod_id, "vod_id", 1);
@@ -17,7 +18,7 @@ export async function retryVod(env: Env, input: Record<string, any>) {
   );
   const vod = await one(
     env,
-    "SELECT v.*,s.processing_enabled FROM vods v JOIN streamers s ON s.id=v.streamer_id WHERE v.id=?",
+    "SELECT * FROM vod_processing_context WHERE id=?",
     id,
   );
   requireValue(
@@ -35,14 +36,23 @@ export async function retryVod(env: Env, input: Record<string, any>) {
     )
   )
     throw new HttpError(409, "VOD has active workers");
-  const result = await statement(
+  // Account eligibility or a new claim can change after the helpful preflight
+  // errors above. Recheck both with the reset so a competing operator/runner wins.
+  const [, , result] = await atomic(env, [
+    {
+      sql: "EXISTS(SELECT 1 FROM vod_processing_context WHERE id=? AND availability='available' AND ready_for_processing=1 AND processing_enabled=1)",
+      args: [id],
+    },
+    {
+      sql: "NOT EXISTS(SELECT 1 FROM chunks WHERE vod_id=? AND status IN('processing','queued'))",
+      args: [id],
+    },
+  ], [statement(
     env,
     `UPDATE chunks SET status='pending',last_error=NULL,claim_token=NULL,completed_at=NULL,lease_expires_at=NULL,attempt_count=0
-    WHERE vod_id=? AND status ${mode === "all" ? "IN('completed','failed','pending')" : "='failed'"}
-    AND NOT EXISTS(SELECT 1 FROM chunks active WHERE active.vod_id=? AND active.status IN('processing','queued')) RETURNING id`,
+    WHERE vod_id=? AND status ${mode === "all" ? "IN('completed','failed','pending')" : "='failed'"} RETURNING id`,
     id,
-    id,
-  ).all();
+  )]);
   return { reset: result.results.length, chunks: await plan(env, id) };
 }
 export async function setStreamer(env: Env, input: Record<string, any>) {
