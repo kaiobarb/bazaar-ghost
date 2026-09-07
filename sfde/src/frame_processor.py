@@ -2,15 +2,14 @@
 Frame processor module - Handles OpenCV detection and PaddleOCR
 """
 
-import os
+import math
+from pathlib import Path
+import re
 import cv2
 import numpy as np
-from paddleocr import PaddleOCR
 from typing import Optional, Dict, Any, Tuple
 import logging
 import base64
-from PIL import Image
-import io
 from emblem_detector import EmblemDetector
 from right_edge_detector import RightEdgeDetector
 from telemetry import create_span, record_histogram, record_counter
@@ -59,31 +58,10 @@ class FrameProcessor:
                 f"Custom edge configured: {self.custom_edge_percent * 100:.1f}% of crop width, opaque={self.opaque_edge}"
             )
 
-        # Load detection parameters
-        self.threshold = config["detection"]["threshold"]
-
-        # Load matchup template if specified
-        self.matchup_template = None
-        if "template_path" in config["detection"]:
-            try:
-                self.matchup_template = cv2.imread(
-                    config["detection"]["template_path"], 0
-                )
-                self.logger.info(
-                    f"Loaded matchup template: {config['detection']['template_path']}"
-                )
-            except Exception as e:
-                self.logger.warning(f"Could not load matchup template: {e}")
-
         # Map quality to resolution for templates
-        resolution_map = {
-            "360p": "360p",
-            "480p": "480p",
-            "720p": "720p",
-            "1080p": "1080p",
-            "1080p60": "1080p",  # Use 1080p templates for 1080p60 too
-        }
-        template_resolution = resolution_map.get(quality, "480p")
+        template_resolution = quality.removesuffix('60')
+        if template_resolution not in ('360p', '480p', '720p', '1080p'):
+            raise ValueError(f'Unsupported template quality: {quality}')
 
         # Initialize emblem detector
         self.emblem_detector = None
@@ -96,6 +74,8 @@ class FrameProcessor:
                 )
                 self.emblem_threshold = emblem_config.get("template_threshold", 0.5)
 
+                if not Path(templates_dir).is_absolute():
+                    templates_dir = str(Path(__file__).resolve().parent.parent / templates_dir)
                 self.emblem_detector = EmblemDetector(
                     templates_dir,
                     resolution=template_resolution,
@@ -117,7 +97,7 @@ class FrameProcessor:
                             )
 
             except Exception as e:
-                self.logger.warning(f"Could not initialize emblem detector: {e}")
+                raise ValueError(f"Could not initialize emblem detector: {e}") from e
 
         # Initialize right edge detector
         self.right_edge_detector = None
@@ -130,6 +110,8 @@ class FrameProcessor:
                         "templates_dir", "templates/"
                     ),
                 )
+                if not Path(templates_dir).is_absolute():
+                    templates_dir = str(Path(__file__).resolve().parent.parent / templates_dir)
                 self.right_edge_detector = RightEdgeDetector(
                     templates_dir, resolution=template_resolution
                 )
@@ -147,11 +129,13 @@ class FrameProcessor:
                     f"Initialized right edge detector with {template_resolution} template (crop margin: {self.right_edge_crop_margin * 100:.0f}%)"
                 )
             except Exception as e:
-                self.logger.warning(f"Could not initialize right edge detector: {e}")
+                raise ValueError(f"Could not initialize right edge detector: {e}") from e
 
         # Initialize PaddleOCR with mobile models (smallest footprint)
-        self.ocr_confidence_threshold = 0.5
+        self.ocr_confidence_threshold = config.get('ocr', {}).get('confidence_threshold', 0.5)
         try:
+            from paddleocr import PaddleOCR
+
             self.reader = PaddleOCR(
                 text_detection_model_name="PP-OCRv5_mobile_det",
                 text_recognition_model_name="en_PP-OCRv5_mobile_rec",
@@ -166,8 +150,9 @@ class FrameProcessor:
             raise
 
         # Cache for performance
-        self.last_matchup_time = 0
-        self.min_matchup_interval = 10  # Minimum seconds between matchups
+        self.last_matchup_time = None
+        self.matchup_active = False
+        self.min_matchup_interval = config.get('ocr', {}).get('min_matchup_interval', 10)
 
     def process_frame(
         self, frame_data: bytes, timestamp: int, vod_id: str, chunk_id: str
@@ -188,12 +173,13 @@ class FrameProcessor:
             # Decode frame
             frame = self._decode_frame(frame_data)
             if frame is None:
-                return None
+                raise ValueError('Could not decode sampled JPEG')
 
             # Emblem detection first (5 template scans)
             detected_rank, emblem_bbox, emblem_confidence = self._detect_emblem(frame)
 
             if detected_rank is None:
+                self.matchup_active = False
                 # No emblem found, no matchup
                 record_counter(
                     "emblem_not_found",
@@ -209,11 +195,12 @@ class FrameProcessor:
                 )
                 return None
 
-            # Check minimum interval
-            if timestamp - self.last_matchup_time < self.min_matchup_interval:
+            if getattr(self, "matchup_active", False):
                 return None
 
-            self.last_matchup_time = timestamp
+            # Check minimum interval
+            if self.last_matchup_time is not None and timestamp - self.last_matchup_time < self.min_matchup_interval:
+                return None
 
             # Calculate emblem right boundary for cropping (needed for multi-crop OCR)
             emblem_right_x = None
@@ -275,20 +262,25 @@ class FrameProcessor:
                     )
 
             # Remove emblem from frame for better OCR
-            processed_frame = frame.copy()
-
-            # Simple top/bottom cropping and emblem removal
-            cropped_frame = self._crop(processed_frame, emblem_bbox)
+            cropped_frame = self._crop(frame, emblem_bbox, right_edge_x, truncated)
+            if cropped_frame.size == 0:
+                return None
 
             # Extract username via OCR using BGR frame (PaddleOCR expects 3-channel images)
             # PaddleOCR will handle any necessary preprocessing internally
             username, ocr_confidence, ocr_data = self._extract_usernames(cropped_frame)
+            if not username or not math.isfinite(ocr_confidence) or ocr_confidence < self.ocr_confidence_threshold:
+                return None
+            self.last_matchup_time = timestamp
+            self.matchup_active = True
 
             # Encode the original frame (already cropped by FFmpeg)
             success, encoded = cv2.imencode(
                 ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85]
             )
-            frame_jpeg = encoded.tobytes() if success else None
+            if not success:
+                raise RuntimeError('Could not encode detection screenshot')
+            frame_jpeg = encoded.tobytes()
 
             # Create OCR debug visualization (always on matchup frames)
             debug_jpeg = None
@@ -296,83 +288,14 @@ class FrameProcessor:
                 # Generate OCR visualization with bounding boxes on cropped BGR frame
                 debug_jpeg = self._create_ocr_visualization(cropped_frame, ocr_data)
 
-            # Create emblem bounding box visualization if emblem detector is available
-            boxes_jpeg = None
-            if self.emblem_detector:
-                try:
-                    # Create visualization with emblem bounding box on original frame
-                    boxes_vis = self.emblem_detector.create_debug_visualization(
-                        frame, threshold=self.emblem_threshold
-                    )
-
-                    # Add right edge visualization if detected
-                    if self.right_edge_detector and right_edge_x is not None:
-                        # Calculate actual crop position with margin
-                        margin_pixels = int(right_edge_x * self.right_edge_crop_margin)
-                        crop_position = right_edge_x - margin_pixels
-
-                        # Draw vertical line at actual crop position (cyan)
-                        cv2.line(
-                            boxes_vis,
-                            (crop_position, 0),
-                            (crop_position, boxes_vis.shape[0]),
-                            (255, 255, 0),
-                            2,
-                        )  # Cyan color - shows where crop will happen
-
-                        # Draw right edge bounding box if we can find the match location
-                        if self.right_edge_detector.template is not None:
-                            # Re-run detection to get match location (cached by template matching)
-                            template = self.right_edge_detector.template
-                            mask = self.right_edge_detector.mask
-
-                            if mask is not None:
-                                result = cv2.matchTemplate(
-                                    frame, template, cv2.TM_SQDIFF, mask=mask
-                                )
-                            else:
-                                result = cv2.matchTemplate(
-                                    frame, template, cv2.TM_SQDIFF
-                                )
-                            _, _, min_loc, _ = cv2.minMaxLoc(result)
-
-                            template_h, template_w = template.shape[:2]
-                            template_x = right_edge_x - template_w
-
-                            # Draw bounding box around detected template (cyan)
-                            cv2.rectangle(
-                                boxes_vis,
-                                (template_x, min_loc[1]),
-                                (right_edge_x, min_loc[1] + template_h),
-                                (255, 255, 0),
-                                2,
-                            )  # Cyan color
-
-                            # Add text label showing detected position and crop position
-                            label = (
-                                f"Right Edge: {right_edge_x} -> crop at {crop_position}"
-                            )
-                            cv2.putText(
-                                boxes_vis,
-                                label,
-                                (template_x, min_loc[1] - 5),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                0.5,
-                                (255, 255, 0),
-                                1,
-                            )
-
-                    success_boxes, encoded_boxes = cv2.imencode(
-                        ".jpg", boxes_vis, [cv2.IMWRITE_JPEG_QUALITY, 90]
-                    )
-                    boxes_jpeg = encoded_boxes.tobytes() if success_boxes else None
-                    self.logger.debug(
-                        f"Created bounding box visualization for timestamp {timestamp}"
-                    )
-                except Exception as e:
-                    self.logger.warning(
-                        f"Failed to create bounding box visualization: {e}"
-                    )
+            # Draw the coordinates already used for OCR; do not run detection again.
+            boxes_vis = frame.copy()
+            x, y, w, h = emblem_bbox
+            cv2.rectangle(boxes_vis, (x, y), (x + w, y + h), (0, 255, 0), 1)
+            if right_edge_x is not None:
+                cv2.line(boxes_vis, (right_edge_x, 0), (right_edge_x, frame.shape[0]), (255, 255, 0), 1)
+            success_boxes, encoded_boxes = cv2.imencode('.jpg', boxes_vis)
+            boxes_jpeg = encoded_boxes.tobytes() if success_boxes else None
 
             # Prepare result
             result = {
@@ -405,8 +328,8 @@ class FrameProcessor:
             return result
 
         except Exception as e:
-            self.logger.error(f"Frame processing error: {e}")
-            return None
+            self.logger.error(f'Frame processing error: {e}')
+            raise
 
     def extract_igd(self, igd_frame: np.ndarray) -> Optional[int]:
         """Extract in-game day number (1-20) from the IGD crop region.
@@ -542,52 +465,25 @@ class FrameProcessor:
                 return None, None, 0.0
 
             except Exception as e:
-                self.logger.error(f"Emblem detection error: {e}")
-                return None, None, 0.0
+                self.logger.error(f'Emblem detection error: {e}')
+                raise
 
     def _crop(
-        self, frame: np.ndarray, emblem_bbox: Optional[Tuple[int, int, int, int]] = None
+        self, frame: np.ndarray, emblem_bbox: Optional[Tuple[int, int, int, int]] = None,
+        right_edge_x: Optional[int] = None, truncated: bool = False,
     ) -> np.ndarray:
+        """Crop the username between the emblem and the visible/occluded edge.
+
+        Invalid bounds return an empty crop. Falling back to the full frame
+        would let OCR recognize unrelated overlay text as an opponent.
         """
-        Crop frame to remove top/bottom borders and optionally the emblem
-
-        Args:
-            frame: Input frame
-            emblem_bbox: Optional emblem bounding box (x, y, w, h) to crop out
-
-        Returns:
-            Cropped frame (top/bottom removed, emblem removed if bbox provided)
-        """
-        try:
-            h, w = frame.shape[:2]
-
-            # Vertical crop: remove top/bottom 24%
-            crop_ratio = 0.24
-            top_crop = int(h * crop_ratio)
-            bottom_crop = int(h * crop_ratio)
-
-            y1 = max(0, top_crop)
-            y2 = min(h, h - bottom_crop)
-
-            # Horizontal crop: remove emblem from left side if bbox provided
-            x1 = 0
-            if emblem_bbox is not None:
-                emblem_x, emblem_y, emblem_w, emblem_h = emblem_bbox
-                # Crop from the right edge of the emblem
-                x1 = max(0, emblem_x + emblem_w)
-
-            cropped = frame[y1:y2, x1:]
-
-            # Validate minimum dimensions
-            if cropped.shape[0] < 20 or cropped.shape[1] < 50:
-                self.logger.warning(f"Crop too small: {cropped.shape}, using original")
-                return frame
-
-            return cropped
-
-        except Exception as e:
-            self.logger.error(f"Simple crop error: {e}")
-            return frame
+        height, width = frame.shape[:2]
+        y1, y2 = int(height * 0.24), height - int(height * 0.24)
+        x1 = 0 if emblem_bbox is None else emblem_bbox[0] + emblem_bbox[2]
+        x2 = width if right_edge_x is None else min(width, right_edge_x)
+        if right_edge_x is not None and not truncated:
+            x2 -= int(max(0, x2 - x1) * self.right_edge_crop_margin)
+        return frame[y1:y2, max(0, x1):max(0, x2)]
 
     def _extract_usernames(
         self, frame: np.ndarray
@@ -602,6 +498,9 @@ class FrameProcessor:
             Tuple of (username, confidence, ocr_data) where confidence is 0-1 scale
             ocr_data contains detection details for debugging
         """
+        if frame.size == 0:
+            return None, 0.0, {"detections": []}
+
         with create_span("ocr_extraction") as span:
             try:
                 # Run PaddleOCR prediction
@@ -706,7 +605,7 @@ class FrameProcessor:
                 self.logger.error(f"Username extraction error: {e}")
                 if span:
                     span.set_attribute("ocr.error", str(e))
-                return None, 0.0, None
+                raise
 
     def _create_ocr_visualization(
         self, frame: np.ndarray, ocr_data: dict
@@ -768,52 +667,6 @@ class FrameProcessor:
             self.logger.error(f"OCR visualization error: {e}")
             return None
 
-    def _generate_ocr_log(
-        self, ocr_data: dict, timestamp: int, username: Optional[str], confidence: float
-    ) -> str:
-        """
-        Generate human-readable OCR debug log for PaddleOCR
-
-        Args:
-            ocr_data: PaddleOCR output dict with detection list
-            timestamp: Frame timestamp
-            username: Detected/cleaned username
-            confidence: OCR confidence (0-1)
-
-        Returns:
-            Plain text log as string
-        """
-        try:
-            lines = []
-            lines.append("=" * 60)
-            lines.append("OCR Debug Log (PaddleOCR)")
-            lines.append("=" * 60)
-            lines.append(f"Timestamp: {timestamp}s")
-            lines.append(f"Detected Username: {username if username else '(none)'}")
-            lines.append(f"Confidence: {confidence:.3f}")
-            lines.append("")
-
-            # Extract detections
-            lines.append("Detected Text Elements:")
-            lines.append("-" * 60)
-            lines.append(f"{'Text':<30} {'Confidence':<12}")
-            lines.append("-" * 60)
-
-            for detection in ocr_data.get("detections", []):
-                text = detection["text"]
-                conf = detection["confidence"]
-                lines.append(f"{text:<30} {conf:.3f}")
-
-            lines.append("")
-            lines.append(f"Total detections: {len(ocr_data.get('detections', []))}")
-            lines.append("")
-
-            return "\n".join(lines)
-
-        except Exception as e:
-            self.logger.error(f"OCR log generation error: {e}")
-            return f"Error generating OCR log: {e}"
-
     def _clean_username(self, text: str) -> Optional[str]:
         """
         Clean and validate extracted username
@@ -823,12 +676,10 @@ class FrameProcessor:
             return None
 
         # Remove non-alphanumeric characters except underscore, dash, and dot
-        import re
-
         cleaned = re.sub(r"[^a-zA-Z0-9_\-.]", "", text)
 
         # Additional validation: Bazaar username rules
-        # - 4-25 characters
+        # - 2-13 characters (validated corpus)
         # - Must start with letter or number
         if len(cleaned) < 2 or len(cleaned) > 13:
             return None

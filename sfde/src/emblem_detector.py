@@ -50,6 +50,8 @@ class EmblemDetector:
         self.template_masks = {}
 
         self._load_templates()
+        if len(self.templates) != len(self.RANKS):
+            raise ValueError(f'Missing {resolution} rank templates in {self.templates_dir}')
 
     def _load_templates(self):
         """Load all rank emblem templates"""
@@ -111,6 +113,8 @@ class EmblemDetector:
                 else:
                     result = cv2.matchTemplate(frame, template, self.cv_method)
 
+                # Masked normalized matching can divide by zero on blank areas.
+                result[~np.isfinite(result)] = np.inf if self.lower_better else -np.inf
                 min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
 
                 if self.lower_better:
@@ -125,7 +129,7 @@ class EmblemDetector:
                 is_better = (not self.lower_better and score > best_score) or \
                            (self.lower_better and score < best_score)
 
-                if is_better and confidence >= threshold:
+                if is_better and np.isfinite(confidence) and confidence >= threshold:
                     best_score = score
                     best_confidence = confidence
                     best_rank = rank
@@ -133,65 +137,7 @@ class EmblemDetector:
                     best_bbox = (loc[0], loc[1], w, h)
 
             except Exception as e:
-                self.logger.error(f"Template matching error for {rank}: {e}")
-                continue
+                self.logger.error(f'Template matching error for {rank}: {e}')
+                raise
 
         return best_rank, best_bbox, best_confidence
-
-    def remove_emblem(self, frame: np.ndarray, threshold: float = 0.5, fill_value: int = 0) -> Tuple[np.ndarray, Optional[str]]:
-        """
-        Detect and remove emblem from frame by masking it out
-
-        Args:
-            frame: Input frame
-            threshold: Detection threshold
-            fill_value: Value to fill masked area (0=black, 255=white)
-
-        Returns:
-            (processed_frame, detected_rank)
-        """
-        rank, bbox, confidence = self.detect_emblem(frame, threshold)
-
-        if bbox is None:
-            return frame, None
-
-        result = frame.copy()
-        x, y, w, h = bbox
-
-        x1 = max(0, x)
-        y1 = max(0, y)
-        x2 = min(result.shape[1], x + w)
-        y2 = min(result.shape[0], y + h)
-
-        if len(result.shape) == 3:
-            result[y1:y2, x1:x2] = [fill_value, fill_value, fill_value]
-        else:
-            result[y1:y2, x1:x2] = fill_value
-
-        return result, rank
-
-    def create_debug_visualization(self, frame: np.ndarray, threshold: float = 0.5) -> np.ndarray:
-        """
-        Create a visualization showing detected emblem bounding box
-
-        Args:
-            frame: Input frame
-            threshold: Detection threshold
-
-        Returns:
-            Visualization frame with bbox overlay
-        """
-        if len(frame.shape) == 2:
-            vis = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-        else:
-            vis = frame.copy()
-
-        rank, bbox, confidence = self.detect_emblem(frame, threshold)
-
-        if bbox:
-            x, y, w, h = bbox
-            cv2.rectangle(vis, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            label = f"{rank.upper()} ({confidence:.2f})"
-            cv2.putText(vis, label, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-
-        return vis

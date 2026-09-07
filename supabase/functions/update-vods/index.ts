@@ -88,7 +88,7 @@ async function updateVods(streamerId: number): Promise<UpdateVodsResult> {
   console.log(`Streamer has ${vodCount} VOD(s)`);
 
   // If streamer has 1 or fewer VODs, skip chapter processing
-  if (vodCount <= 1) {
+  if (vodCount === 0 || (isLive && vodCount === 1)) {
     console.log(
       `Streamer has ${vodCount} VOD(s), skipping chapter fetch and marking has_vods=false`,
     );
@@ -132,7 +132,7 @@ async function updateVods(streamerId: number): Promise<UpdateVodsResult> {
   } = result;
 
   // Update streamer statistics
-  await supabase
+  const { error: statsError } = await supabase
     .from("streamers")
     .update({
       has_vods: true,
@@ -142,6 +142,10 @@ async function updateVods(streamerId: number): Promise<UpdateVodsResult> {
       updated_at: new Date().toISOString(),
     })
     .eq("id", streamerId);
+
+  if (statsError) {
+    throw new Error(`Failed to update streamer stats: ${statsError.message}`);
+  }
 
   console.log(`
 Summary for ${currentLogin}:

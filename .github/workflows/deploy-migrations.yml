@@ -2,12 +2,7 @@ name: Deploy Migrations
 run-name: Deploy Migrations
 
 on:
-  push:
-    branches:
-      - main
-      - dev
-    paths:
-      - "supabase/migrations/**"
+  # Automatic deployment is ordered in deploy-functions.yml.
   workflow_dispatch:
     inputs:
       environment:

@@ -1,118 +1,24 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import {
-  getBazaarGameId,
-  getStreamerVodsWithChapters,
-  VideoChapter,
-  VODWithChapters,
-} from "./twitch.ts";
+import { getBazaarGameId, getStreamerVodsWithChapters } from "./twitch.ts";
+
+import { hasSecretKey } from "./auth.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const SECRET_KEY = Deno.env.get("SECRET_KEY");
+const SECRET_KEY = Deno.env.get("SUPABASE_SECRET_KEY") ||
+  Deno.env.get("SECRET_KEY");
+const CLIENT_KEY = SECRET_KEY || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-// Debug logging to see what environment variables we have
-console.log("SUPABASE_URL:", SUPABASE_URL);
-console.log(
-  "SUPABASE_SERVICE_ROLE_KEY:",
-  SUPABASE_SERVICE_ROLE_KEY
-    ? `${SUPABASE_SERVICE_ROLE_KEY.substring(0, 20)}...`
-    : "NOT SET",
-);
-console.log(
-  "SECRET_KEY:",
-  SECRET_KEY ? `${SECRET_KEY.substring(0, 20)}...` : "NOT SET",
-);
+export const supabase = createClient(SUPABASE_URL, CLIENT_KEY);
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-
-/**
- * Verifies that the request contains a valid secret key in the apikey header
- * Returns true if valid, false otherwise
- * Skips verification for local development and Supabase UI test invocations
- */
 export function verifySecretKey(req: Request): boolean {
-  // Skip verification on local (kong:8000 is the internal Docker URL for local dev)
-  const isLocal = SUPABASE_URL.includes("localhost") ||
-    SUPABASE_URL.includes("127.0.0.1") ||
-    SUPABASE_URL.includes("kong:8000");
-
-  console.log(SUPABASE_URL);
-  if (isLocal) {
-    console.log("Skipped secret verification (local environment)");
-    return true;
-  }
-
-  const apiKey = req.headers.get("apikey");
-
-  if (!apiKey) {
-    console.log("No apikey header provided");
-    return false;
-  }
-
-  if (!SECRET_KEY) {
-    console.error("SECRET_KEY environment variable not set");
-    return false;
-  }
-
-  const isValid = apiKey === SECRET_KEY;
-
-  if (!isValid) {
-    console.log("Invalid apikey provided");
-  }
-
-  return isValid;
-}
-
-/**
- * Extract Bazaar chapter time ranges from VOD chapters.
- * Returns array in format: [start1_sec, end1_sec, start2_sec, end2_sec, ...]
- */
-export function extractBazaarChapters(
-  chapters: VideoChapter[],
-  videoLengthSeconds: number,
-  bazaarGameId: string,
-): number[] {
-  const bazaarSegments: number[] = [];
-
-  // Sort chapters by position
-  const sortedChapters = [...chapters].sort(
-    (a, b) => a.positionMilliseconds - b.positionMilliseconds,
+  return hasSecretKey(
+    req,
+    SECRET_KEY || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"),
   );
-
-  for (let i = 0; i < sortedChapters.length; i++) {
-    const chapter = sortedChapters[i];
-
-    // Check if this chapter is for The Bazaar
-    const isBazaar = chapter.game?.id === bazaarGameId ||
-      chapter.game?.name?.toLowerCase().includes("bazaar");
-
-    if (isBazaar) {
-      // Chapter start time in seconds
-      const startSeconds = Math.floor(chapter.positionMilliseconds / 1000);
-
-      // Chapter end time: either next chapter start or video end
-      let endSeconds: number;
-      if (i + 1 < sortedChapters.length) {
-        endSeconds = Math.floor(
-          sortedChapters[i + 1].positionMilliseconds / 1000,
-        );
-      } else {
-        endSeconds = videoLengthSeconds;
-      }
-
-      // Add to segments array
-      bazaarSegments.push(startSeconds, endSeconds);
-
-      console.log(
-        `  Found Bazaar segment: ${startSeconds}s - ${endSeconds}s (${
-          endSeconds - startSeconds
-        }s duration)`,
-      );
-    }
-  }
-
-  return bazaarSegments;
 }
+
+export { extractBazaarChapters } from "./chapters.ts";
+import { extractBazaarChapters } from "./chapters.ts";
 
 export interface FetchAndUpsertResult {
   /** Number of VODs with Bazaar gameplay that were upserted */
@@ -207,6 +113,7 @@ export async function fetchAndUpsertVods(
   streamerLogin: string,
   numVods?: number,
   skipLiveVod: boolean = false,
+  dryRun: boolean = false,
 ): Promise<FetchAndUpsertResult> {
   const bazaarGameId = await getBazaarGameId();
   const vods = await getStreamerVodsWithChapters(streamerLogin, numVods);
@@ -239,9 +146,9 @@ export async function fetchAndUpsertVods(
 
     // Fallback: If no chapters found but VOD's main game is The Bazaar,
     // treat the entire VOD as a Bazaar segment
-    if (chapters.length === 0) {
+    if (chapters.length === 0 && vod.chapters.length === 0) {
       const isBazaarGame = vod.game?.id === bazaarGameId ||
-        vod.game?.name?.toLowerCase().includes("bazaar");
+        vod.game?.name?.toLowerCase() === "the bazaar";
 
       if (isBazaarGame) {
         console.log(
@@ -254,7 +161,13 @@ export async function fetchAndUpsertVods(
       }
     }
 
-    console.log(`  VOD ${vod.id} has ${chapters.length / 2} Bazaar segment(s)`);
+    if (chapters.length === 0 || vod.lengthSeconds <= 0) continue;
+    if (dryRun) {
+      vodsUpserted++;
+      bazaarSegments += chapters.length / 2;
+      upsertedVodIds.push(vod.id);
+      continue;
+    }
 
     // Upsert VOD to database
     const { error } = await supabase.from("vods").upsert(
@@ -267,6 +180,7 @@ export async function fetchAndUpsertVods(
         published_at: vod.publishedAt,
         bazaar_chapters: chapters,
         availability: "available",
+        unavailable_since: null,
         last_availability_check: new Date().toISOString(),
         ready_for_processing: true,
         updated_at: new Date().toISOString(),
@@ -278,7 +192,7 @@ export async function fetchAndUpsertVods(
     );
 
     if (error) {
-      console.error(`Error upserting VOD ${vod.id}:`, error);
+      throw new Error(`Failed to save VOD ${vod.id}: ${error.message}`);
     } else {
       vodsUpserted++;
       bazaarSegments += chapters.length / 2;

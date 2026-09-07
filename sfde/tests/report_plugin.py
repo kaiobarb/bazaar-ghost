@@ -75,6 +75,7 @@ _collector = ReportCollector()
 
 
 def pytest_sessionstart(session):
+    _collector.results.clear()
     _collector.start_time = time.time()
     report_metrics.clear()
 
@@ -84,7 +85,7 @@ def pytest_runtest_makereport(item, call):
     outcome = yield
     report = outcome.get_result()
 
-    if report.when == "call":
+    if report.when == "call" or (report.when == "setup" and not report.passed) or report.failed:
         captured = report.capstdout or ""
         _collector.add_result(
             nodeid=report.nodeid,
@@ -97,6 +98,8 @@ def pytest_runtest_makereport(item, call):
 def pytest_sessionfinish(session, exitstatus):
     elapsed = time.time() - _collector.start_time
     results = _collector.results
+    if exitstatus and not any(result['outcome'] == 'failed' for result in results):
+        results.append({'nodeid': 'suite::collection_or_session_error', 'outcome': 'failed', 'duration': 0, 'captured': f'pytest exited with status {exitstatus}'})
     passed = sum(1 for r in results if r["outcome"] == "passed")
     failed = sum(1 for r in results if r["outcome"] == "failed")
     skipped = sum(1 for r in results if r["outcome"] == "skipped")
@@ -301,8 +304,6 @@ def _write_markdown_summary(
                 frame_failures.append(ml)
             elif "expected=" in ml and "got=" in ml:
                 frame_failures_seen.add(ml)
-                frame_failures.append(ml)
-            elif "expected=" in ml and "got=" in ml:
                 frame_failures.append(ml)
 
     if frame_failures:

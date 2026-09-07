@@ -1,68 +1,63 @@
 name: Tests
-run-name: Test
-
 on:
   push:
-    branches:
-      - main
-      - dev
-    paths:
-      - "sfde/**"
+    branches: [main, dev]
+    paths: ["sfde/**", "supabase/**", "scripts/**", ".github/workflows/**"]
   pull_request:
-    branches:
-      - main
-      - dev
-    paths:
-      - "sfde/**"
+    branches: [main, dev]
+    paths: ["sfde/**", "supabase/**", "scripts/**", ".github/workflows/**"]
   workflow_dispatch:
-
+permissions:
+  contents: read
 jobs:
-  test:
+  sfde:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build SFDE container
-        uses: docker/build-push-action@v6
-        timeout-minutes: 10
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
         with:
           context: ./sfde
+          target: test
           tags: sfde:test
           load: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: Run tests
-        timeout-minutes: 10
+      - name: Run offline tests
         run: |
-          docker run --rm \
-            --entrypoint bash \
-            --user "$(id -u):$(id -g)" \
-            -e DISABLE_MODEL_SOURCE_CHECK=True \
-            -e HOME=/tmp \
-            -v "${{ github.workspace }}/sfde:/app/sfde_host" \
-            sfde:test \
-            -c "pip install --user pytest -q 2>/dev/null && cd /app/sfde_host && python -m pytest tests/ -v"
-
-      - name: Write test summary
+          docker create --name sfde-tests --network none sfde:test
+          docker start -a sfde-tests
+          test "$(docker inspect -f '{{.State.ExitCode}}' sfde-tests)" -eq 0
+      - name: Collect report
         if: always()
         run: |
-          if [ -f sfde/tests/last_run_summary.md ]; then
-            cat sfde/tests/last_run_summary.md >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Upload test report
+          docker cp sfde-tests:/app/tests/last_run_summary.md . || true
+          docker cp sfde-tests:/app/tests/last_run.txt . || true
+          if [ -f last_run_summary.md ]; then cat last_run_summary.md >> "$GITHUB_STEP_SUMMARY"; fi
+          docker rm -f sfde-tests || true
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
           name: sfde-test-report
           path: |
-            sfde/tests/last_run.txt
-            sfde/tests/last_run_summary.md
+            last_run.txt
+            last_run_summary.md
           if-no-files-found: ignore
-          retention-days: 30
+  control-plane:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: deno check supabase/functions/*/index.ts
+      - run: deno lint --rules-exclude=no-explicit-any,no-unversioned-import supabase/functions
+      - run: deno test --allow-env supabase/functions/_shared/*_test.ts
+      - run: python -m unittest discover -s scripts/tests
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - run: supabase start -x studio,postgres-meta,imgproxy,realtime,mailpit,edge-runtime,logflare,vector
+      - run: supabase test db

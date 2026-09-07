@@ -4,8 +4,7 @@ JSON logging formatter for structured logging
 
 import json
 import logging
-from datetime import datetime
-from typing import Any, Dict
+from datetime import datetime, timezone
 
 class JSONFormatter(logging.Formatter):
     """Custom JSON formatter for structured logging"""
@@ -25,7 +24,7 @@ class JSONFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         """Format log record as JSON"""
         log_obj = {
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
             'level': record.levelname,
             'logger': record.name,
             'message': record.getMessage(),

@@ -1,90 +1,39 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE")!;
+const url = Deno.env.get("SUPABASE_URL");
+const key = Deno.env.get("SUPABASE_SECRET_KEY");
+if (!url || !key) {
+  throw new Error("SUPABASE_URL and SUPABASE_SECRET_KEY are required");
+}
+const bucket = createClient(url, key).storage.from("detections");
+const pageSize = 1000;
 
-const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-const BUCKET = "detections";
-const BATCH_SIZE = 1000;
-
-async function listAllFiles(prefix: string = ""): Promise<string[]> {
-  const allFiles: string[] = [];
-
-  const { data, error } = await supabase.storage
-    .from(BUCKET)
-    .list(prefix, { limit: BATCH_SIZE });
-
-  if (error) {
-    console.error(`Error listing ${prefix}:`, error);
-    return allFiles;
-  }
-
-  if (!data) return allFiles;
-
-  for (const item of data) {
-    const path = prefix ? `${prefix}/${item.name}` : item.name;
-
-    if (item.id === null) {
-      // It's a folder, recurse into it
-      const nestedFiles = await listAllFiles(path);
-      allFiles.push(...nestedFiles);
-    } else {
-      // It's a file
-      allFiles.push(path);
+async function listFiles(prefix = ""): Promise<string[]> {
+  const files: string[] = [];
+  for (let offset = 0;; offset += pageSize) {
+    const { data, error } = await bucket.list(prefix, {
+      limit: pageSize,
+      offset,
+      sortBy: { column: "name", order: "asc" },
+    });
+    if (error) throw error;
+    for (const item of data) {
+      const path = prefix ? `${prefix}/${item.name}` : item.name;
+      if (item.id === null) files.push(...await listFiles(path));
+      else files.push(path);
     }
+    if (data.length < pageSize) return files;
   }
-
-  return allFiles;
 }
 
-async function clearBucket() {
-  console.log(`Clearing bucket: ${BUCKET}`);
-  console.log(`Supabase URL: ${supabaseUrl}`);
-  console.log("");
-
-  // First, get a count by listing top-level
-  const { data: topLevel } = await supabase.storage.from(BUCKET).list("", { limit: 1000 });
-  console.log(`Top-level items: ${topLevel?.length || 0}`);
-
-  let totalDeleted = 0;
-  let hasMore = true;
-
-  while (hasMore) {
-    // List all files recursively (up to batch size worth)
-    console.log("\nScanning for files...");
-    const files = await listAllFiles("");
-
-    if (files.length === 0) {
-      console.log("No more files found");
-      hasMore = false;
-      break;
-    }
-
-    console.log(`Found ${files.length} files to delete`);
-
-    // Delete in batches of 100 (Supabase limit)
-    for (let i = 0; i < files.length; i += 100) {
-      const batch = files.slice(i, i + 100);
-
-      const { error: deleteError } = await supabase.storage
-        .from(BUCKET)
-        .remove(batch);
-
-      if (deleteError) {
-        console.error("Error deleting batch:", deleteError);
-        continue;
-      }
-
-      totalDeleted += batch.length;
-      console.log(`Deleted ${totalDeleted} files...`);
-    }
-
-    // Small delay between iterations
-    await new Promise((resolve) => setTimeout(resolve, 500));
+const files = await listFiles();
+console.log(`${files.length} files in ${url}/storage/v1/object/detections`);
+if (!Deno.args.includes("--execute")) {
+  console.log("Dry run. Pass --execute to delete these files.");
+} else {
+  for (let offset = 0; offset < files.length; offset += 100) {
+    const { error } = await bucket.remove(files.slice(offset, offset + 100));
+    if (error) throw error; // Do not loop forever on a permanent storage error.
   }
-
-  console.log(`\n✓ Done! Total files deleted: ${totalDeleted}`);
+  console.log(`Deleted ${files.length} files.`);
 }
-
-clearBucket();

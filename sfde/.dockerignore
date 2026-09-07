@@ -1,6 +1,6 @@
 *.pyc
 __pycache__/
-.env
+.env*
 .venv/
 env/
 venv/
@@ -10,7 +10,6 @@ venv/
 *.md
 .DS_Store
 test/
-tests/
 docs/
 .pytest_cache/
 .coverage
@@ -18,3 +17,5 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+tests/last_run.txt
+tests/last_run_summary.md
