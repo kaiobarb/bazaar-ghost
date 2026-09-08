@@ -143,7 +143,7 @@ export async function handleJob(env: Env, job: Job) {
   }
 }
 export async function scheduled(event: ScheduledController, env: Env) {
-  if (event.cron === "17 * * * *") {
+  if (event.cron === "* * * * *") {
     // Internal expiry cleanup has no provider/network calls and remains useful
     // while login and outbound integrations are temporarily disabled.
     await cleanupAuth(env);

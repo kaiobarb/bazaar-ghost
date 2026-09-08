@@ -76,6 +76,6 @@ it('requires a user session for social writes and the admin credential for moder
 
 it('runs bounded internal auth expiry cleanup while outbound integrations are disabled', async () => {
   await env.DB.prepare("INSERT INTO auth_flows(stateHash,provider,expiresAt) VALUES('expired','discord',0),('live','twitch',?)").bind(Date.now() + 60_000).run();
-  await scheduled({ cron: '17 * * * *' } as ScheduledController, { ...authEnv(), OUTBOUND_ENABLED: 'false', AUTH_ENABLED: 'false' });
+  await scheduled({ cron: '* * * * *' } as ScheduledController, { ...authEnv(), OUTBOUND_ENABLED: 'false', AUTH_ENABLED: 'false' });
   expect(await env.DB.prepare('SELECT stateHash FROM auth_flows ORDER BY stateHash').all()).toMatchObject({ results: [{ stateHash: 'live' }] });
 });

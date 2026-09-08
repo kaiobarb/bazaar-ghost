@@ -39,6 +39,17 @@ class DeploymentTests(unittest.TestCase):
             with self.subTest(target=target):
                 self.assertEqual(self.validate(target)['vars']['ENVIRONMENT'], target)
 
+    def test_auth_maintenance_is_the_only_validation_schedule_and_preserves_other_environments(self):
+        provider_schedules = ['*/3 * * * *', '0 * * * *', '0 0,12 * * *', '0 2 * * *', '0 3 * * *']
+        for target in ['local', 'dev', 'production', 'validation']:
+            filename = 'wrangler.jsonc' if target == 'local' else f'wrangler.{target}.jsonc'
+            config = deployment.read_jsonc(ROOT / filename)
+            with self.subTest(target=target):
+                expected = ['* * * * *'] + ([] if target == 'validation' else provider_schedules)
+                self.assertEqual(config['triggers']['crons'], expected)
+                self.assertEqual(config['vars']['ENVIRONMENT'], target)
+                self.assertEqual(config['vars']['OUTBOUND_ENABLED'], 'false')
+
     def test_rejects_cross_environment_branch_and_tags(self):
         for ref in ['refs/heads/dev', 'refs/heads/main', 'refs/tags/codex/cloudflare-validation']:
             with self.subTest(ref=ref), self.assertRaisesRegex(ValueError, 'requires branch'):

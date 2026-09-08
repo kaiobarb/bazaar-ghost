@@ -151,13 +151,24 @@ function providerResponse(response: Response, env: AuthEnv) {
 
 /** Bounded crash recovery and expired private metadata cleanup; safe to call from cron. */
 export async function cleanupAuth(env: AuthEnv) {
-  await env.DB.batch([
-    ...["auth_flows", "auth_rate_limits", "auth_verifications", "user_sessions"].map(table => statement(env,
-      `DELETE FROM ${table} WHERE rowid IN(SELECT rowid FROM ${table} WHERE expiresAt<${table === "auth_flows" || table === "auth_rate_limits" ? sqlNow : sqlDate} ORDER BY expiresAt LIMIT 500)`)),
+  const started = performance.now();
+  const tables = ["auth_flows", "auth_rate_limits", "auth_verifications", "user_sessions"] as const;
+  const results = await env.DB.batch([
+    ...tables.map(table => statement(env,
+      `DELETE FROM ${table} WHERE rowid IN(SELECT rowid FROM ${table} WHERE expiresAt<${table === "auth_flows" || table === "auth_rate_limits" ? sqlNow : sqlDate} ORDER BY expiresAt LIMIT 500) RETURNING 1`)),
     statement(env, `DELETE FROM app_users WHERE id IN(SELECT id FROM app_users WHERE registeredAt IS NULL
       AND createdAt<strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 hour') AND NOT EXISTS(SELECT 1 FROM user_accounts WHERE userId=app_users.id)
-      AND NOT EXISTS(SELECT 1 FROM user_sessions WHERE userId=app_users.id) ORDER BY createdAt LIMIT 100)`),
+      AND NOT EXISTS(SELECT 1 FROM user_sessions WHERE userId=app_users.id) ORDER BY createdAt LIMIT 100) RETURNING 1`),
   ]);
+  // D1 meta.changes includes cascades. RETURNING a constant counts only the direct
+  // deletions without fetching private identifiers; rows_written includes all work.
+  console.log(JSON.stringify({
+    event: "auth_cleanup",
+    deleted_rows: Object.fromEntries([...tables, "app_users"].map((table, index) => [table, results[index].results.length])),
+    rows_read: results.reduce((total, result) => total + result.meta.rows_read, 0),
+    rows_written: results.reduce((total, result) => total + result.meta.rows_written, 0),
+    duration_ms: Math.round(performance.now() - started),
+  }));
 }
 
 function callbackURL(value: unknown, env: AuthEnv) {
