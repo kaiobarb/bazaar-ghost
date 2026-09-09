@@ -548,6 +548,9 @@ class SFDEProcessor:
         # coarse FPS time base and can discard a valid final partial interval.
         cmd = ['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'info',
                '-t', str(self.end_time - self.start_time)]
+        # Read the opening chunk directly. FFmpeg 5's HLS input seek at zero
+        # can skip opening frames when the transport timestamp origin is nonzero.
+        seek = ['-ss', str(self.start_time)] if self.start_time > 0 else []
         if self.test_mode:
             directory = self.config['test_mode']['data_directory']
             if not os.path.isabs(directory):
@@ -555,11 +558,11 @@ class SFDEProcessor:
             input_file = os.getenv('TEST_VIDEO') or os.path.join(directory, str(self.vod_id), f'{self.quality}.mp4')
             if not os.path.isfile(input_file):
                 raise FileNotFoundError(f'Test video not found: {input_file}')
-            cmd += ['-ss', str(self.start_time), '-i', input_file]
+            cmd += seek + ['-i', input_file]
         else:
             url = self._resolve_stream()
             cmd += self._media_input_args
-            cmd += ['-rw_timeout', '30000000', '-ss', str(self.start_time), '-i', url]
+            cmd += ['-rw_timeout', '30000000'] + seek + ['-i', url]
         width, height = QUALITY_RESOLUTIONS[self.quality]
         w, h, x, y = self._combined_crop
         filters = (

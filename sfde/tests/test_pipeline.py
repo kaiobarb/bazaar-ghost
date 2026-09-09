@@ -190,6 +190,42 @@ def test_hls_coverage_preserves_seek_boundaries_and_rejects_short_playlist(proce
     assert processor.ffmpeg_proc.returncode == 0
 
 
+@pytest.mark.parametrize('start', [0, 5])
+def test_hls_transport_origin_does_not_shift_vod_frames(processor, monkeypatch, tmp_path, start):
+    import cv2
+    import numpy as np
+
+    # Nonzero MPEG-TS origin reproduces FFmpeg 5's input -ss 0 bug. Keep
+    # recognizable pixels so a fabricated zero-based PTS sequence cannot pass.
+    playlist = tmp_path / 'offset.m3u8'
+    subprocess.run([
+        'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error',
+        '-f', 'lavfi', '-i', 'color=red:s=160x90:r=30:d=6',
+        '-f', 'lavfi', '-i', 'color=blue:s=160x90:r=30:d=6',
+        '-filter_complex', '[0:v][1:v]concat=n=2:v=1:a=0',
+        '-c:v', 'libx264', '-g', '120', '-sc_threshold', '0',
+        '-output_ts_offset', '2', '-muxdelay', '0',
+        '-hls_time', '4', '-hls_playlist_type', 'vod', str(playlist),
+    ], check=True, timeout=30)
+    monkeypatch.setenv('TEST_VIDEO', str(playlist))
+    processor.start_time, processor.end_time = start, 9
+    observed = []
+
+    def observe(frame, timestamp, *_):
+        pixels = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_COLOR)
+        blue, _, red = pixels.mean(axis=(0, 1))
+        observed.append((timestamp, 'red' if red > blue else 'blue'))
+
+    processor.frame_processor.process_frame = observe
+    result = processor.process_vod_chunk()
+    ticks = list(range(start, 9, 2))
+    assert observed == [(tick, 'red' if tick < 6 else 'blue') for tick in ticks]
+    assert result['status'] == 'completed'
+    assert result['frames_processed'] == len(ticks)
+    assert result['decode_coverage']['first_sample_seconds'] == ticks[0]
+    assert result['decode_coverage']['last_sample_seconds'] == ticks[-1]
+
+
 def test_unclaimed_chunk_does_not_delete_or_rewrite_other_worker(processor, monkeypatch):
     processor.old_templates = True
     monkeypatch.setenv('OLD_TEMPLATES', 'false')
