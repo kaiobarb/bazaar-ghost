@@ -24,7 +24,8 @@ import numpy as np
 os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
 
 # Import worker modules
-from video import timestamped_frames
+from video import SourceTimeline, timestamped_frames
+from video_endpoint import VideoEndpointError, verify_video_endpoint
 from media_source import ffmpeg_input_args, resolve_media, validate_source_id
 from frame_processor import FrameProcessor
 from backend_client import BackendClient
@@ -429,7 +430,10 @@ class SFDEProcessor:
                     raise self.worker_errors.get()
                 if self.shutdown.is_set():
                     raise RuntimeError('Chunk processing was interrupted')
-                if self.frames_processed == 0:
+                if self.frames_processed == 0 and not (
+                    self.decode_coverage and self.decode_coverage.get('completion_reason') == 'verified_video_eof'
+                    and self.decode_coverage.get('minimum_expected_frames') == 0
+                ):
                     raise RuntimeError('Decoder produced no frames')
                 if self.decode_coverage is not None and self.frames_processed != self.decode_coverage['sampled_frames']:
                     raise RuntimeError('Decoded coverage was not fully processed')
@@ -559,18 +563,20 @@ class SFDEProcessor:
             if not os.path.isfile(input_file):
                 raise FileNotFoundError(f'Test video not found: {input_file}')
             cmd += seek + ['-i', input_file]
+            locator, input_args = input_file, []
         else:
             url = self._resolve_stream()
             cmd += self._media_input_args
             cmd += ['-rw_timeout', '30000000'] + seek + ['-i', url]
+            locator, input_args = url, self._media_input_args
         width, height = QUALITY_RESOLUTIONS[self.quality]
         w, h, x, y = self._combined_crop
         filters = (
-            f'scale={width}:{height},fps={self.config["processing"]["frame_rate"]}:eof_action=pass,'
-            f'crop={w}:{h}:{x}:{y}:exact=1,showinfo'
+            f'showinfo@bg_source=checksum=0,fps={self.config["processing"]["frame_rate"]}:eof_action=pass,'
+            f'scale={width}:{height},crop={w}:{h}:{x}:{y}:exact=1,showinfo@bg_sample=checksum=0'
         )
         cmd += [
-            '-an', '-vf', filters,
+            '-map', '0:v:0', '-an', '-vf', filters,
             '-fps_mode', 'passthrough', '-f', 'image2pipe', '-vcodec', 'mjpeg', 'pipe:1',
         ]
         self.ffmpeg_proc = subprocess.Popen(
@@ -578,9 +584,13 @@ class SFDEProcessor:
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         interval = 1 / self.config['processing']['frame_rate']
-        tolerance = max(0.001, interval * 1e-6)  # showinfo prints rounded decimal PTS.
+        source_timeline = SourceTimeline(self.end_time - self.start_time, interval)
+        tolerance = max(0.001, interval * 1e-6)
         sample_count, first_pts, last_pts = 0, None, None
-        for frame_data, pts in timestamped_frames(self.ffmpeg_proc.stdout, self.ffmpeg_proc.stderr, self.logger):
+        for frame_data, pts in timestamped_frames(
+            self.ffmpeg_proc.stdout, self.ffmpeg_proc.stderr, self.logger,
+            source_timeline=source_timeline, validate_end=False,
+        ):
             timestamp = self.start_time + int(pts)
             if 0 <= pts < self.end_time - self.start_time:
                 # Validate the sampled timeline before integer conversion for storage.
@@ -598,22 +608,49 @@ class SFDEProcessor:
         code = self.ffmpeg_proc.wait(timeout=10)
         if code:
             raise RuntimeError(f'FFmpeg exited with code {code}')
-        # eof_action=pass retains the final partial sampling interval. Require
-        # every tick in [start,end), including that interval, after a clean EOF.
+        # Normally every requested tick must exist. A recording can end with
+        # audio after its final video frame; only a separate probe of this same
+        # finalized source may establish a shorter terminal video interval.
         duration = self.end_time - self.start_time
-        minimum_samples = max(1, math.ceil(duration / interval - 1e-8))
-        if sample_count < minimum_samples:
+        requested_samples = math.ceil(duration / interval - 1e-8)
+        endpoint = None
+        try:
+            source_timeline.validate()
+            if sample_count != requested_samples:
+                raise RuntimeError('Requested sampling timeline is incomplete')
+        except RuntimeError:
+            try:
+                endpoint = verify_video_endpoint(
+                    locator, input_args, requested_start=self.start_time, requested_end=self.end_time,
+                    last_decoded_seconds=(self.start_time + float(source_timeline.last_pts * source_timeline.time_base)
+                                          if source_timeline.count else None),
+                    frame_interval_seconds=float(source_timeline.frame_interval) if source_timeline.frame_interval else None,
+                    timestamp_quantum_seconds=float(source_timeline.time_base) if source_timeline.time_base else None,
+                    local_file=self.test_mode,
+                )
+            except VideoEndpointError as error:
+                raise RuntimeError(f'Incomplete decoder coverage: {error}') from None
+            duration = max(0, min(self.end_time, endpoint['video_end_seconds']) - self.start_time)
+            source_timeline.validate(duration=duration)
+        minimum_samples = math.ceil(duration / interval - 1e-8)
+        if sample_count != minimum_samples:
             raise RuntimeError(
                 f'Incomplete decoder coverage: {sample_count} samples, expected at least '
                 f'{minimum_samples} for [{self.start_time},{self.end_time}) at '
                 f'{self.config["processing"]["frame_rate"]:g} fps; last offset {last_pts}'
             )
         self.decode_coverage = {
+            **source_timeline.summary(self.start_time, duration=duration),
             'sampled_frames': sample_count,
             'minimum_expected_frames': minimum_samples,
+            'requested_expected_frames': requested_samples,
+            'completion_reason': 'verified_video_eof' if endpoint else 'requested_range',
+            'video_endpoint': endpoint,
+            'effective_video_end_seconds': self.start_time + duration,
+            'unobserved_catalog_tail_seconds': self.end_time - self.start_time - duration,
             'sample_interval_seconds': interval,
-            'first_sample_seconds': self.start_time + first_pts,
-            'last_sample_seconds': self.start_time + last_pts,
+            'first_sample_seconds': self.start_time + first_pts if first_pts is not None else None,
+            'last_sample_seconds': self.start_time + last_pts if last_pts is not None else None,
             'requested_start_seconds': self.start_time,
             'requested_end_seconds': self.end_time,
         }
@@ -672,6 +709,7 @@ class SFDEProcessor:
         igd_scan_active = False
         igd_frames_scanned = 0
         igd_max_scan_frames = 15  # ~30 seconds at 0.5 fps
+        igd_observations: List[Tuple[int, int]] = []
         pending_detection = None  # Held detection awaiting IGD resolution
 
         if igd_enabled:
@@ -707,14 +745,29 @@ class SFDEProcessor:
 
                 # --- IGD scan on current frame (if active) ---
                 if igd_scan_active and full_frame is not None and not (result and result.get("is_matchup")):
-                    igd_crop = self._slice_subregion(full_frame, self._igd_slice)
-                    igd_value = self.frame_processor.extract_igd(igd_crop)
                     igd_frames_scanned += 1
+                    # A deduplicated intro returns no new matchup, but its
+                    # artwork still hides the clock. Wait for the emblem to
+                    # disappear, then require three agreeing readable frames.
+                    if self.frame_processor.emblem_visible:
+                        igd_observations.clear()
+                    else:
+                        igd_crop = self._slice_subregion(full_frame, self._igd_slice)
+                        igd_value = self.frame_processor.extract_igd(igd_crop)
+                        if igd_value is None or (igd_observations and igd_observations[-1][0] != igd_value):
+                            igd_observations.clear()
+                        if igd_value is not None:
+                            igd_observations.append((igd_value, timestamp))
 
-                    if igd_value is not None:
-                        pending_detection["igd"] = igd_value
+                    if len(igd_observations) == 3:
+                        pending_detection["igd"] = igd_observations[-1][0]
+                        pending_detection["igd_evidence"] = {
+                            "samples": len(igd_observations),
+                            "first_sample_seconds": igd_observations[0][1],
+                            "last_sample_seconds": igd_observations[-1][1],
+                        }
                         self.logger.info(
-                            f"IGD detected: day {igd_value} after {igd_frames_scanned} frames for {pending_detection.get('username')}"
+                            f"IGD confirmed: day {pending_detection['igd']} after {igd_frames_scanned} frames for {pending_detection.get('username')}"
                         )
                         record_counter("igd_detected", 1, metric_attrs)
                         self._enqueue_detection(pending_detection, metric_attrs)
@@ -743,6 +796,7 @@ class SFDEProcessor:
                         pending_detection = result
                         igd_scan_active = True
                         igd_frames_scanned = 0
+                        igd_observations.clear()
                     else:
                         # No IGD — enqueue immediately (existing behavior)
                         self._enqueue_detection(result, metric_attrs)
@@ -810,6 +864,7 @@ class SFDEProcessor:
                 'timestamp': result['timestamp'], 'username': result['username'],
                 'confidence': result.get('confidence', 0), 'rank': result.get('detected_rank'),
                 'igd': result.get('igd'),
+                'igd_evidence': result.get('igd_evidence'),
             })
         self.result_batch.clear()
 

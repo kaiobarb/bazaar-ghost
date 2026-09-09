@@ -151,6 +151,64 @@ def test_real_decode_covers_bounded_and_final_ranges(processor, monkeypatch, tmp
     assert processor.ffmpeg_proc.returncode == 0
 
 
+@pytest.mark.parametrize('start,expected', [(0, 4), (8, 0)])
+def test_verified_audio_only_tail_keeps_catalog_range_without_inventing_frames(processor, monkeypatch, tmp_path, start, expected):
+    video = tmp_path / 'audio-tail.mp4'
+    subprocess.run([
+        'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error',
+        '-f', 'lavfi', '-i', 'color=red:s=160x90:r=10:d=8',
+        '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=mono:d=9',
+        '-map', '0:v', '-map', '1:a', '-c:v', 'libx264', '-c:a', 'aac', str(video),
+    ], check=True, timeout=30)
+    monkeypatch.setenv('TEST_VIDEO', str(video))
+    processor.start_time, processor.end_time = start, 9
+    result = processor.process_vod_chunk()
+    coverage = result['decode_coverage']
+    assert result['status'] == 'completed'
+    assert result['frames_processed'] == expected
+    assert coverage['completion_reason'] == 'verified_video_eof'
+    assert coverage['requested_expected_frames'] == (5 if start == 0 else 1)
+    assert coverage['minimum_expected_frames'] == expected
+    assert coverage['effective_video_end_seconds'] == 8
+    assert coverage['requested_end_seconds'] == 9
+    assert coverage['unobserved_catalog_tail_seconds'] == 1
+    assert coverage['video_endpoint']['video_end_seconds'] == 8
+    assert coverage['video_endpoint']['closed'] is True
+    assert coverage['first_sample_seconds'] == (0 if expected else None)
+    assert coverage['last_sample_seconds'] == (6 if expected else None)
+    assert coverage['source_frames'] == (80 if expected else 0)
+    assert coverage['last_source_frame_seconds'] == (7.9 if expected else None)
+    assert [item['timestamp'] for item in processor.all_detections] == list(range(0, 8, 2))[:expected]
+
+
+def test_clean_decoder_truncation_cannot_borrow_a_real_audio_only_tail(processor, monkeypatch, tmp_path):
+    import sfde
+
+    video = tmp_path / 'longer-video.mp4'
+    subprocess.run([
+        'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error',
+        '-f', 'lavfi', '-i', 'color=red:s=160x90:r=10:d=10',
+        '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=mono:d=11',
+        '-map', '0:v', '-map', '1:a', '-c:v', 'libx264', '-c:a', 'aac', str(video),
+    ], check=True, timeout=30)
+    monkeypatch.setenv('TEST_VIDEO', str(video))
+    original = subprocess.Popen
+
+    def drop_final_frames(command, *args, **kwargs):
+        command = list(command)
+        if command[0] == 'ffmpeg' and '-vf' in command:
+            index = command.index('-vf') + 1
+            command[index] = r'select=lt(t\,8),' + command[index]
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(sfde.subprocess, 'Popen', drop_final_frames)
+    processor.end_time = 11
+    with pytest.raises(RuntimeError):
+        processor.process_vod_chunk()
+    assert processor.backend.update_chunk.call_args.args[1] == 'failed'
+    assert not any(call.args[1] == 'completed' for call in processor.backend.update_chunk.call_args_list)
+
+
 @pytest.mark.parametrize('timestamps', [[2,4,6,8], [0,2,6,8], [0,2,4,4,8]])
 def test_shifted_missing_or_duplicate_sample_timeline_fails(processor, monkeypatch, tmp_path, timestamps):
     import sfde
@@ -160,7 +218,7 @@ def test_shifted_missing_or_duplicate_sample_timeline_fails(processor, monkeypat
     monkeypatch.setattr(sfde.subprocess, 'Popen', Mock(return_value=SimpleNamespace(
         stdout=io.BytesIO(), stderr=io.BytesIO(), wait=lambda **kwargs: 0, poll=lambda: 0,
     )))
-    monkeypatch.setattr(sfde, 'timestamped_frames', lambda *args: ((b'frame', pts) for pts in timestamps))
+    monkeypatch.setattr(sfde, 'timestamped_frames', lambda *args, **kwargs: ((b'frame', pts) for pts in timestamps))
     processor.end_time = 10
     with pytest.raises(RuntimeError, match='coverage'):
         processor.process_vod_chunk()
@@ -226,6 +284,54 @@ def test_hls_transport_origin_does_not_shift_vod_frames(processor, monkeypatch, 
     assert result['decode_coverage']['last_sample_seconds'] == ticks[-1]
 
 
+def test_source_gap_cannot_be_hidden_by_fps_repeated_frames(processor, monkeypatch, tmp_path):
+    video = tmp_path / 'gap.mkv'
+    subprocess.run([
+        'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error',
+        '-f', 'lavfi', '-i', 'color=red:s=160x90:r=10:d=8',
+        '-vf', "select='not(between(t,4,5.9))'", '-fps_mode', 'vfr',
+        '-c:v', 'libx264', str(video),
+    ], check=True, timeout=30)
+    monkeypatch.setenv('TEST_VIDEO', str(video))
+    processor.end_time = 8
+    with pytest.raises(RuntimeError, match='source coverage: gap'):
+        processor.process_vod_chunk()
+    assert processor.backend.update_chunk.call_args.args[1] == 'failed'
+
+
+def test_missing_initial_video_is_not_rebased_to_zero(processor, monkeypatch, tmp_path):
+    video = tmp_path / 'delayed.mp4'
+    subprocess.run([
+        'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error',
+        '-f', 'lavfi', '-i', 'color=red:s=160x90:r=10:d=8',
+        '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=mono:d=10',
+        '-filter_complex', '[0:v]setpts=PTS+2/TB[v]', '-map', '[v]', '-map', '1:a',
+        '-fps_mode', 'vfr', '-c:v', 'libx264', '-c:a', 'aac', str(video),
+    ], check=True, timeout=30)
+    monkeypatch.setenv('TEST_VIDEO', str(video))
+    processor.end_time = 10
+    with pytest.raises(RuntimeError, match='source coverage: opening'):
+        processor.process_vod_chunk()
+    assert processor.backend.update_chunk.call_args.args[1] == 'failed'
+
+
+def test_rounded_catalog_tail_keeps_source_support_evidence(processor, monkeypatch, tmp_path):
+    video = tmp_path / 'fractional.mp4'
+    subprocess.run([
+        'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error',
+        '-f', 'lavfi', '-i', 'color=red:s=160x90:r=10:d=8.1',
+        '-c:v', 'libx264', str(video),
+    ], check=True, timeout=30)
+    monkeypatch.setenv('TEST_VIDEO', str(video))
+    processor.end_time = 9  # Catalog duration uses ceil, while the last sample is at 8.
+    result = processor.process_vod_chunk()
+    assert result['frames_processed'] == 5
+    coverage = result['decode_coverage']
+    assert coverage['source_frames'] == 81
+    assert coverage['last_source_frame_seconds'] == coverage['last_sample_seconds'] == 8
+    assert coverage['tail_unobserved_seconds'] == 1
+
+
 def test_unclaimed_chunk_does_not_delete_or_rewrite_other_worker(processor, monkeypatch):
     processor.old_templates = True
     monkeypatch.setenv('OLD_TEMPLATES', 'false')
@@ -255,22 +361,62 @@ def test_invalid_profile_crop_rejected(monkeypatch, region):
     with pytest.raises(ValueError):
         SFDEProcessor.__new__(SFDEProcessor)._parse_sfde_profile()
 
-@pytest.mark.parametrize('days,expected', [([8], 8), ([None], None)])
+@pytest.mark.parametrize('days,expected', [
+    ([8, 8, 8], 8), ([8], None), ([8, 8], None), ([None], None),
+    ([5, None, 11, 11, 11], 11), ([8, 8, None, 8], None),
+])
 def test_igd_pending_detection_survives_eof(processor, days, expected):
     import numpy as np
     processor._igd_slice = [0, 0, 2, 2]
     processor._nameplate_slice = [0, 0, 2, 2]
     processor._decode_jpeg = lambda _: np.zeros((2, 2, 3), dtype=np.uint8)
     processor._encode_jpeg = lambda _: b'frame'
+    processor.frame_queue.maxsize = len(days) + 1
+    processor.frame_processor.emblem_visible = False
     processor.frame_processor.process_frame = Mock(side_effect=[
-        {'is_matchup': True, 'username': 'first', 'timestamp': 0}, None,
+        {'is_matchup': True, 'username': 'first', 'timestamp': 0}, *([None] * len(days)),
     ])
     processor.frame_processor.extract_igd = Mock(side_effect=days)
-    processor.frame_queue.put((b'frame', 0))
-    processor.frame_queue.put((b'frame', 2))
+    for index in range(len(days) + 1):
+        processor.frame_queue.put((b'frame', index * 2))
     processor.frames_done.set()
     processor.opencv_worker()
-    assert processor.result_queue.get_nowait().get('igd') == expected
+    result = processor.result_queue.get_nowait()
+    assert result.get('igd') == expected
+    if expected is None:
+        assert 'igd_evidence' not in result
+    else:
+        assert result['igd_evidence']['samples'] == 3
+    assert processor.result_queue.empty()
+
+
+@pytest.mark.parametrize('overlay_frames', [2, 15])
+def test_igd_waits_for_overlay_to_clear_and_keeps_its_budget(processor, overlay_frames):
+    import numpy as np
+    processor._igd_slice = processor._nameplate_slice = [0, 0, 2, 2]
+    processor._decode_jpeg = lambda _: np.zeros((2, 2, 3), dtype=np.uint8)
+    processor._encode_jpeg = lambda _: b'frame'
+    processor.frame_queue.maxsize = 32
+
+    def read(_, timestamp, *args):
+        processor.frame_processor.emblem_visible = timestamp <= 2172 + 2 * overlay_frames
+        if timestamp == 2172:
+            return {'is_matchup': True, 'username': 'mazen', 'timestamp': timestamp}
+
+    processor.frame_processor.process_frame = read
+    processor.frame_processor.extract_igd = Mock(return_value=11)
+    for index in range(overlay_frames + 4):
+        processor.frame_queue.put((b'frame', 2172 + 2 * index))
+    processor.frames_done.set()
+    processor.opencv_worker()
+    result = processor.result_queue.get_nowait()
+    if overlay_frames == 2:
+        assert result['igd'] == 11
+        assert result['igd_evidence'] == {'samples': 3, 'first_sample_seconds': 2178, 'last_sample_seconds': 2182}
+        assert processor.frame_processor.extract_igd.call_count == 3
+    else:
+        assert result.get('igd') is None
+        processor.frame_processor.extract_igd.assert_not_called()
     assert processor.result_queue.empty()
 
 

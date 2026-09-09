@@ -26,8 +26,8 @@ def test_hls_seek_between_segment_boundaries(tmp_path):
     ], check=True, timeout=30)
     proc = subprocess.Popen([
         'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'info',
-        '-ss', '5', '-i', str(playlist), '-t', '4',
-        '-vf', 'fps=0.5,showinfo', '-fps_mode', 'passthrough',
+        '-t', '4', '-ss', '5', '-i', str(playlist),
+        '-vf', 'fps=0.5:eof_action=pass,showinfo', '-fps_mode', 'passthrough',
         '-f', 'image2pipe', '-vcodec', 'mjpeg', 'pipe:1',
     ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:

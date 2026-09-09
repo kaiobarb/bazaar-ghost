@@ -19,6 +19,8 @@ def processor():
     result.streamer = 'test'
     result.quality = '480p'
     result.last_matchup_time = None
+    result.matchup_active = False
+    result.emblem_visible = False
     result.min_matchup_interval = 10
     result.ocr_confidence_threshold = 0.5
     result.right_edge_crop_margin = 0.05
@@ -73,6 +75,23 @@ def test_continuously_visible_matchup_is_saved_once(processor, jpeg):
     assert processor.process_frame(jpeg, 34, 'vod', 'chunk') is None
     processor._detect_emblem.return_value = ('gold', (0, 5, 30, 40), 0.9)
     assert processor.process_frame(jpeg, 40, 'vod', 'chunk')
+
+
+@pytest.mark.parametrize('early_return', ['duplicate', 'interval', 'missing_bbox', 'unreadable_username'])
+def test_emblem_visibility_survives_every_non_detection_return(processor, jpeg, early_return):
+    if early_return == 'duplicate':
+        processor.matchup_active = True
+    elif early_return == 'interval':
+        processor.last_matchup_time = 19
+    elif early_return == 'missing_bbox':
+        processor._detect_emblem.return_value = ('gold', None, 0.9)
+    else:
+        processor._extract_usernames.return_value = (None, 0.0, None)
+    assert processor.process_frame(jpeg, 20, 'vod', 'chunk') is None
+    assert processor.emblem_visible is True
+    processor._detect_emblem.return_value = (None, None, 0.0)
+    assert processor.process_frame(jpeg, 22, 'vod', 'chunk') is None
+    assert processor.emblem_visible is False
 
 
 def test_ocr_failure_propagates_instead_of_becoming_no_match(processor, jpeg):

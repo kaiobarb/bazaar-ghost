@@ -3,6 +3,7 @@ Frame processor module - Handles OpenCV detection and PaddleOCR
 """
 
 import math
+from numbers import Real
 from pathlib import Path
 import re
 import cv2
@@ -152,6 +153,8 @@ class FrameProcessor:
         # Cache for performance
         self.last_matchup_time = None
         self.matchup_active = False
+        # Current-frame scene evidence is separate from saved-matchup deduplication.
+        self.emblem_visible = False
         self.min_matchup_interval = config.get('ocr', {}).get('min_matchup_interval', 10)
 
     def process_frame(
@@ -177,6 +180,7 @@ class FrameProcessor:
 
             # Emblem detection first (5 template scans)
             detected_rank, emblem_bbox, emblem_confidence = self._detect_emblem(frame)
+            self.emblem_visible = detected_rank is not None
 
             if detected_rank is None:
                 self.matchup_active = False
@@ -374,31 +378,24 @@ class FrameProcessor:
                 text_det_box_thresh=0.1,
             )
 
-            rec_texts = []
-            rec_scores = []
-            if results:
-                result = results[0]
-                rec_texts = result.get("rec_texts", [])
-                rec_scores = result.get("rec_scores", [])
-
-            if rec_texts:
-                scored = sorted(
-                    zip(rec_texts, rec_scores), key=lambda x: x[1], reverse=True
-                )
-                for text, score in scored:
-                    if score < 0.9:
-                        continue
-                    digits = "".join(c for c in text if c.isdigit())
-                    if not digits:
-                        continue
-                    try:
-                        value = int(digits)
-                        if 1 <= value <= 20:
-                            return value
-                    except ValueError:
-                        continue
-
-            return None
+            if not results or len(results) != 1:
+                return None
+            rec_texts = results[0].get("rec_texts", [])
+            rec_scores = results[0].get("rec_scores", [])
+            if len(rec_texts) != len(rec_scores):
+                return None
+            qualifying = []
+            for text, score in zip(rec_texts, rec_scores):
+                if (not isinstance(text, str) or not isinstance(score, Real)
+                        or isinstance(score, bool) or not math.isfinite(score)):
+                    return None
+                if score >= 0.9:
+                    qualifying.append(text.strip())
+            # A clock is one whole token. Do not manufacture a day from "1I",
+            # "day11", split digits, or a crop containing multiple text boxes.
+            if len(qualifying) != 1 or not re.fullmatch(r'(?:[1-9]|1[0-9]|20)', qualifying[0]):
+                return None
+            return int(qualifying[0])
 
         except Exception as e:
             self.logger.debug(f"IGD extraction error: {e}")

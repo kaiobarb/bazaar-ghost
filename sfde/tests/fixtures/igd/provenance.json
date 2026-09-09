@@ -1,0 +1,45 @@
+{
+  "source": "twitch",
+  "source_id": "2863728070",
+  "processing_quality": "480p",
+  "source_resolution": [
+    854,
+    480
+  ],
+  "combined_crop": [
+    664,
+    192,
+    124,
+    216
+  ],
+  "nameplate_slice": [
+    365,
+    133,
+    299,
+    59
+  ],
+  "igd_slice": [
+    0,
+    0,
+    12,
+    12
+  ],
+  "extraction": "Native480 Streamlink rendition; cached FFmpeg5.1.9 scale/fps/crop and default MJPEG, short seek2168..2206. Neighboring source frames can differ from the long Actions chunk.",
+  "regression": "At2174 the matchup intro hides the day clock, but artwork OCR previously returned5 at0.9933 confidence. At2178 the combat clock visibly reads11.",
+  "frames": [
+    {
+      "file": "twitch-2863728070-2174.jpg",
+      "second": 2174,
+      "emblem_visible": true,
+      "day": null,
+      "sha256": "e72d94d4e1c0abf64e1efb4d793203a8b4ae7b6ad6d19a7232f339fbb97a61ae"
+    },
+    {
+      "file": "twitch-2863728070-2178.jpg",
+      "second": 2178,
+      "emblem_visible": false,
+      "day": 11,
+      "sha256": "7670e3ce06d3304d77ad1654037946b35b6be01484a9e5b74f59df811f76be38"
+    }
+  ]
+}
