@@ -32,11 +32,48 @@ VALUES = {'GITHUB_REPOSITORY': guard.REPOSITORY, 'GITHUB_REF': guard.REF, 'GITHU
           'BAZAARGHOST_CATALOG_KEY': 'test-catalog', 'BAZAARGHOST_PROCESSOR_KEY': 'test-processor'}
 CHUNK = {'id': '00000000-0000-4000-8000-000000000001', 'vod_pk': 1, 'source': 'youtube', 'vod_id': '0C6bxQsDj-s',
          'status': 'pending', 'start_seconds': 0, 'end_seconds': 900}
+
+
+def source_coverage(start, end, video_end=None):
+    """Consistent fixtures for measured source frames and, optionally, packet EOF."""
+    effective_end = end if video_end is None else max(start, min(end, video_end))
+    count = math.ceil((effective_end - start) / 2 - 1e-8)
+    first = start if count else None
+    last = effective_end - 1 / 30 if count else None
+    result = {'sampled_frames': count, 'minimum_expected_frames': count, 'sample_interval_seconds': 2,
+              'first_sample_seconds': start if count else None,
+              'last_sample_seconds': start + 2 * (count - 1) if count else None,
+              'requested_start_seconds': start, 'requested_end_seconds': end,
+              'requested_expected_frames': math.ceil((end - start) / 2),
+              'completion_reason': 'requested_range' if video_end is None else 'verified_video_eof',
+              'effective_video_end_seconds': effective_end, 'unobserved_catalog_tail_seconds': end - effective_end,
+              'source_frames': round((effective_end - start) * 30),
+              'first_source_frame_seconds': first, 'last_source_frame_seconds': last,
+              'max_source_gap_seconds': 1 / 30 if count else 0,
+              'source_frame_interval_seconds': 1 / 30 if count else None,
+              'source_timestamp_quantum_seconds': 1 / 90000 if count else None,
+              'tail_unobserved_seconds': end - last if count else end - start, 'video_endpoint': None}
+    if video_end is not None:
+        container_end = end + 0.275
+        result['video_endpoint'] = {
+            'method': 'ffprobe-packets-v1', 'container': 'hls', 'closed': True,
+            'video_end_seconds': video_end, 'last_video_frame_seconds': video_end - 1 / 30,
+            'container_duration_seconds': container_end, 'source_origin_seconds': 62.033,
+            'video_stream_index': 1, 'packet_count': 4000, 'video_packet_count': 1800, 'packet_limit': 10000,
+            'probe_start_seconds': max(0, container_end - 60),
+            'probe_start_timestamp_seconds': 62.033 + max(0, container_end - 60),
+            'container_packet_end_seconds': container_end, 'container_tolerance_seconds': 1 / 30 + 1 / 90000 + 1e-6,
+            'terminal_packet_duration_seconds': 1 / 30, 'terminal_packet_quantum_seconds': 1 / 90000,
+            'selected_video_start_seconds': 62.033, 'container_origin_alignment_seconds': 0,
+            'selected_video_packet_duration_seconds': 1 / 30, 'selected_video_timestamp_quantum_seconds': 1 / 90000,
+            'frame_agreement_tolerance_seconds': 1 / 30 + 1 / 90000, 'audio_only': count == 0,
+            'manifest_sha256': 'd' * 64, 'manifest_duration_seconds': container_end}
+    return result
+
+
 SUMMARY = {'vod_pk': 1, 'source': 'youtube', 'vod_id': CHUNK['vod_id'], 'chunk_id': CHUNK['id'], 'start_time': 0, 'end_time': 900, 'frames_processed': 450, 'matchups_found': 1,
            'detections': [{'timestamp': 12, 'username': 'Opponent', 'confidence': 0.95, 'rank': 'gold', 'igd': 12}],
-           'decode_coverage': {'sampled_frames': 450, 'minimum_expected_frames': 450, 'sample_interval_seconds': 2,
-                               'first_sample_seconds': 0, 'last_sample_seconds': 898,
-                               'requested_start_seconds': 0, 'requested_end_seconds': 900}}
+           'decode_coverage': source_coverage(0, 900)}
 STATE = {**CHUNK, 'status': 'completed', 'frames_processed': 450, 'detections_count': 1}
 
 
@@ -191,6 +228,118 @@ class ValidationRunnerTests(unittest.TestCase):
             with self.assertRaises(validation.ValidationFailure):
                 validation.verify_chunk(CHUNK, {**STATE, 'quality': state_quality}, {**SUMMARY, 'quality': summary_quality}, '480p60')
 
+    def _video_eof_case(self, start=16200, end=17085, video_end=17083.966333):
+        coverage = source_coverage(start, end, video_end)
+        count = coverage['sampled_frames']
+        planned = {**CHUNK, 'source': 'twitch', 'vod_id': '2863728070', 'start_seconds': start, 'end_seconds': end}
+        state = {**planned, 'status': 'completed', 'frames_processed': count, 'detections_count': int(count > 0)}
+        summary = {**copy.deepcopy(SUMMARY), 'source': planned['source'], 'vod_id': planned['vod_id'],
+                   'start_time': start, 'end_time': end, 'frames_processed': count,
+                   'matchups_found': int(count > 0), 'decode_coverage': coverage}
+        summary['detections'] = [{**SUMMARY['detections'][0], 'timestamp': start + 12}] if count else []
+        return planned, state, summary
+
+    def test_measured_video_eof_explicitly_replaces_only_the_terminal_required_grid(self):
+        planned, state, summary = self._video_eof_case()
+        self.assertEqual(validation.verify_chunk(planned, state, summary)['frames_processed'], 442)
+        self.assertEqual(summary['decode_coverage']['requested_expected_frames'], 443)
+        self.assertEqual(summary['end_time'], 17085)
+        self.assertEqual(summary['decode_coverage']['last_sample_seconds'], 17082)
+        # Reusing the old artifact's invented 17084 tick cannot pass the new proof.
+        stale = copy.deepcopy(summary)
+        stale['frames_processed'] = 443
+        stale['decode_coverage'].update(sampled_frames=443, minimum_expected_frames=443, last_sample_seconds=17084)
+        with self.assertRaises(validation.ValidationFailure):
+            validation.verify_chunk(planned, {**state, 'frames_processed': 443}, stale)
+
+    def test_eof_requires_complete_independent_packet_and_source_evidence(self):
+        planned, state, original = self._video_eof_case()
+        changes = [
+            ('completion_reason', 'requested_range'), ('video_endpoint', None),
+            ('source_frames', 0), ('first_source_frame_seconds', 16201),
+            ('last_source_frame_seconds', 17080), ('max_source_gap_seconds', 2),
+            ('source_frame_interval_seconds', None), ('source_timestamp_quantum_seconds', float('nan')),
+            ('unobserved_catalog_tail_seconds', 0), ('requested_expected_frames', 442),
+            ('effective_video_end_seconds', 17085), ('tail_unobserved_seconds', 0),
+        ]
+        for field, value in changes:
+            altered = copy.deepcopy(original)
+            altered['decode_coverage'][field] = value
+            with self.subTest(field=field), self.assertRaises(validation.ValidationFailure):
+                validation.verify_chunk(planned, state, altered)
+        for field, value in [
+            ('method', 'clean-exit'), ('closed', False), ('manifest_sha256', 'invalid'),
+            ('manifest_duration_seconds', 17086), ('packet_count', 10000), ('video_packet_count', 0),
+            ('packet_limit', 10001), ('video_stream_index', True), ('source_origin_seconds', float('inf')),
+            ('probe_start_seconds', 0), ('probe_start_timestamp_seconds', 0), ('container_packet_end_seconds', 17080),
+            ('last_video_frame_seconds', 17084.5), ('frame_agreement_tolerance_seconds', 1), ('audio_only', True),
+            ('terminal_packet_duration_seconds', 2), ('terminal_packet_quantum_seconds', 0),
+            ('container_origin_alignment_seconds', 1), ('selected_video_start_seconds', 63),
+            ('selected_video_packet_duration_seconds', 2), ('selected_video_timestamp_quantum_seconds', 0),
+            ('container_duration_seconds', 18000),  # A nonterminal chunk cannot borrow the source's eventual EOF.
+            ('container_duration_seconds', 17000),  # A shorter replacement file cannot stand in for this catalog.
+        ]:
+            altered = copy.deepcopy(original)
+            altered['decode_coverage']['video_endpoint'][field] = value
+            with self.subTest(endpoint_field=field), self.assertRaises(validation.ValidationFailure):
+                validation.verify_chunk(planned, state, altered)
+        for field in original['decode_coverage']['video_endpoint']:
+            altered = copy.deepcopy(original)
+            del altered['decode_coverage']['video_endpoint'][field]
+            with self.subTest(missing_endpoint_field=field), self.assertRaises(validation.ValidationFailure):
+                validation.verify_chunk(planned, state, altered)
+
+    def test_hls_origin_alignment_is_measured_and_never_rebases_the_sample_timeline(self):
+        planned, state, summary = self._video_eof_case()
+        endpoint = summary['decode_coverage']['video_endpoint']
+        endpoint['source_origin_seconds'] = 62.016667
+        endpoint['probe_start_timestamp_seconds'] = endpoint['source_origin_seconds'] + endpoint['probe_start_seconds']
+        endpoint['container_origin_alignment_seconds'] = 62.033 - 62.016667
+        endpoint['container_tolerance_seconds'] += endpoint['container_origin_alignment_seconds']
+        endpoint['container_packet_end_seconds'] += 0.04
+        self.assertEqual(validation.verify_chunk(planned, state, summary)['frames_processed'], 442)
+        self.assertEqual(summary['decode_coverage']['last_sample_seconds'], 17082)
+        for change in ({'container_origin_alignment_seconds': 0.025}, {'selected_video_start_seconds': 62.5},
+                       {'container': 'mp4'}, {'container_tolerance_seconds': 1}):
+            altered = copy.deepcopy(summary)
+            altered['decode_coverage']['video_endpoint'].update(change)
+            with self.subTest(change=change), self.assertRaises(validation.ValidationFailure):
+                validation.verify_chunk(planned, state, altered)
+    def test_zero_frame_tail_requires_preceding_verified_video_end_and_empty_results(self):
+        planned, state, summary = self._video_eof_case(start=17084)
+        self.assertEqual(validation.verify_chunk(planned, state, summary)['frames_processed'], 0)
+        self.assertIsNone(summary['decode_coverage']['first_source_frame_seconds'])
+        for field, value in [('first_sample_seconds', 17084), ('source_frames', 1), ('first_source_frame_seconds', 17084),
+                             ('last_source_frame_seconds', 17084), ('max_source_gap_seconds', 0.1)]:
+            altered = copy.deepcopy(summary)
+            altered['decode_coverage'][field] = value
+            with self.subTest(field=field), self.assertRaises(validation.ValidationFailure):
+                validation.verify_chunk(planned, state, altered)
+        for field, value in [('video_end_seconds', 17084.1), ('audio_only', False), ('closed', False)]:
+            altered = copy.deepcopy(summary)
+            altered['decode_coverage']['video_endpoint'][field] = value
+            with self.subTest(field=field), self.assertRaises(validation.ValidationFailure):
+                validation.verify_chunk(planned, state, altered)
+        with self.assertRaises(validation.ValidationFailure):
+            validation.verify_chunk(planned, {**state, 'detections_count': 1},
+                                    {**summary, 'matchups_found': 1, 'detections': SUMMARY['detections']})
+
+    def test_requested_grid_also_requires_raw_source_proof_and_rejects_old_artifacts(self):
+        for field in ('completion_reason', 'requested_expected_frames', 'source_frames', 'first_source_frame_seconds',
+                      'last_source_frame_seconds', 'max_source_gap_seconds', 'source_frame_interval_seconds',
+                      'source_timestamp_quantum_seconds', 'tail_unobserved_seconds', 'effective_video_end_seconds',
+                      'unobserved_catalog_tail_seconds'):
+            altered = copy.deepcopy(SUMMARY)
+            del altered['decode_coverage'][field]
+            with self.subTest(field=field), self.assertRaises(validation.ValidationFailure):
+                validation.verify_chunk(CHUNK, STATE, altered)
+        for field, value in [('first_source_frame_seconds', 1), ('last_source_frame_seconds', 897),
+                             ('max_source_gap_seconds', 2), ('source_frames', True), ('source_frames', 450)]:
+            altered = copy.deepcopy(SUMMARY)
+            altered['decode_coverage'][field] = value
+            with self.subTest(field=field), self.assertRaises(validation.ValidationFailure):
+                validation.verify_chunk(CHUNK, STATE, altered)
+
     def test_ocr_subprocess_does_not_inherit_catalog_registration_or_ambient_credentials(self):
         prepared = {'quality': '480p', 'video_fps': '30', 'sfde_profile': '{}', 'old_templates': 'false'}
         with patch.dict(os.environ, {**VALUES, 'ACTIONS_RUNNER_INPUT_TOKEN': 'registration', 'AUTH_SECRET': 'auth',
@@ -201,7 +350,7 @@ class ValidationRunnerTests(unittest.TestCase):
         for key in ('BAZAARGHOST_CATALOG_KEY', 'ACTIONS_RUNNER_INPUT_TOKEN', 'AUTH_SECRET', 'HTTP_PROXY', 'GH_TOKEN'):
             self.assertNotIn(key, result)
 
-    def _orchestration(self, source='youtube', ranges=(0, 1800, 1800, 2718), duration=2718, prepare_change=None, final_change=None):
+    def _orchestration(self, source='youtube', ranges=(0, 1800, 1800, 2718), duration=2718, prepare_change=None, final_change=None, interrupted=None, video_end=None):
         order, processed = [], []
         video_id = '2863728070' if source == 'twitch' else CHUNK['vod_id']
         quality, fps = ('480p60', '60') if source == 'twitch' else ('480p', '30')
@@ -216,13 +365,13 @@ class ValidationRunnerTests(unittest.TestCase):
                    'ready_for_processing': True, 'availability': 'available', 'status': 'pending'}
         summaries = {}
         for chunk in chunks:
-            count = math.ceil((chunk['end_seconds'] - chunk['start_seconds']) / 2)
+            coverage = source_coverage(chunk['start_seconds'], chunk['end_seconds'],
+                                       video_end if video_end is not None and chunk['end_seconds'] > video_end else None)
+            count = coverage['sampled_frames']
             summary = copy.deepcopy(SUMMARY)
             summary.update(source=source, vod_id=video_id, quality=quality, chunk_id=chunk['id'], start_time=chunk['start_seconds'], end_time=chunk['end_seconds'], frames_processed=count)
             summary['detections'][0]['timestamp'] = chunk['start_seconds'] + 12
-            summary['decode_coverage'].update(sampled_frames=count, minimum_expected_frames=count,
-                first_sample_seconds=chunk['start_seconds'], last_sample_seconds=chunk['start_seconds'] + 2 * (count - 1),
-                requested_start_seconds=chunk['start_seconds'], requested_end_seconds=chunk['end_seconds'])
+            summary['decode_coverage'] = coverage
             summaries[chunk['id']] = summary
         states = [{**chunk, 'status': 'completed', 'quality': quality, 'frames_processed': summaries[chunk['id']]['frames_processed'], 'detections_count': 1}
                   for chunk in chunks]
@@ -252,6 +401,8 @@ class ValidationRunnerTests(unittest.TestCase):
                 else:
                     chunk_id = kwargs['env']['CHUNK_ID']
                     processed.append(chunk_id)
+                    if interrupted and len(processed) == 2:
+                        raise interrupted
                     (root / 'ocr' / f'detections_{chunk_id}.json').write_text(json.dumps(summaries[chunk_id]))
             def public(path, data=None):
                 if path == '/health': return {'ok': True, 'environment': 'validation', 'build_commit': 'b' * 40}
@@ -265,11 +416,11 @@ class ValidationRunnerTests(unittest.TestCase):
                  patch.object(validation, 'ensure_account', side_effect=lambda *args, **kwargs: order.append('credential') or {'id': 'account'}) as account, \
                  patch.object(validation, 'save_video', return_value={'id': 1}) as save, patch.object(validation, 'public_json', side_effect=public), \
                  patch.object(validation, 'verify_jpeg', return_value={'bytes': 1200, 'width': 854, 'height': 480}), \
-                 patch.object(validation, 'open_backend', return_value=Image()), patch.object(validation.subprocess, 'run', side_effect=process), \
+                 patch.object(validation, 'open_backend', return_value=Image()), patch.object(validation.ChildSupervisor, 'run', side_effect=process), \
                  patch.object(validation.subprocess, 'check_output', return_value='a' * 40), \
                  patch.object(validation.vod_workflow, 'api', side_effect=([catalog] if source == 'twitch' else []) + [*chunks, *states]) as api, \
                  patch.object(validation.vod_workflow, 'get_vod', return_value={**catalog, 'status': 'completed', **(final_change or {})}):
-                self.assertEqual(validation.main(), 1 if prepare_change or final_change else 0)
+                self.assertEqual(validation.main(), 1 if prepare_change or final_change or interrupted else 0)
                 if source == 'twitch':
                     metadata.assert_not_called()
                     normalize.assert_not_called()
@@ -278,6 +429,14 @@ class ValidationRunnerTests(unittest.TestCase):
                     self.assertEqual(api.call_args_list[0].args, ('vod', {'source': 'twitch', 'source_id': video_id}))
                     self.assertTrue(all(not call.kwargs for call in api.call_args_list))
             report = json.loads((root / 'validation-output' / 'validation.json').read_text())
+            if interrupted:
+                self.assertEqual(report['phase'], 'ocr')
+                self.assertEqual(report['status'], 'cancelled' if isinstance(interrupted, validation.ValidationCancelled) else 'failed')
+                self.assertEqual(report['error_type'], type(interrupted).__name__)
+                self.assertEqual(report['current_chunk'], chunks[1]['id'])
+                self.assertEqual(len(report['chunks']), 1)
+                self.assertEqual((root / 'validation-output' / 'validation.json').stat().st_mode & 0o777, 0o600)
+                return report
             if prepare_change or final_change:
                 self.assertEqual(report['phase'], 'prepare' if prepare_change else 'public_persistence')
                 self.assertEqual(report['status'], 'failed')
@@ -305,7 +464,13 @@ class ValidationRunnerTests(unittest.TestCase):
         self.assertEqual(report['frames_processed'], 1359)
         self.assertEqual(report['catalog_method'], 'reviewed_youtube_catalog')
 
-    def test_full_twitch_recording_reuses_catalog_and_processes_ten_chunks_including_odd_tail(self):
+    def test_cancelled_or_timed_out_ocr_saves_previous_chunks_and_current_phase(self):
+        for interrupted in (validation.ValidationCancelled(), validation.subprocess.TimeoutExpired(['private-command'], 1)):
+            with self.subTest(reason=type(interrupted).__name__):
+                report = self._orchestration(interrupted=interrupted)
+                self.assertNotIn('private-command', json.dumps(report))
+
+    def test_twitch_with_video_support_at_last_catalog_tick_keeps_the_complete_requested_grid(self):
         ranges = tuple(value for start in range(0, 17085, 1800) for value in (start, min(start + 1800, 17085)))
         report = self._orchestration('twitch', ranges, 17085)
         self.assertTrue(report['full_source_video'])
@@ -313,6 +478,20 @@ class ValidationRunnerTests(unittest.TestCase):
         self.assertEqual(report['frames_processed'], 8543)
         self.assertEqual(len(report['chunks']), 10)
         self.assertEqual(report['chunks'][-1]['decode_coverage']['last_sample_seconds'], 17084)
+
+    def test_full_twitch_with_verified_audio_tail_records_8542_actual_samples_and_unchanged_catalog(self):
+        ranges = tuple(value for start in range(0, 17085, 1800) for value in (start, min(start + 1800, 17085)))
+        report = self._orchestration('twitch', ranges, 17085, video_end=17083.966333)
+        self.assertTrue(report['full_source_video'])
+        self.assertEqual(report['frames_processed'], 8542)
+        self.assertEqual(report['source_duration_seconds'], 17085)
+        self.assertEqual(report['cataloged_ranges'], [[0, 17085]])
+        tail = report['chunks'][-1]['decode_coverage']
+        self.assertEqual(tail['completion_reason'], 'verified_video_eof')
+        self.assertEqual(tail['sampled_frames'], 442)
+        self.assertEqual(tail['requested_expected_frames'], 443)
+        self.assertEqual(tail['last_sample_seconds'], 17082)
+        self.assertAlmostEqual(tail['unobserved_catalog_tail_seconds'], 1.033667)
 
     def test_sparse_twitch_chapters_do_not_claim_entire_source_completion(self):
         report = self._orchestration('twitch', (1800, 3600, 5400, 6301), 17085)

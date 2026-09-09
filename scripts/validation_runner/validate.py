@@ -6,8 +6,11 @@ import math
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
+import tempfile
+import time
 from urllib.request import Request
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -17,6 +20,8 @@ MAX_JPEG_PIXELS = 16_000_000
 MAX_CHUNKS = 12
 MAX_CHUNK_SECONDS = 1800
 CHUNK_TIMEOUT_SECONDS = 2000
+CHILD_GRACE_SECONDS = 4
+CHILD_REAP_SECONDS = 1
 sys.path.insert(0, str(ROOT / 'scripts'))
 sys.path.insert(0, str(ROOT / 'sfde' / 'src'))
 from backend_environment import open_backend, verify_backend
@@ -29,6 +34,141 @@ from guard import validate_job
 
 class ValidationFailure(ValueError):
     """Static operator-facing explanations; never raw upstream responses or credentials."""
+
+
+class ValidationCancelled(Exception):
+    """The Actions runner requested cancellation; this is never success."""
+
+
+def persist_report(destination, report):
+    """Publish complete private snapshots, including while cancellation is pending."""
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=destination,
+                                         prefix='.validation-', suffix='.json', delete=False) as output:
+            temporary = Path(output.name)
+            json.dump(report, output, indent=2)
+            output.write('\n')
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, destination / 'validation.json')
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+
+
+class ChildSupervisor:
+    """Own one isolated process group; leave lease recovery to the backend."""
+
+    def __init__(self, report, checkpoint):
+        self.report, self.checkpoint = report, checkpoint
+        self.cancelled = False
+        self.timed_out = False
+        self.previous_handlers = {}
+
+    def install(self):
+        for number in (signal.SIGINT, signal.SIGTERM):
+            self.previous_handlers[number] = signal.getsignal(number)
+            signal.signal(number, self._signal)
+
+    def restore(self):
+        for number, handler in self.previous_handlers.items():
+            signal.signal(number, handler)
+
+    def _checkpoint_during_cleanup(self):
+        try:
+            self.checkpoint()
+        except Exception:
+            # A full disk must not interrupt Popen assignment or child cleanup.
+            # Final persistence retries normally; no raw filesystem error leaks.
+            self.report['artifact_write_failed'] = True
+
+    def _signal(self, number, _frame):
+        self.cancelled = True
+        if not self.timed_out:
+            self.report['status'] = 'cancelled'
+        self.report['cancellation_signal'] = signal.Signals(number).name
+        # The handler records rather than raises, so a signal during Popen
+        # cannot orphan a just-created child before its PID is assigned.
+        self._checkpoint_during_cleanup()
+
+    def check(self):
+        if self.cancelled:
+            raise ValidationCancelled()
+
+    def phase(self, value):
+        self.check()
+        self.report['phase'] = value
+        self.checkpoint()
+
+    @staticmethod
+    def _exited(child):
+        # Keep the group leader unreaped until descendant cleanup is complete.
+        # Its reserved PID prevents accidentally signalling a reused group ID.
+        return os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+
+    @staticmethod
+    def _signal_group(child, number):
+        try:
+            os.killpg(child.pid, number)
+            return True
+        except ProcessLookupError:
+            return False
+
+    def _stop(self, child, reason):
+        outcome = {'reason': reason, 'child_reaped': False, 'lease_release': 'unconfirmed'}
+        self.report['child_cleanup'] = outcome
+        self._checkpoint_during_cleanup()
+        outcome['term_sent'] = self._signal_group(child, signal.SIGTERM)
+        deadline = time.monotonic() + CHILD_GRACE_SECONDS
+        while not self._exited(child) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        outcome['grace_exhausted'] = not self._exited(child)
+        # Even an exited leader may have a surviving FFmpeg child. Kill its
+        # still-owned group before reaping the leader and releasing the PID.
+        outcome['group_kill_sent'] = self._signal_group(child, signal.SIGKILL)
+        try:
+            outcome['exit_code'] = child.wait(timeout=CHILD_REAP_SECONDS)
+            outcome['child_reaped'] = True
+        except subprocess.TimeoutExpired:
+            # A stuck OS process must not turn cancellation into an unbounded
+            # wait. The disposable container and chunk lease remain fallbacks.
+            pass
+        self._checkpoint_during_cleanup()
+
+    def run(self, command, *, cwd, env, timeout):
+        self.check()
+        child = subprocess.Popen(command, cwd=cwd, env=env, start_new_session=True)
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                self.check()
+                if self._exited(child):
+                    # An ordinary or failed exit can also leave descendants.
+                    # Keep the leader's PID reserved until its group is settled,
+                    # including if cancellation arrives after the exit check.
+                    outcome = {'reason': 'exited', 'child_reaped': False, 'lease_release': 'unconfirmed'}
+                    self.report['child_cleanup'] = outcome
+                    outcome['group_kill_sent'] = self._signal_group(child, signal.SIGKILL)
+                    code = child.wait(timeout=CHILD_REAP_SECONDS)
+                    outcome.update(child_reaped=True, exit_code=code)
+                    self._checkpoint_during_cleanup()
+                    self.check()
+                    if code:
+                        raise subprocess.CalledProcessError(code, command)
+                    return
+                if time.monotonic() >= deadline:
+                    self.timed_out = True
+                    self.report.update(status='failed', error_type='TimeoutExpired')
+                    raise subprocess.TimeoutExpired(command, timeout)
+                time.sleep(0.05)
+        except BaseException as error:
+            if child.returncode is None:
+                reason = 'timeout' if isinstance(error, subprocess.TimeoutExpired) else 'cancelled' if isinstance(error, ValidationCancelled) else 'failed'
+                self._stop(child, reason)
+            raise
 
 
 def options(values):
@@ -136,20 +276,125 @@ def verify_prepared(prepared, selected, catalog_profile=None):
     return profile
 
 
+def verified_sample_count(start, end, coverage):
+    """Check recorded source timing independently of the terminal status/count.
+
+    Catalog ranges stay fixed. A shorter video interval needs the same source's
+    finite packet endpoint; a clean decoder exit alone is never that proof.
+    """
+    def require(condition):
+        if not condition:
+            raise ValidationFailure('Recorded source timing or video EOF proof is inconsistent')
+
+    def finite(value):
+        return type(value) in (int, float) and math.isfinite(value)
+
+    def close(left, right):
+        return finite(left) and finite(right) and abs(left - right) <= 1e-6
+
+    require(isinstance(coverage, dict))
+    requested = math.ceil((end - start) / 2)
+    require(type(coverage.get('requested_expected_frames')) is int
+            and coverage['requested_expected_frames'] == requested)
+    reason, endpoint = coverage.get('completion_reason'), coverage.get('video_endpoint')
+    effective_end = coverage.get('effective_video_end_seconds')
+    require(finite(effective_end) and start <= effective_end <= end)
+    require(close(coverage.get('unobserved_catalog_tail_seconds'), end - effective_end))
+    if reason == 'requested_range':
+        require(endpoint is None and effective_end == end)
+    else:
+        require(reason == 'verified_video_eof' and isinstance(endpoint, dict))
+        require(endpoint.get('method') == 'ffprobe-packets-v1' and endpoint.get('closed') is True
+                and endpoint.get('container') in ('hls', 'mp4'))
+        fields = ('video_end_seconds', 'last_video_frame_seconds', 'container_duration_seconds',
+                  'source_origin_seconds', 'probe_start_seconds', 'probe_start_timestamp_seconds',
+                  'container_packet_end_seconds', 'container_tolerance_seconds', 'frame_agreement_tolerance_seconds',
+                  'terminal_packet_duration_seconds', 'terminal_packet_quantum_seconds',
+                  'selected_video_start_seconds', 'selected_video_packet_duration_seconds',
+                  'selected_video_timestamp_quantum_seconds', 'container_origin_alignment_seconds')
+        require(all(finite(endpoint.get(field)) for field in fields))
+        video_end, container_end = endpoint['video_end_seconds'], endpoint['container_duration_seconds']
+        require(0 <= endpoint['last_video_frame_seconds'] < video_end < end and container_end > 0
+                and math.floor(container_end) <= end <= math.ceil(container_end)
+                and close(effective_end, max(start, min(end, video_end))))
+        require(type(endpoint.get('video_stream_index')) is int and endpoint['video_stream_index'] >= 0
+                and type(endpoint.get('packet_count')) is int and 0 < endpoint['packet_count'] < 10000
+                and type(endpoint.get('video_packet_count')) is int
+                and 0 < endpoint['video_packet_count'] <= endpoint['packet_count']
+                and type(endpoint.get('packet_limit')) is int and endpoint['packet_limit'] == 10000
+                and type(endpoint.get('audio_only')) is bool)
+        require(close(endpoint['probe_start_seconds'], max(0, container_end - 60))
+                and close(endpoint['probe_start_timestamp_seconds'], endpoint['source_origin_seconds'] + endpoint['probe_start_seconds']))
+        require(0 < endpoint['selected_video_timestamp_quantum_seconds'] <= endpoint['selected_video_packet_duration_seconds'] <= 1)
+        alignment = endpoint['container_origin_alignment_seconds']
+        require(0 <= alignment <= endpoint['selected_video_packet_duration_seconds'] + endpoint['selected_video_timestamp_quantum_seconds'])
+        require(close(alignment, endpoint['selected_video_start_seconds'] - endpoint['source_origin_seconds'])
+                if endpoint['container'] == 'hls' else alignment == 0)
+        require(0 < endpoint['terminal_packet_quantum_seconds'] <= endpoint['terminal_packet_duration_seconds'] <= 1
+                and close(endpoint['container_tolerance_seconds'],
+                          alignment + endpoint['terminal_packet_duration_seconds'] + endpoint['terminal_packet_quantum_seconds'] + 1e-6)
+                and endpoint['frame_agreement_tolerance_seconds'] > 0
+                and abs(endpoint['container_packet_end_seconds'] - container_end) <= endpoint['container_tolerance_seconds'] + 1e-6
+                and video_end <= container_end + endpoint['container_tolerance_seconds'])
+        if endpoint['container'] == 'hls':
+            require(isinstance(endpoint.get('manifest_sha256'), str)
+                    and re.fullmatch(r'[0-9a-f]{64}', endpoint['manifest_sha256']) is not None
+                    and finite(endpoint.get('manifest_duration_seconds'))
+                    and abs(endpoint['manifest_duration_seconds'] - container_end) <= 0.001)
+
+    expected = math.ceil((effective_end - start) / 2 - 1e-8)
+    require(type(coverage.get('source_frames')) is int and coverage['source_frames'] >= expected
+            and finite(coverage.get('max_source_gap_seconds')) and 0 <= coverage['max_source_gap_seconds'] < 2)
+    source_count = coverage['source_frames']
+    first, last = coverage.get('first_source_frame_seconds'), coverage.get('last_source_frame_seconds')
+    cadence, quantum = coverage.get('source_frame_interval_seconds'), coverage.get('source_timestamp_quantum_seconds')
+    if expected == 0:
+        require(reason == 'verified_video_eof' and endpoint['audio_only'] is True
+                and endpoint['video_end_seconds'] <= start and effective_end == start
+                and source_count == 0 and first is None and last is None
+                and coverage.get('first_sample_seconds') is None and coverage.get('last_sample_seconds') is None
+                and coverage['max_source_gap_seconds'] == 0
+                and close(coverage.get('tail_unobserved_seconds'), end - start))
+        # FFmpeg may announce valid source timing even when seeking beyond video EOF.
+        require((cadence is None and quantum is None)
+                or (finite(cadence) and finite(quantum) and cadence > 0 and quantum > 0))
+    else:
+        require(source_count > 0 and finite(first) and finite(last)
+                and finite(cadence) and cadence > 0 and finite(quantum) and quantum > 0)
+        require(finite(cadence / quantum))
+        tolerance = math.ceil(cadence / quantum) * quantum
+        require(start - quantum <= first <= start + tolerance and first <= last <= end + tolerance
+                and last + tolerance >= start + 2 * (expected - 1)
+                and effective_end - last < 2
+                and close(coverage.get('tail_unobserved_seconds'), max(0, end - last)))
+        require((source_count == 1 and first == last and coverage['max_source_gap_seconds'] == 0)
+                or (source_count > 1 and last > first and 0 < coverage['max_source_gap_seconds'] <= last - first + 1e-6
+                    and last - first <= (source_count - 1) * coverage['max_source_gap_seconds'] + 1e-6))
+        if reason == 'verified_video_eof':
+            require(endpoint['audio_only'] is False
+                    and endpoint['frame_agreement_tolerance_seconds'] <= cadence + quantum + 1e-6
+                    and abs(last - endpoint['last_video_frame_seconds']) <= endpoint['frame_agreement_tolerance_seconds'] + 1e-6)
+    return expected
+
+
 def verify_chunk(planned, state, summary, quality=None):
     start, end = planned['start_seconds'], planned['end_seconds']
-    expected = math.ceil((end - start) / 2)
     coverage = summary.get('decode_coverage') or {}
+    expected = verified_sample_count(start, end, coverage)
     if (any(state.get(field) != planned[field] for field in ('id', 'vod_pk', 'source', 'vod_id', 'start_seconds', 'end_seconds'))
             or any(summary.get(field) != planned[field] for field in ('vod_pk', 'source', 'vod_id'))
-            or state['status'] != 'completed' or state['frames_processed'] != expected or summary.get('frames_processed') != expected
+            or state['status'] != 'completed' or type(state.get('frames_processed')) is not int or state['frames_processed'] != expected
+            or type(summary.get('frames_processed')) is not int or summary['frames_processed'] != expected
             or summary.get('chunk_id') != planned['id'] or summary.get('start_time') != start or summary.get('end_time') != end
-            or coverage.get('sampled_frames') != expected or coverage.get('minimum_expected_frames') != expected
-            or coverage.get('sample_interval_seconds') != 2 or coverage.get('first_sample_seconds') != start
-            or coverage.get('last_sample_seconds') != start + 2 * (expected - 1)
+            or type(coverage.get('sampled_frames')) is not int or coverage['sampled_frames'] != expected
+            or type(coverage.get('minimum_expected_frames')) is not int or coverage['minimum_expected_frames'] != expected
+            or coverage.get('sample_interval_seconds') != 2 or coverage.get('first_sample_seconds') != (start if expected else None)
+            or coverage.get('last_sample_seconds') != (start + 2 * (expected - 1) if expected else None)
             or coverage.get('requested_start_seconds') != start or coverage.get('requested_end_seconds') != end):
         raise ValidationFailure('Terminal state and complete sampled timeline were not both confirmed')
-    if state['detections_count'] != summary.get('matchups_found') or len(summary.get('detections', [])) != state['detections_count']:
+    if (type(state.get('detections_count')) is not int or not 0 <= state['detections_count'] <= expected
+            or type(summary.get('matchups_found')) is not int or state['detections_count'] != summary['matchups_found']
+            or not isinstance(summary.get('detections'), list) or len(summary['detections']) != state['detections_count']):
         raise ValidationFailure('Persisted chunk detection total differs from the OCR report')
     if quality is not None and (state.get('quality') != quality or summary.get('quality') != quality):
         raise ValidationFailure('Persisted chunk and OCR rendition differ from the reviewed preparation')
@@ -224,20 +469,25 @@ def processor_environment(prepared, chunk_id):
 def main():
     destination = ROOT / 'validation-output'
     destination.mkdir(mode=0o700, exist_ok=True)
-    report = {'status': 'failed', 'phase': 'guard', 'chunks': [], 'screenshots': []}
+    report = {'status': 'running', 'phase': 'guard', 'chunks': [], 'screenshots': []}
+    checkpoint = lambda: persist_report(destination, report)
+    supervisor = ChildSupervisor(report, checkpoint)
+    supervisor.install()
     try:
+        checkpoint()
         validate_job(os.environ)
         selected = options(os.environ)
         if subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip() != os.environ['GITHUB_SHA']:
             raise ValidationFailure('Checked-out source does not match the dispatched commit')
         report.update(selection=selected, checkout_commit=os.environ['GITHUB_SHA'], actions_run_id=os.environ['GITHUB_RUN_ID'])
-        report['phase'] = 'health'
+        supervisor.phase('health')
         verify_backend()  # Unauthenticated environment verification precedes either capability.
+        supervisor.check()
         report['backend'] = public_json('/health')
         if (report['backend'].get('ok') is not True or report['backend'].get('environment') != 'validation'
                 or not re.fullmatch(r'[a-f0-9]{40}', str(report['backend'].get('build_commit', '')))):
             raise ValidationFailure('Expected one identified validation backend build')
-        report['phase'] = 'reviewed_catalog'
+        supervisor.phase('reviewed_catalog')
         existing_catalog = None
         if selected['source'] == 'twitch':
             saved = vod_workflow.api('vod', {'source': 'twitch', 'source_id': selected['video_id']})
@@ -246,9 +496,11 @@ def main():
             report.update(catalog_method='existing_twitch_catalog', catalog=existing_catalog)
         else:
             metadata = youtube_metadata(selected['video_id'])
+            supervisor.check()
             video = normalize_video(metadata, chapters=selected['ranges'], template_version=selected['templates'], recorded_at=selected['recorded_at'])
             reviewed_coverage(selected, video['duration_seconds'])
             account = ensure_account(metadata['channel_id'], metadata.get('channel') or metadata['channel_id'], enable=True, profile_id=selected['profile_id'])
+            supervisor.check()
             saved = save_video(video, account, explicit_ranges=True)
             report['catalog_method'] = 'reviewed_youtube_catalog'
         cataloged_ranges = reviewed_coverage(selected, video['duration_seconds'])
@@ -256,10 +508,10 @@ def main():
                       cataloged_ranges=cataloged_ranges, full_source_video=cataloged_ranges == [[0, video['duration_seconds']]])
         os.environ.update(VOD_ID=selected['video_id'], VIDEO_SOURCE=selected['source'], REQUESTED_QUALITY=selected['quality'],
                           OLD_TEMPLATES=str(selected['templates'] == 'old').lower(), LOCAL='false', INPUT_CHUNKS='', QUEUED_AT='', SFDE_PROFILE='')
-        report['phase'] = 'prepare'
+        supervisor.phase('prepare')
         output = destination / 'prepare.outputs'
         output.write_text('')
-        subprocess.run([sys.executable, str(ROOT / 'scripts' / 'vod_workflow.py'), 'prepare'], check=True,
+        supervisor.run([sys.executable, str(ROOT / 'scripts' / 'vod_workflow.py'), 'prepare'],
                        cwd=ROOT, env={**os.environ, 'GITHUB_OUTPUT': str(output)}, timeout=180)
         prepared = dict(line.split('=', 1) for line in output.read_text().splitlines())
         ids = json.loads(prepared.get('chunk_uuids', '[]'))
@@ -273,17 +525,19 @@ def main():
         quality = prepared['quality'] + ('60' if prepared['video_fps'] == '60' else '')
         report['quality'] = quality
         report['profile'] = {key: profile.get(key) for key in ('id', 'profile_name', 'crop_region', 'igd_crop_region', 'scale', 'custom_edge', 'opaque_edge', 'from_date', 'to_date')}
-        report['phase'] = 'ocr'
+        supervisor.phase('ocr')
         summaries = []
         for chunk in sorted(chunks, key=lambda item: item['start_seconds']):
             report['current_chunk'] = chunk['id']
-            subprocess.run([sys.executable, '-u', 'src/sfde.py'], cwd=ROOT / 'sfde',
-                           env=processor_environment(prepared, chunk['id']), check=True, timeout=CHUNK_TIMEOUT_SECONDS)
+            checkpoint()
+            supervisor.run([sys.executable, '-u', 'src/sfde.py'], cwd=ROOT / 'sfde',
+                           env=processor_environment(prepared, chunk['id']), timeout=CHUNK_TIMEOUT_SECONDS)
             summary = json.loads((OCR_OUTPUT / f'detections_{chunk["id"]}.json').read_text())
             state = vod_workflow.api(f'chunks/{chunk["id"]}')
             report['chunks'].append(verify_chunk(chunk, state, summary, quality=quality))
             summaries.append(summary)
-        report['phase'] = 'public_persistence'
+            checkpoint()
+        supervisor.phase('public_persistence')
         expected = [item for summary in summaries for item in summary['detections'] if item['confidence'] > 0.7]
         detections = public_detections(selected, saved['id'], len(expected))
         if any(row.get('vod_id') != saved['id'] or row.get('source') != selected['source']
@@ -295,6 +549,7 @@ def main():
         if len(expected) < selected['minimum_detections']:
             raise ValidationFailure('Reviewed ranges did not produce the required high-confidence detections')
         for item in expected:
+            supervisor.check()
             row = visible.get((item['timestamp'], item['username']))
             if not row or row['igd'] != item['igd'] or row['rank'] != item['rank']:
                 raise ValidationFailure('A reported detection or its extracted data is missing from the public API')
@@ -320,20 +575,26 @@ def main():
         if (report['backend_final'].get('ok') is not True or report['backend_final'].get('environment') != 'validation'
                 or report['backend_final'].get('build_commit') != report['backend'].get('build_commit')):
             raise ValidationFailure('Backend changed during validation; repeat against one deployed build')
+        supervisor.check()
         report.update(status='passed', phase='complete', vod_status=final['status'],
                       frames_processed=sum(chunk['frames_processed'] for chunk in report['chunks']))
+    except ValidationCancelled:
+        report.update(status='cancelled', error_type='ValidationCancelled')
+        print(f'Validation cancelled during {report["phase"]}', file=sys.stderr)
     except Exception as error:
+        report['status'] = 'failed'
         report['error_type'] = type(error).__name__
         if isinstance(error, ValidationFailure):
             report['error'] = str(error)
         print(f'Validation failed during {report["phase"]}: {report.get("error", type(error).__name__)}', file=sys.stderr)
     finally:
-        target = destination / 'validation.json'
-        target.write_text(json.dumps(report, indent=2) + '\n')
-        target.chmod(0o600)
-        with open(os.environ.get('GITHUB_STEP_SUMMARY', destination / 'summary.md'), 'a') as summary:
-            summary.write(f'Validation **{report["status"]}** at `{report["phase"]}`. '
-                          f'{len(report["chunks"])} chunks verified; see the validation artifact for exact ranges and sampled coverage.\n')
+        try:
+            checkpoint()
+            with open(os.environ.get('GITHUB_STEP_SUMMARY', destination / 'summary.md'), 'a') as summary:
+                summary.write(f'Validation **{report["status"]}** at `{report["phase"]}`. '
+                              f'{len(report["chunks"])} chunks verified; see the validation artifact for exact ranges and sampled coverage.\n')
+        finally:
+            supervisor.restore()
     return 0 if report['status'] == 'passed' else 1
 
 
