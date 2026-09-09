@@ -1,6 +1,6 @@
 # User authentication
 
-Status: deployed to the dedicated validation Worker at `fe0bd1c`. Hosted session/social mechanics passed on 2026-09-07 using temporary, explicitly synthetic operator fixtures; the later reprocessing proof also used real signed sessions on the current build. Existing dev/production remain unchanged. Real Discord/Twitch login and browser consent remain unverified: provider applications are not configured, and outbound calls remain disabled.
+Status: deployed to the dedicated validation Worker at `1fea429`. Hosted session/social mechanics passed on 2026-09-07 using temporary, explicitly synthetic operator fixtures; the later reprocessing proof also used real signed sessions on the current build. Existing dev/production remain unchanged. Real Discord/Twitch login and browser consent remain unverified: provider applications are not configured, and outbound calls remain disabled.
 
 The Worker runs Better Auth with native D1 storage. Authentication management is limited to the documented `/api/auth/*` routes; `GET /api/v1/me` also returns the safe current identity. Application sessions use an HTTP-only, Secure, host-only cookie on HTTPS (`__Host-bazaarghost_session`), with SameSite=Lax and a fixed seven-day expiry. The browser sends `credentials: 'include'`; it never receives an admin, catalog, or processor key. Session responses contain application identity and a session-bound CSRF token, not the bearer session token or email.
 

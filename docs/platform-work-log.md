@@ -6,9 +6,9 @@ Integrate the multiplatform backend from thread `01a07a18-dac2-7571-993b-3c00d03
 
 Work branch: `codex/cloudflare-validation`, starting at migration commit `6a6d0ae`. Reviewed source platform commits: `c7c3863` and `ec4b870` on `dev`. The first integrated platform commit is `2923d2a`.
 
-## Current state — 2026-09-07, after recording, social and ingestion checks
+## Current state — 2026-09-08, after profile-claim deployment
 
-- Validation runs `fe0bd1c` with all six database migrations applied. Auth/social routes, the multiplatform retry correction and the minute auth cleanup Cron are deployed; outbound integrations remain disabled and no login providers are configured.
+- Validation runs `1fea429` with all seven database migrations applied. Auth/social routes, the multiplatform retry correction and the minute auth cleanup Cron are deployed; outbound integrations remain disabled and no login providers are configured.
 - Hosted session/social mechanics passed with two short-lived synthetic identities, including CSRF/privacy/ownership, deletion/revocation, and public search/screenshot moderation. All fixture identities and owned rows were removed, and the real clip/image were restored unchanged. Real OAuth consent/browser behavior remains pending.
 - Three complete source recordings passed: Bilibili `[0,2468)`, YouTube `0C6bxQsDj-s` `[0,2718)`, and YouTube `yS_mgLwtITA` `[0,2467)`. Together they processed 3,827 expected samples and published 39 detections/screenshots; the YouTube runs persisted 23 IGD readings. The Bilibili recording is a reviewed copy of the second YouTube recording, so these represent two distinct gameplay recordings across three source uploads. The earlier old-layout Bilibili interval adds 450 samples/four detections. Detailed evidence and accuracy limits appear below.
 - Thirteen reviewed duplicate-fight groups are applied and both source-filtered public searches verified the corresponding 26 appearances. A fresh remote D1 audit at 18:44 UTC confirmed all four planned recordings/ranges completed, zero unfinished chunks, 43 clips/detections, 13 groups, no remaining user/session fixtures, and no foreign-key errors. Evidence: `.ignore/platform-validation/hosted-state-20260907.json`.
@@ -51,6 +51,15 @@ Completion requires authoritative evidence for every plan item, including actual
 Production safeguards: no pushes to `main`/`dev`, no production/development resource mutations, no changes to existing provider callbacks, no real notification delivery from validation, and no broad repository rule changes when branch/environment-scoped controls suffice. New resources must have distinct names and identifiers. Keep test evidence free of credentials and personal data.
 
 ## Activity
+
+### 2026-09-08 local / 2026-09-09 UTC — ingestion/profile revision deployed and checked
+
+- Committed and pushed `1fea429` only to the validation branch. All 1,205 application/config/test/template file hashes match the frozen local snapshot, which passed 211 Worker tests, 128 Python tests and 129 OCR tests. [CI 34296335605](https://github.com/liftaris/bazaar-ghost/actions/runs/34296335605) passed; its migration/deploy/health steps were skipped because the dedicated CI credential is still unavailable.
+- The first migration attempt returned Cloudflare 7403. After the user restored Wrangler login, the same migration command applied only `0007_platform_ingestion_dispatch.sql` successfully (two commands, 1.20 ms). Deployed the exact archived commit through local Wrangler as version `20fa6904-f2c2-4f2b-8ca6-5ea78a6685b7`: upload 2,507.90 KiB / gzip 467.42 KiB, startup 61 ms. Exact public health, empty login-provider list and all 43 public clips were verified. Outbound remains false and the minute auth Cron remains the only trigger; no original dev/production resources changed.
+- Hosted profile-claim proof passed from `2026-09-09T00:51:41.044Z` to `2026-09-09T00:51:54.696Z`. Required expectations, stale crop/era/ID rejection, normalized JSON values, active crop/streamer conflicts and edit-after-release all matched the tested contract. All exact fixture rows were removed, foreign keys were clean and original 43 clip/detection full-row hashes were unchanged. No new screenshots, users or provider calls. Root reviewed the final harness after the independent reviewer caught a failed-state assertion and unbounded child settlement; both were fixed and local FD/deadline checks passed before execution.
+- Evidence: `.ignore/platform-validation/deployment-1fea429.json`, `ingestion-profile-integrated-tests.json`, `profile-claim-root-review.json`, and `profile-claim.a8c39d91-e434-4b12-87d7-b35e81950d73/proof.json` under the same directory. Recurring ingestion code is deployed but provider activation and real automatic completion remain pending. Real Twitch full-recording validation is the next media acceptance step.
+- The user confirmed Better Auth as the intended implementation choice. Better Auth owns OAuth/session primitives; the Worker owns the application integration and associated account/security rules. This remains a maintained library deployed with the application, with real provider consent still pending.
+
 
 ### 2026-09-07 local / 2026-09-08 UTC — recurring ingestion and profile consistency
 
