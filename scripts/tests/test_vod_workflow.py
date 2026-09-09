@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -35,7 +36,7 @@ class WorkflowTests(unittest.TestCase):
         chunk = '2e032210-c665-4e6c-9f97-80b4c930c153'
         vod = {'id': 1, 'source': 'bilibili', 'processing_enabled': True,
                'ready_for_processing': True, 'availability': 'available', 'old_templates': True,
-               'profile': {'crop_region': [0, 0, 1, 1]}, 'published_at': '2026-09-07T00:00:00Z'}
+               'profile': {'id': 1, 'crop_region': [0, 0, 1, 1], 'opaque_edge': True}, 'published_at': '2026-09-07T00:00:00Z'}
         values = {'VOD_ID': 'BV1FfL5zPEbH:20', 'VIDEO_SOURCE': 'bilibili', 'LOCAL': 'true',
                   'REQUESTED_QUALITY': '720p', 'QUEUED_AT': '2026-09-07T12:00:00Z'}
         with patch.dict(workflow.os.environ, values, clear=True), patch.object(workflow, 'get_vod', return_value=vod), \
@@ -54,6 +55,52 @@ class WorkflowTests(unittest.TestCase):
             workflow.fail_chunk()
             self.assertEqual(api.call_args.kwargs['body']['queued_at'], '2026-09-07T12:00:00Z')
             self.assertEqual(api.call_args.kwargs['body']['ids'], [chunk])
+
+    def test_differing_saved_profile_is_rejected_before_any_media_resolution(self):
+        saved = {'id': 1, 'crop_region': [0, 0, 1, 1], 'igd_crop_region': None, 'custom_edge': None, 'opaque_edge': True}
+        for source in ('youtube', 'twitch'):
+            vod = {'id': 1, 'source': source, 'processing_enabled': True, 'ready_for_processing': True,
+                   'availability': 'available', 'old_templates': False, 'profile': saved}
+            changes = [{'crop_region': [0.1, 0, 0.9, 1]}, {'id': 2}, {'id': None}, {'custom_edge': 0.8},
+                       {'igd_crop_region': [0, 0, 0.1, 0.1]}, {'opaque_edge': False}, {'crop_region': [False, 0, 1, 1]}]
+            for override in [None, *({**saved, **change} for change in changes)]:
+                with self.subTest(source=source, override=override), \
+                        patch.dict(workflow.os.environ, {'SFDE_PROFILE': json.dumps(override)}, clear=True), \
+                        patch.object(workflow, 'get_vod', return_value=vod), patch.object(workflow, 'api', return_value=[{'id': 'chunk'}]), \
+                        patch.object(workflow, 'output'), patch.object(workflow, 'resolve_media') as resolve, \
+                        patch.object(workflow.subprocess, 'run') as streamlink:
+                    with self.assertRaises(ValueError):
+                        workflow.prepare()
+                    resolve.assert_not_called()
+                    streamlink.assert_not_called()
+
+    def test_old_template_override_cannot_change_current_saved_era_before_media_access(self):
+        saved = {'id': 1, 'crop_region': [0, 0, 1, 1], 'opaque_edge': True}
+        vod = {'id': 1, 'source': 'youtube', 'processing_enabled': True, 'ready_for_processing': True,
+               'availability': 'available', 'old_templates': False, 'profile': saved}
+        with patch.dict(workflow.os.environ, {'OLD_TEMPLATES': 'true'}, clear=True), \
+                patch.object(workflow, 'get_vod', return_value=vod), patch.object(workflow, 'api', return_value=[{'id': 'chunk'}]), \
+                patch.object(workflow, 'output'), patch.object(workflow, 'resolve_media') as resolve:
+            with self.assertRaisesRegex(ValueError, 'saved template era'):
+                workflow.prepare()
+            resolve.assert_not_called()
+
+    def test_metadata_and_numeric_noops_preserve_saved_identity_and_default_old_era(self):
+        saved = {'id': 1, 'profile_name': 'Saved', 'crop_region': [0, 0, 1, 1], 'custom_edge': 1, 'opaque_edge': True}
+        override = {**saved, 'id': 1.0, 'profile_name': 'Renamed metadata', 'crop_region': [0.0, 0.0, 1.0, 1.0], 'custom_edge': 1.0}
+        vod = {'id': 1, 'source': 'youtube', 'processing_enabled': True, 'ready_for_processing': True,
+               'availability': 'available', 'old_templates': True, 'profile': saved}
+        for old_input in ('false', ''):
+            with self.subTest(old_input=old_input), patch.dict(workflow.os.environ, {'OLD_TEMPLATES': old_input,
+                    'SFDE_PROFILE': json.dumps(override), 'VOD_ID': 'abcdefghijk', 'REQUESTED_QUALITY': '720p'}, clear=True), \
+                    patch.object(workflow, 'get_vod', return_value=vod), patch.object(workflow, 'api', return_value=[{'id': 'chunk'}]), \
+                    patch.object(workflow, 'output') as output, patch.object(workflow, 'resolve_media') as resolve:
+                workflow.prepare()
+                resolve.assert_called_once_with('youtube', 'abcdefghijk', '480p')
+                outputs = dict(call.args for call in output.call_args_list)
+                self.assertEqual(outputs['old_templates'], 'true')
+                self.assertEqual(outputs['sfde_profile']['profile_name'], 'Renamed metadata')
+                self.assertIs(type(outputs['sfde_profile']['id']), int)
 
 
 if __name__ == '__main__':

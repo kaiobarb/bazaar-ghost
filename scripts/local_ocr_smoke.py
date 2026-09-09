@@ -41,11 +41,15 @@ def main():
         image, video = output / f'{i}.png', output / f'{i}.mp4'
         cv2.imwrite(str(image), frame)
         subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-loop', '1', '-i', str(image), '-t', '12', '-r', '30', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(video)], check=True)
+        profile = {'id': i, 'profile_name': f'local_ocr_smoke_{i}',
+                   'crop_region': [0, 0, width / 854, height / 480],
+                   'igd_crop_region': None, 'custom_edge': None, 'opaque_edge': False}
+        api('/api/admin/profile', profile)
         plan = api('/functions/v1/process-vod', {'vod_id': i, 'dry_run': True})
         if len(plan['chunk_uuids']) != 1:
             raise AssertionError('Expected one fresh local fixture chunk')
         os.environ.update(BAZAARGHOST_API_URL='http://127.0.0.1:8787', BAZAARGHOST_PROCESSOR_KEY='local-processor-change-me', TEST_VIDEO=str(video),
-            SFDE_PROFILE=json.dumps({'crop_region': [0, 0, width / 854, height / 480], 'opaque_edge': False}))
+            SFDE_PROFILE=json.dumps(profile), OLD_TEMPLATES='false')
         processor = SFDEProcessor({'chunk_id': plan['chunk_uuids'][0], 'test_mode': True})
         result = processor.process_vod_chunk()
         assert result['status'] == 'completed' and result['frames_processed'] == 6, result

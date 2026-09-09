@@ -8,6 +8,7 @@ import {
 } from "./http";
 import { plan } from "./processing";
 import { atomic } from "./atomic";
+import { profileCheck } from "./profiles";
 
 export async function retryVod(env: Env, input: Record<string, any>) {
   const id = integer(input.vod_id, "vod_id", 1);
@@ -98,15 +99,22 @@ export async function setStreamer(env: Env, input: Record<string, any>) {
       changes.processing_enabled ?? true,
       changes.sfde_profile_id ?? 1,
     ).run();
-  } else
-    await statement(
+  } else {
+    const checks = changes.sfde_profile_id == null ? [] : [{
+      sql: `NOT EXISTS(SELECT 1 FROM vod_processing_context v JOIN chunks c ON c.vod_id=v.id
+        WHERE v.streamer_id=? AND v.platform_account_id IS NULL AND v.sfde_profile_id IS NULL
+        AND v.effective_profile_id<>? AND c.status IN('queued','processing'))`,
+      args: [id, changes.sfde_profile_id],
+    }];
+    await atomic(env, checks, [statement(
       env,
       `UPDATE streamers SET ${Object.keys(changes)
         .map((k) => `${k}=?`)
         .join(",")} WHERE id=?`,
       ...Object.values(changes),
       id,
-    ).run();
+    )]);
+  }
   return { updated: true };
 }
 export async function setProfile(env: Env, input: Record<string, any>) {
@@ -145,7 +153,13 @@ export async function setProfile(env: Env, input: Record<string, any>) {
     );
   if (input.opaque_edge != null)
     requireValue(typeof input.opaque_edge === "boolean", "Invalid opaque_edge");
-  await statement(
+  const match = profileCheck({ ...input, opaque_edge: input.opaque_edge ?? true });
+  await atomic(env, [{
+    sql: `NOT EXISTS(SELECT 1 FROM sfde_profiles p WHERE p.id=? AND NOT (${match.sql})
+      AND EXISTS(SELECT 1 FROM vod_processing_context v JOIN chunks c ON c.vod_id=v.id
+        WHERE v.effective_profile_id=p.id AND c.status IN('queued','processing')))`,
+    args: [id, ...match.args],
+  }], [statement(
     env,
     `INSERT INTO sfde_profiles(id,profile_name,crop_region,igd_crop_region,custom_edge,opaque_edge) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET profile_name=excluded.profile_name,crop_region=excluded.crop_region,igd_crop_region=excluded.igd_crop_region,custom_edge=excluded.custom_edge,opaque_edge=excluded.opaque_edge,updated_at=?`,
     id,
@@ -155,6 +169,6 @@ export async function setProfile(env: Env, input: Record<string, any>) {
     input.custom_edge,
     input.opaque_edge ?? true,
     now(),
-  ).run();
+  )]);
   return { updated: true };
 }

@@ -12,6 +12,7 @@ import {
 } from "./http";
 import { dispatchBranch, source, videoIdentity } from "./sources";
 import { atomic } from "./atomic";
+import { expectedProfile, profileCheck } from "./profiles";
 
 export function normalizeRanges(
   input: unknown,
@@ -184,6 +185,7 @@ export async function dispatch(env: Env, vodId: number) {
     throw new HttpError(503, "GitHub dispatch is not configured");
   const vod = await one(env, "SELECT source,source_id FROM vods WHERE id=?", vodId);
   const details = await vodDetails(env, vod!.source_id, vod!.source);
+  const profile = profileCheck(details.profile);
   const configured = await one(
     env,
     "SELECT value FROM processing_config WHERE key='max_concurrent_chunks'",
@@ -203,12 +205,14 @@ export async function dispatch(env: Env, vodId: number) {
         .map((c) =>
           statement(
             env,
-            "UPDATE chunks SET status='queued',queued_at=?,updated_at=? WHERE id=? AND status='pending' AND (scheduled_for IS NULL OR scheduled_for<=?) AND EXISTS(SELECT 1 FROM vod_processing_context v WHERE v.id=chunks.vod_id AND v.processing_enabled=1 AND v.ready_for_processing=1 AND v.availability='available' AND v.effective_profile_id=?) AND (SELECT count(*) FROM chunks WHERE status IN('queued','processing'))<? RETURNING id",
+            `UPDATE chunks SET status='queued',queued_at=?,updated_at=? WHERE id=? AND status='pending' AND (scheduled_for IS NULL OR scheduled_for<=?) AND EXISTS(SELECT 1 FROM vod_processing_context v JOIN sfde_profiles p ON p.id=v.effective_profile_id WHERE v.id=chunks.vod_id AND v.processing_enabled=1 AND v.ready_for_processing=1 AND v.availability='available' AND p.id=? AND ${profile.sql} AND v.old_templates=?) AND (SELECT count(*) FROM chunks WHERE status IN('queued','processing'))<? RETURNING id`,
             queuedAt,
             queuedAt,
             c.id,
             queuedAt,
             details.profile.id,
+            ...profile.args,
+            details.old_templates,
             maxActive,
           ),
         ),
@@ -263,18 +267,29 @@ export async function claim(
   env: Env,
   id: string,
   queuedAt: string | null = null,
+  expected?: { profile: unknown; oldTemplates: unknown },
 ) {
   requireValue(
     queuedAt === null ||
       (typeof queuedAt === "string" && Number.isFinite(Date.parse(queuedAt))),
     "Invalid dispatch timestamp",
   );
+  let fence = { sql: '', args: [] as unknown[] };
+  if (expected) {
+    const profile = expectedProfile(expected.profile);
+    requireValue(typeof expected.oldTemplates === 'boolean', 'Expected template era required');
+    const match = profileCheck(profile);
+    fence = {
+      sql: ` AND v.old_templates=? AND v.effective_profile_id=? AND EXISTS(SELECT 1 FROM sfde_profiles p WHERE p.id=v.effective_profile_id AND ${match.sql})`,
+      args: [expected.oldTemplates, profile.id, ...match.args],
+    };
+  }
   const token = crypto.randomUUID(),
     time = now();
   const chunk = await one(
     env,
     `UPDATE chunks SET status='processing',claim_token=?,attempt_count=attempt_count+1,started_at=?,updated_at=?,lease_expires_at=?,last_error=NULL,completed_at=NULL
-    WHERE id=? AND status IN('pending','queued') AND (? IS NULL OR (status='queued' AND queued_at=?)) AND EXISTS(SELECT 1 FROM vod_processing_context v WHERE v.id=chunks.vod_id AND v.processing_enabled=1 AND v.ready_for_processing=1 AND v.availability='available') RETURNING id`,
+    WHERE id=? AND status IN('pending','queued') AND (? IS NULL OR (status='queued' AND queued_at=?)) AND EXISTS(SELECT 1 FROM vod_processing_context v WHERE v.id=chunks.vod_id AND v.processing_enabled=1 AND v.ready_for_processing=1 AND v.availability='available'${fence.sql}) RETURNING id`,
     token,
     time,
     time,
@@ -282,6 +297,7 @@ export async function claim(
     uuid(id),
     queuedAt,
     queuedAt,
+    ...fence.args,
   );
   return { claimed: Boolean(chunk), claim_token: chunk ? token : null };
 }

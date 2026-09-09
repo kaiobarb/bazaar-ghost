@@ -43,7 +43,7 @@ class FullTargetD1Tests(unittest.TestCase):
     def cli(self, *arguments, state='populated', succeeds=True):
         self.calls += 1
         command = [str(conversion.ROOT / 'node_modules/.bin/wrangler'), 'd1', *arguments,
-            '--config', str(self.config), '--local', '--persist-to', str(self.root / state)]
+            '--config', str(self.config), '--env-file', '/dev/null', '--local', '--persist-to', str(self.root / state)]
         process = subprocess.run(command, cwd=conversion.ROOT, text=True, capture_output=True, timeout=90,
             env={**os.environ, 'CI': 'true', 'WRANGLER_SEND_METRICS': 'false',
                  'WRANGLER_LOG_PATH': str(self.root / 'wrangler.log')})
@@ -72,7 +72,7 @@ class FullTargetD1Tests(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             conversion.convert(source, destination)
         manifest = json.loads((destination / 'manifest.json').read_text())
-        self.assertEqual(manifest['target_schema_version'], 6)
+        self.assertEqual(manifest['target_schema_version'], 7)
         self.cli('migrations', 'apply', 'DB')
         before_triggers = self.query("SELECT name FROM sqlite_master WHERE type='trigger' ORDER BY name")
         for part in sorted(destination.glob('import-*.sql')):
@@ -99,7 +99,7 @@ class FullTargetD1Tests(unittest.TestCase):
         self.assertEqual(self.query('SELECT status,next_attempt_at FROM platform_ingestion_jobs'),[{'status':'waiting','next_attempt_at':'2026-09-08T15:00:00.000Z'}])
         self.assertEqual(self.query("SELECT count(*) n FROM vods WHERE status='completed'"),[{'n':4}])
         self.assertEqual(self.query('SELECT id,revision FROM public_cache_state'),[{'id':1,'revision':0}])
-        for table in ['app_users','user_accounts','user_sessions','auth_verifications','auth_flows','auth_rate_limits','clip_comments','clip_likes','clip_favorites','social_reports','social_moderation_audit']:
+        for table in ['app_users','user_accounts','user_sessions','auth_verifications','auth_flows','auth_rate_limits','clip_comments','clip_likes','clip_favorites','social_reports','social_moderation_audit','platform_ingestion_dispatch']:
             self.assertEqual(counts[table],0,table)
         self.cli('execute','DB','--file',str(destination/'import.sql'),'--json','--yes',succeeds=False)
         self.assertEqual(self.query(counts_sql)[0],counts)
@@ -116,7 +116,19 @@ class FullTargetD1Tests(unittest.TestCase):
         self.assertEqual(self.query('SELECT count(*) n FROM vods',state='occupied-auth'),[{'n':0}])
         self.query('DELETE FROM app_users;DELETE FROM public_cache_state',state='occupied-auth')
         self.cli('execute','DB','--file',str(destination/'import.sql'),'--json','--yes',state='occupied-auth',succeeds=False)
-        conversion.private_json(self.root/'proof.json',{'status':'passed','source_schema':3,'target_schema':6,
+        self.cli('migrations','apply','DB',state='occupied-dispatch')
+        self.query('''INSERT INTO platform_ingestion_dispatch
+            (id,ticket_id,state,lease_expires_at,next_attempt_at,last_attempt_at,run_id,run_attempt)
+            VALUES(1,'old-environment-ticket','running','2099-01-01T00:00:00.000Z',
+            '2026-09-08T00:00:00.000Z','2026-09-08T00:00:00.000Z','123456','1')''',state='occupied-dispatch')
+        owner = self.query('SELECT * FROM platform_ingestion_dispatch',state='occupied-dispatch')
+        self.cli('execute','DB','--file',str(destination/'import.sql'),'--json','--yes',state='occupied-dispatch',succeeds=False)
+        self.assertEqual(self.query('SELECT * FROM platform_ingestion_dispatch',state='occupied-dispatch'),owner)
+        self.assertEqual(self.query('SELECT count(*) n FROM vods',state='occupied-dispatch'),[{'n':0}])
+        self.assertEqual(self.query("SELECT name FROM sqlite_master WHERE type='trigger' ORDER BY name",state='occupied-dispatch'),before_triggers)
+        self.assertEqual(self.query('PRAGMA foreign_key_check',state='occupied-dispatch'),[])
+        conversion.private_json(self.root/'proof.json',{'status':'passed','source_schema':3,'target_schema':7,
             'counts_after_import':counts,'no_auth_imported':True,'nonempty_application_refused':True,
             'nonempty_auth_refused':True,'missing_cache_singleton_refused':True,'foreign_key_errors':0,
+            'dispatcher_empty_after_import':True,'nonempty_dispatcher_refused':True,'existing_dispatch_ownership_preserved':True,
             'triggers_preserved':True,'public_visibility_trigger_verified':True,'hosted_resources_touched':False})

@@ -2,6 +2,7 @@
 """GitHub Actions preparation and reporting; inputs are data, never shell code."""
 
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -72,6 +73,46 @@ def output(name: str, value: Any) -> None:
         destination.write(f'{name}={encoded}\n')
 
 
+def prepared_profile(saved: Dict[str, Any], profile: Any) -> Dict[str, Any]:
+    """Only a saved operational profile can be prepared; metadata may differ.
+
+    Compare numeric values rather than JSON spelling. The claim endpoint repeats
+    this check atomically, after any concurrent operator change.
+    """
+    if not isinstance(saved, dict) or type(saved.get('id')) is not int or saved['id'] <= 0:
+        raise ValueError('A saved SFDE profile ID is required')
+
+    def values(profile):
+        if not isinstance(profile, dict):
+            raise ValueError('A saved SFDE profile is required')
+        identity = profile.get('id')
+        if type(identity) not in (int, float) or not math.isfinite(identity) or identity != saved['id']:
+            raise ValueError('SFDE profile override must match the saved profile ID')
+        result = []
+        for field in ('crop_region', 'igd_crop_region'):
+            region = profile.get(field)
+            if field == 'igd_crop_region' and region is None:
+                result.append(None)
+                continue
+            if (not isinstance(region, list) or len(region) != 4
+                    or any(type(value) not in (int, float) or not math.isfinite(value) for value in region)):
+                raise ValueError('SFDE crop must contain four finite numbers')
+            result.append(tuple(region))
+        edge = profile.get('custom_edge')
+        if edge is not None and (type(edge) not in (int, float) or not math.isfinite(edge)):
+            raise ValueError('SFDE custom edge must be a finite number')
+        opaque = profile.get('opaque_edge')
+        if type(opaque) is not bool:
+            raise ValueError('SFDE opaque edge must be boolean')
+        return (*result, edge, opaque)
+
+    if values(profile) != values(saved):
+        raise ValueError('SFDE profile override differs from saved settings; update the catalog profile first')
+    # JSON may spell an equal ID as 1.0; the Python processor expects its saved
+    # integer identity. Crop/edge numeric equivalence does not alter geometry.
+    return {**profile, 'id': saved['id']}
+
+
 def prepare() -> None:
     vod = get_vod()
     if not vod['processing_enabled'] or not vod['ready_for_processing'] or vod['availability'] != 'available':
@@ -89,10 +130,10 @@ def prepare() -> None:
     output('chunk_uuids', ids)
     if not ids:
         return
-    profile = json.loads(os.environ['SFDE_PROFILE']) if os.getenv('SFDE_PROFILE') else vod['profile']
-    if not isinstance(profile, dict) or not isinstance(profile.get('crop_region'), list):
-        raise ValueError('A valid SFDE profile is required')
-    old = os.getenv('OLD_TEMPLATES') == 'true' or vod['old_templates']
+    profile = prepared_profile(vod['profile'], json.loads(os.environ['SFDE_PROFILE']) if os.getenv('SFDE_PROFILE') else vod['profile'])
+    if os.getenv('OLD_TEMPLATES') == 'true' and not vod['old_templates']:
+        raise ValueError('Requested old templates differ from the saved template era; update the catalog first')
+    old = vod['old_templates']
     output('old_templates', str(old).lower())
     preferred = os.getenv('REQUESTED_QUALITY', '480p')
     if vod['source'] in ('youtube', 'bilibili'):

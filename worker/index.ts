@@ -239,10 +239,14 @@ async function route(req: Request, env: Env): Promise<Response> {
         if (!chunk) throw new HttpError(404, "Chunk not found");
         return Response.json(chunk);
       }
-      if (action === "claim" && req.method === "POST")
+      if (action === "claim" && req.method === "POST") {
+        const input = await body(req);
         return Response.json(
-          await claim(env, id, (await body(req)).queued_at ?? null),
+          await claim(env, id, input.queued_at ?? null, {
+            profile: input.expected_profile, oldTemplates: input.expected_old_templates,
+          }),
         );
+      }
       if (!action && req.method === "PATCH")
         return Response.json(
           await updateChunk(env, id, token, await body(req)),

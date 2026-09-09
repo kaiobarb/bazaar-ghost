@@ -190,10 +190,16 @@ def test_hls_coverage_preserves_seek_boundaries_and_rejects_short_playlist(proce
     assert processor.ffmpeg_proc.returncode == 0
 
 
-def test_unclaimed_chunk_does_not_delete_or_rewrite_other_worker(processor):
+def test_unclaimed_chunk_does_not_delete_or_rewrite_other_worker(processor, monkeypatch):
+    processor.old_templates = True
+    monkeypatch.setenv('OLD_TEMPLATES', 'false')
+    monkeypatch.setenv('SFDE_PROFILE', '{"id":999}')
     processor.backend.claim_chunk.return_value = False
-    with pytest.raises(ValueError, match='not pending or queued'):
+    with pytest.raises(ValueError, match='unavailable, already claimed, or has changed profile/templates'):
         processor.process_vod_chunk()
+    processor.backend.claim_chunk.assert_called_once_with(
+        processor.chunk_id, expected_profile=processor.profile, expected_old_templates=True,
+    )
     processor.backend.delete_chunk_detections.assert_not_called()
     processor.backend.update_chunk.assert_not_called()
 

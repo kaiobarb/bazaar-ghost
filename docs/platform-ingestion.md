@@ -1,6 +1,8 @@
 # Automatic platform ingestion on Cloudflare
 
-The Worker stores durable discovery, creator-poll, and video-readiness jobs in D1. A bounded GitHub Actions runner claims those jobs, reads platform metadata through yt-dlp/public endpoints, and sends validated catalog changes back to the Worker. Finite playable recordings then enter the existing GitHub OCR workflow. Nothing records a live stream.
+The Worker stores durable discovery, creator-poll, and video-readiness jobs in D1. When provider scheduling is activated, its existing three-minute processing schedule queues a bounded GitHub Actions ingestion run for due work. That runner reads platform metadata through yt-dlp/public endpoints and sends validated catalog changes back to the Worker. Finite playable recordings then enter the existing GitHub OCR workflow. Nothing records a live stream.
+
+Validation still has `OUTBOUND_ENABLED=false` and only the auth-maintenance Cron. The recurring caller has local implementation and test coverage; a healthy hosted automatic catalog → dispatch → OCR → persistence run remains unproven.
 
 This ports the ingestion follow-up from `ec4b870`. The separate [multiplatform backend guide](multiplatform-backend.md) describes source identities, profiles, manual backfills, processing, and appearance grouping.
 
@@ -18,7 +20,7 @@ Discovery is best effort. Title/tag gates miss videos that omit the game and may
 
 ## Enrollment and bounded runs
 
-Supply `BAZAARGHOST_API_URL`, `BAZAARGHOST_CATALOG_KEY`, and `ENVIRONMENT=local|validation` for the intended local or isolated hosted backend. The commands verify `/health` and never source ambient `.env` files. Hosted GitHub jobs require the branch paired with their selected environment.
+Supply `BAZAARGHOST_API_URL`, `BAZAARGHOST_CATALOG_KEY`, and an explicit `ENVIRONMENT` for the intended backend. Use `local` or `validation` for local and isolated migration checks; `dev` and `production` require their separately activated backends and paired branches. The commands verify `/health` and never source ambient `.env` files.
 
 ```bash
 python scripts/platform_ingestion.py enroll --source youtube --identity '@Kripparrian'
@@ -29,17 +31,41 @@ python scripts/platform_ingestion.py run --no-discovery --limit 10 --seconds 300
 
 # Include discovery and dispatch up to three due videos in the selected environment.
 python scripts/platform_ingestion.py run --limit 30 --seconds 1200 --dispatch
+
+# Drain previously requested discovery/account/video jobs without creating discovery jobs.
+python scripts/platform_ingestion.py run --existing-work --limit 30 --seconds 1200
 ```
 
 Enrollment accepts `--profile-id` and an optional verified `--streamer-id` link. YouTube upload-only/archive-only creators are supported: an explicit absent-tab response is an empty tab, while network/access failures remain errors.
 
-Discovery-enabled runs ensure both platform discovery jobs exist before claiming work, without resetting an existing job's due time. `--no-discovery` creates no discovery jobs and excludes existing broad discovery jobs during that run. It does not erase candidates nominated earlier. First enrollment scans a recent page; it does not automatically request a creator's lifetime upload history. Manual historical backfills remain explicit, separately bounded operations.
+Explicit discovery-enabled runs ensure both platform discovery jobs exist before claiming work, without resetting an existing job's due time. `--no-discovery` creates no discovery jobs and excludes existing broad discovery jobs during that run. `--existing-work` includes discovery jobs already present but initializes none; this is the recurring caller's mode. Neither option erases candidates nominated earlier. Already-requested discovery and unassigned candidates may still enroll their metadata-verified owner under the existing rules, while operator disables win. Enabling recurring dispatch alone does not seed discovery or enroll a caller-supplied identity.
+
+First enrollment scans a recent page; it does not automatically request a creator's lifetime upload history. Manual historical backfills remain explicit, separately bounded operations.
+
+## Recurring caller and workflow ownership
+
+The existing provider Cron `*/3 * * * *` calls `processPending`. With outbound integrations enabled, that function emits at most one `platform-ingestion` Queue message when eligible ingestion work is due and no dispatcher lease/backoff blocks another run. The Queue handler rechecks eligibility and atomically reserves a dispatch ticket before calling GitHub. The scheduling and job-claim paths share the same database-clock predicate: due pending/waiting jobs or expired processing leases, with either no assigned account or an enabled owning account. Empty installations, future-only work, and disabled-account work do not start a workflow.
+
+Migration `0007` adds `platform_ingestion_dispatch`, a private operational table with at most one row per backend database. It is created empty; even its first row is inserted only when due work exists. Tickets and active workflow ownership are never restored from a source snapshot.
+
+| State | Bound | Meaning |
+|---|---|---|
+| Provisional queued ticket | 5 minutes | A request may be in flight or its delivery may be uncertain. |
+| Accepted queued ticket | 45 minutes | GitHub returned the expected HTTP 204; the workflow has not necessarily started. |
+| Running ticket | 40 minutes | A specific GitHub run ID and attempt claimed it; the workflow timeout is 35 minutes. |
+| Individual ingestion job | 20 minutes | A separate job token fences catalog writes and completion. |
+
+Reservation, start and job-claim expiry checks use D1's clock. The ticket is a nonsecret identifier; `CATALOG_KEY` authenticates lifecycle requests. Before provider work, the workflow calls `/api/catalog/runner/start` with its ticket, expected environment, GitHub run ID and run attempt. A duplicate or delayed invocation cannot take another run's ownership. Retrying the same successful start is idempotent and does not extend its deadline. Each subsequent automatic job claim must retain that running ownership as well as acquire its own job lease.
+
+The workflow's finalizer calls `/api/catalog/runner/finish` with the same identity and a finite outcome. Retrying an already-applied finish with the same identity/outcome is read-only and succeeds; an old finish cannot release a replacement ticket. Failed or cancelled finishes set a three-minute cooldown before another dispatch. Runner loss or an unavailable finalizer leaves an expiring lease, without claiming that any unfinished catalog jobs completed.
+
+A lost/failed GitHub response, including an unexpected successful status other than 204, retains delivery uncertainty. It does not immediately free a request that GitHub might have accepted. Repeated delivery failures back off from five minutes to a maximum of one hour; successful acceptance or start resets that delivery-failure counter. Late HTTP responses cannot downgrade a running owner or modify its successor. Queue duplicates therefore coalesce, while expired tickets can be replaced when eligible work remains. These bounds provide recovery; they do not guarantee GitHub queue latency or processing completion time.
 
 ## Durable state and retries
 
-`platform_ingestion_jobs` stores discovery, account scans, and video-readiness work. The unique key is `(source, kind, source_id)`. Claims are atomic, expire after twenty minutes, and issue a unique lease token. Expired jobs can be reclaimed; stale runners cannot finish or mutate catalog state under the replacement's lease.
+`platform_ingestion_jobs` stores discovery, account scans, and video-readiness work. The unique key is `(source, kind, source_id)`. Claims are atomic, expire after twenty minutes, and issue a unique lease token. Expired jobs can be reclaimed; stale runners cannot finish or mutate catalog state under the replacement's lease. Replacing a workflow ticket does not steal an unexpired individual job lease.
 
-Every automatic mutation carries its job identity/token: account discovery, candidate enqueueing, account attachment, video upsert, subscription renewal, and completion. The backend validates ownership in the same D1 transaction as the change. Manual catalog operations use the catalog credential without pretending to hold a job lease. The catalog credential exposes explicit operations rather than unrestricted database writes.
+Every automatic catalog mutation carries its job identity/token: account discovery, candidate enqueueing, account attachment, video upsert, subscription renewal, and completion. The backend validates ownership in the same D1 transaction as the change. Manual catalog operations use the catalog credential without pretending to hold a job lease. The catalog credential exposes explicit operations rather than unrestricted database writes.
 
 Discovery normally nominates up to 20 recent candidates per platform every six hours. Account scans become due every fifteen minutes. YouTube tracks uploads and streams separately. Each tab stores its previous first ID, an in-progress scan head, and the next playlist position. Catch-up continues in bounded pages until it reaches that previous head or the end; candidate persistence precedes cursor advancement. Inspected playlist slots, including unavailable entries, determine positional progress. Transient failures retain the last committed cursor.
 
@@ -51,6 +77,8 @@ Bilibili jobs process up to 20 parts per lease and continue by seen CID, rather 
 
 A notification arriving during active work sets `rerun_requested`. The finishing transaction schedules another pass rather than discarding that notification. GitHub runner crashes leave reclaimable leases; a failed individual job is recorded while the runner continues other healthy work. A run containing errors exits unsuccessfully so the workflow makes partial outages visible.
 
+Ingestion retries and OCR retries are separate. Expired OCR processing claims recover up to three attempts. Chunks persisted as failed after preparation, media, profile or decoder errors require an operator to use `/api/admin/retry-vod`. A rejected claim never takes ownership or replaces detections; a manual pending chunk may remain pending when the claim is rejected. The caller does not reset failed chunks to make automatic processing appear successful. Completed siblings remain preserved by the default retry mode.
+
 ## YouTube WebSub lifecycle
 
 The public Worker callback is `/functions/v1/youtube-webhook`. The Worker owns per-account callback capabilities, HMAC secrets, subscription requests, confirmations, and granted lease expiry in `youtube_websub_subscriptions`. Python requests `/api/catalog/subscriptions/renew`; it never receives those secrets or calls the hub with them.
@@ -61,12 +89,14 @@ The requested lease is ten days; renewal begins within twelve hours of expiry. T
 
 Delivery digest tombstones are retained for the account lifetime. WebSub deliveries contain no signed timestamp, so deleting those digests would let an old signed body wake processing again. Stable source IDs and guarded timelines additionally keep cataloging idempotent. A real public hub subscription/renewal and live-to-archive event still need hosted evidence beyond signed local fixtures.
 
-## Dedicated migration workflow
+## GitHub ingestion workflow
 
-`ingest-platforms.yml` accepts `workflow_dispatch` and `workflow_call`, requires `refs/heads/codex/cloudflare-validation`, uses GitHub environment `validation`, and serializes its runs. Both triggers expose the same controls:
+`ingest-platforms.yml` accepts `workflow_dispatch` and `workflow_call`. GitHub environment and branch must match exactly: `validation` → `codex/cloudflare-validation`, `dev` → `dev`, and `production` → `main`. Runs serialize within each environment. Both triggers expose the same controls:
 
 | Input | Default | Behavior |
 |---|---|---|
+| `environment` | `validation` | Backend/GitHub environment paired with the workflow branch |
+| `dispatch_ticket` | empty | Worker-generated dispatch identifier; leave empty for manual runs |
 | `source` | `none` | Optional enrollment platform: `none`, `youtube`, or `bilibili` |
 | `identity` | empty | Optional creator identity to enroll before draining jobs |
 | `discovery` | `false` | Include broad discovery jobs when true |
@@ -74,22 +104,26 @@ Delivery digest tombstones are retained for the account lifetime. WebSub deliver
 | `limit` | `30` | Maximum ingestion jobs to claim; integer from 1 through 100 |
 | `seconds` | `1200` | Budget for starting ingestion jobs; integer from 30 through 1200 |
 
-Discovery defaults off so initial platform tests can start with selected creators/recordings. The default drain remains thirty jobs/twenty minutes with OCR dispatch enabled. The CLI rejects out-of-range or noninteger budgets. It starts no new job after the budget expires, though an already-running bounded metadata operation may finish later. OCR dispatch, when enabled, happens after this drain and is separate from its time/job budget.
+For manual runs, discovery defaults off so initial platform tests can start with selected creators/recordings. Worker dispatches supply a ticket, `source=none`, empty `identity`, and `discovery=false`; ticket mode independently selects `--existing-work`, including previously requested discovery without initializing it. The preflight rejects automatic enrollment inputs before provider work. A superseded/expired ticket reports a skipped start and does no provider work.
+
+The default drain remains thirty jobs/twenty minutes with OCR dispatch enabled. The CLI rejects out-of-range or noninteger budgets. It starts no new job after the budget expires, though an already-running bounded metadata operation may finish later. OCR dispatch, when enabled, happens after this drain and is separate from its time/job budget. The start/finish helper retries lost lifecycle responses under the same identity, with a fixed maximum of three requests.
 
 For a short run of existing account/candidate jobs without broad discovery or OCR dispatch:
 
 ```bash
 gh workflow run ingest-platforms.yml --ref codex/cloudflare-validation \
-  -f source=none -f discovery=false -f dispatch=false -f limit=3 -f seconds=90
+  -f environment=validation -f source=none -f discovery=false -f dispatch=false -f limit=3 -f seconds=90
 ```
 
 This run still claims durable jobs and writes catalog/retry state; `dispatch=false` is not a dry run. Inputs enter task-specific environment variables and a quoted shell argument array, so numeric validation remains in the CLI and a false dispatch input does not fall back to true.
 
-The workflow has no automatic default-branch schedule. GitHub scheduled workflows are activated from the default branch; merely checking out a feature branch would not make a separate schedule exist. The validation pipeline can call ingestion after deployment, or the isolated control plane can explicitly dispatch it once platform behavior is verified. Initial validation must not require changes to the running production/default-branch workflow.
+The workflow has no GitHub schedule and currently has no checked-in `workflow_call` caller. The recurring implementation dispatches it from the Worker's existing provider schedule and Queue instead. Validation's deployment workflow ends after deployment/health checks; it does not enable provider processing or invoke ingestion. Existing dev/production live configuration remains outside this isolated validation work.
 
 Environment preflight verifies HTTPS origin, unauthenticated `/health`, and GitHub branch pairing before sending catalog/processor keys. The Worker separately checks the requested environment before dispatching OCR. Validation resource names, credentials, queues, and callbacks are separate from dev and production. Weekly deletion of the existing dev bucket does not apply to validation.
 
-The OCR dispatcher selects at most three due platform videos per ingestion run and retains the global active-chunk cap. Video count alone is not a source-hours budget: a long archive can create many pending chunks. Broad automatic enrollment should follow measured queue age, error rates, and processing cost, with an explicit capacity policy.
+The OCR dispatcher selects at most three due platform videos per ingestion run and retains the global active-chunk cap. Once provider scheduling is activated, the same three-minute `processPending` path independently dispatches remaining pending OCR chunks across sources, including a long recording's tail after earlier chunks finish. No ingestion poll is required merely to continue that OCR work. Validation's auth-only schedule does not provide this continuation.
+
+Video count alone is not a source-hours budget: a long archive can create many pending chunks. Broad discovery/enrollment should follow measured queue age, error rates, and processing cost, with an explicit capacity policy.
 
 ## Evidence to retain
 

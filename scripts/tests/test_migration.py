@@ -124,7 +124,13 @@ class MultiplatformMigrationTests(unittest.TestCase):
         manifest = json.loads((self.destination / 'manifest.json').read_text())
         self.assertEqual(manifest['schema_version'], 3)
         self.assertEqual(manifest['source_schema_version'], 3)
-        self.assertEqual(manifest['target_schema_version'], 6)
+        self.assertEqual(manifest['target_schema_version'], 7)
+        self.assertEqual(len(manifest['migrations']), 3)
+        self.assertEqual(len(manifest['target_migrations']), 7)
+        self.assertEqual(manifest['target_counts']['platform_ingestion_dispatch'], 0)
+        self.assertNotIn('platform_ingestion_dispatch', manifest['input_counts'])
+        self.assertNotIn('platform_ingestion_dispatch', manifest['output_counts'])
+        self.assertEqual(restored.execute('SELECT count(*) FROM platform_ingestion_dispatch').fetchone()[0], 0)
         self.assertEqual(manifest['target_counts']['clips'], 4)
         self.assertEqual(manifest['target_counts']['app_users'], 0)
         self.assertEqual(restored.execute('SELECT count(*) FROM clips').fetchone()[0], 4)
@@ -232,6 +238,50 @@ class MultiplatformMigrationTests(unittest.TestCase):
         (self.source / 'app_users.jsonl').write_text('{}\n')
         with self.assertRaisesRegex(ValueError, 'Unsupported snapshot tables'):
             conversion.convert(self.source, self.destination.with_name('source-auth-refused'))
+
+    def test_source_dispatch_tickets_are_not_accepted(self):
+        self.snapshot(self.records())
+        (self.source / 'platform_ingestion_dispatch.jsonl').write_text(
+            json.dumps({'id': 1, 'state': 'queued', 'ticket_id': 'old-environment-ticket'}) + '\n')
+        with self.assertRaisesRegex(ValueError, 'Unsupported snapshot tables'):
+            conversion.convert(self.source, self.destination)
+        self.assertFalse(self.destination.exists())
+
+    def test_import_refuses_dispatch_state_without_changing_ownership_or_triggers(self):
+        self.snapshot(self.records())
+        conversion.convert(self.source, self.destination)
+        for state in ('idle', 'queued', 'running'):
+            with self.subTest(state=state):
+                target = sqlite3.connect(':memory:')
+                self.addCleanup(target.close)
+                conversion.apply_schema(target, conversion.TARGET_SCHEMA_VERSION)
+                self.assertEqual(target.execute('SELECT count(*) FROM platform_ingestion_dispatch').fetchone()[0], 0)
+                target.execute('''INSERT INTO platform_ingestion_dispatch
+                    (id,ticket_id,state,lease_expires_at,next_attempt_at,last_attempt_at,run_id,run_attempt)
+                    VALUES(1,?,?,?,?,?,?,?)''', (
+                        'old-environment-ticket', state, None if state == 'idle' else '2099-01-01T00:00:00.000Z',
+                        '2026-09-08T00:00:00.000Z', '2026-09-08T00:00:00.000Z',
+                        '123456' if state == 'running' else None, '1' if state == 'running' else None))
+                owner = target.execute('SELECT * FROM platform_ingestion_dispatch').fetchall()
+                triggers = target.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger' ORDER BY name").fetchall()
+                with self.assertRaises(sqlite3.IntegrityError):
+                    target.executescript((self.destination / 'import.sql').read_text())
+                self.assertEqual(target.execute('SELECT * FROM platform_ingestion_dispatch').fetchall(), owner)
+                self.assertEqual(target.execute('SELECT count(*) FROM vods').fetchone()[0], 0)
+                self.assertEqual(target.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger' ORDER BY name").fetchall(), triggers)
+                self.assertEqual(target.execute('PRAGMA foreign_key_check').fetchall(), [])
+
+    def test_schema_six_target_is_refused_before_any_import_changes(self):
+        self.snapshot(self.records())
+        conversion.convert(self.source, self.destination)
+        target = sqlite3.connect(':memory:')
+        self.addCleanup(target.close)
+        conversion.apply_schema(target, 6)
+        before = target.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger' ORDER BY name").fetchall()
+        with self.assertRaisesRegex(sqlite3.OperationalError, 'platform_ingestion_dispatch'):
+            target.executescript((self.destination / 'import.sql').read_text())
+        self.assertEqual(target.execute('SELECT count(*) FROM vods').fetchone()[0], 0)
+        self.assertEqual(target.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger' ORDER BY name").fetchall(), before)
 
     def test_additive_migration_preserves_deleted_id_high_watermark(self):
         for preserve_live in [False, True]:

@@ -3,6 +3,7 @@ import { Twitch, type CatalogStats } from "./twitch";
 import { dispatch, pendingVideos, plan, recover } from "./processing";
 import { notify } from "./discord";
 import { cleanupAuth } from "./auth";
+import { dispatchIngestion, hasDueIngestionDispatch } from "./platform-ingestion-dispatch";
 
 export type Job = {
   type: string;
@@ -25,6 +26,8 @@ export async function enqueueCatalog(env: Env, after = 0) {
 }
 export async function processPending(env: Env) {
   await recover(env);
+  if (await hasDueIngestionDispatch(env))
+    await env.JOBS.send({ type: "platform-ingestion" });
   const vods = await pendingVideos(env);
   for (const v of vods) await env.JOBS.send({ type: "process", id: v.id });
   const outbox = await rows(
@@ -120,6 +123,8 @@ export async function handleJob(env: Env, job: Job) {
       return plan(env, Number(job.id));
     case "process":
       return dispatch(env, Number(job.id));
+    case "platform-ingestion":
+      return dispatchIngestion(env);
     case "notify":
       return notify(env, String(job.id));
     case "clear-dev-storage":

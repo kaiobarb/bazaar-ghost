@@ -54,8 +54,20 @@ class BackendClient:
     def get_chunk_details(self, chunk_id):
         return self._request(f'chunks/{chunk_id}')
 
-    def claim_chunk(self, chunk_id):
-        result = self._request(f'chunks/{chunk_id}/claim', 'POST', {'queued_at': os.getenv('QUEUED_AT') or None})
+    def claim_chunk(self, chunk_id, *, expected_profile, expected_old_templates):
+        # Bind this run's prepared crop to the catalog at the claim transition.
+        # The Worker validates and compares the operational fields atomically;
+        # malformed/missing preparation must never fall back to an unfenced claim.
+        if (not isinstance(expected_profile, dict) or type(expected_profile.get('id')) is not int
+                or expected_profile['id'] <= 0):
+            raise ValueError('The prepared SFDE_PROFILE must identify a saved catalog profile')
+        if type(expected_old_templates) is not bool:
+            raise ValueError('The prepared template selection must be boolean before claiming')
+        result = self._request(f'chunks/{chunk_id}/claim', 'POST', {
+            'queued_at': os.getenv('QUEUED_AT') or None,
+            'expected_profile': expected_profile,
+            'expected_old_templates': expected_old_templates,
+        })
         if result['claimed']:
             self.claims[chunk_id] = result['claim_token']
         return result['claimed']

@@ -24,6 +24,7 @@ beforeEach(async () => {
     "matchup_groups",
     "youtube_websub_deliveries",
     "youtube_websub_subscriptions",
+    "platform_ingestion_dispatch",
     "platform_ingestion_jobs",
     "chat_mentions",
     "notification_deliveries",

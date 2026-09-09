@@ -6,7 +6,7 @@ import json
 import time
 from typing import Any, Dict, Optional
 
-from catalog_api import api, fence
+from catalog_api import api, fence, runner_context
 from backend_environment import verify_backend
 from game_evidence import bazaar_evidence
 from catalog_youtube import ensure_account as youtube_account, normalize_video, channel_page
@@ -161,15 +161,19 @@ def dispatch_pending(limit: int, dry_run: bool = False) -> int:
     return result['dispatched']
 
 
-def run(limit: int, seconds: int, discovery: bool = True, dispatch: bool = False) -> Dict[str, Any]:
+def run(limit: int, seconds: int, discovery: bool = True, dispatch: bool = False,
+        initialize_discovery: bool = True) -> Dict[str, Any]:
     """Drain bounded work and report partial failures while preserving durable retries."""
-    if discovery:
+    context = runner_context()
+    if context and (initialize_discovery or not discovery):
+        raise ValueError('Automatic ingestion requires existing-work mode')
+    if discovery and initialize_discovery:
         for source in ('youtube', 'bilibili'):
             enqueue(source, 'discovery', 'bazaar')
     deadline = time.monotonic() + seconds
     summary = {'jobs': 0, 'errors': 0, 'cataloged': 0, 'dispatched': 0}
     while summary['jobs'] < limit and time.monotonic() < deadline:
-        jobs = api('jobs/claim', body={'include_discovery': discovery}, method='POST')
+        jobs = api('jobs/claim', body={'include_discovery': discovery, **context}, method='POST')
         if not jobs:
             break
         job = jobs[0]
@@ -208,7 +212,9 @@ def main() -> None:
     drain = commands.add_parser('run')
     drain.add_argument('--limit', type=int, default=30)
     drain.add_argument('--seconds', type=int, default=1200)
-    drain.add_argument('--no-discovery', action='store_true')
+    mode = drain.add_mutually_exclusive_group()
+    mode.add_argument('--no-discovery', action='store_true')
+    mode.add_argument('--existing-work', action='store_true', help='Drain existing discovery/candidates without initializing discovery')
     drain.add_argument('--dispatch', action='store_true', help='Dispatch up to three due videos in the selected backend environment')
     args = parser.parse_args()
     verify_backend()
@@ -218,7 +224,7 @@ def main() -> None:
     else:
         if not 1 <= args.limit <= 100 or not 30 <= args.seconds <= 1200:
             parser.error('Use 1-100 jobs and a 30-1200 second budget')
-        summary = run(args.limit, args.seconds, not args.no_discovery, args.dispatch)
+        summary = run(args.limit, args.seconds, not args.no_discovery, args.dispatch, not args.existing_work)
         print(json.dumps(summary))
         if summary['errors']:
             raise SystemExit(1)

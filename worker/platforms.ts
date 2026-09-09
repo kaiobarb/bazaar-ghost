@@ -3,6 +3,7 @@ import { body, decodeRow, HttpError, integer, now, one, requireValue, rows, stat
 import { accountIdentity, source, videoIdentity } from './sources';
 import { dispatch, normalizeRanges, pendingVideos, plan, recover } from './processing';
 import { renewSubscription } from './youtube-websub';
+import { CLAIMABLE_INGESTION, finishIngestionRunner, runnerOwnership, startIngestionRunner } from './platform-ingestion-dispatch';
 
 type Input = Record<string, any>;
 export function jobChecks(data: Input, scope = "", scopeArgs: unknown[] = []) {
@@ -189,12 +190,14 @@ export async function enqueueJob(env: Env,input: Input) {
 }
 export async function claimJob(env: Env,input: Input) {
   requireValue(input.include_discovery==null||typeof input.include_discovery==='boolean','Invalid discovery flag');
-  const time=now();
-  const job=await one(env,`UPDATE platform_ingestion_jobs SET status='processing',lease_token=?,lease_expires_at=?,last_attempt_at=?,attempts=attempts+1 WHERE id=(
+  const owner=runnerOwnership(env,input);
+  const checks=owner.automatic?[{sql:`SELECT ${owner.sql}`,args:owner.args}]:[];
+  const result=await atomic(env,checks,[statement(env,`UPDATE platform_ingestion_jobs SET status='processing',lease_token=?,
+    lease_expires_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+1200 seconds'),last_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),attempts=attempts+1 WHERE id=(
     SELECT j.id FROM platform_ingestion_jobs j LEFT JOIN platform_accounts a ON a.id=j.account_id
-    WHERE ((j.status IN('pending','waiting') AND j.next_attempt_at<=?) OR (j.status='processing' AND j.lease_expires_at<?))
-    AND (j.account_id IS NULL OR a.processing_enabled=1) AND (? OR j.kind<>'discovery') ORDER BY j.next_attempt_at,j.created_at,j.id LIMIT 1) RETURNING *`,
-    crypto.randomUUID(),new Date(Date.now()+1200_000).toISOString(),time,time,time,input.include_discovery??true);
+    WHERE ${CLAIMABLE_INGESTION} AND (? OR j.kind<>'discovery') ORDER BY j.next_attempt_at,j.created_at,j.id LIMIT 1)
+    AND ${owner.sql} RETURNING *`,crypto.randomUUID(),input.include_discovery??true,...owner.args)]);
+  const job=result[checks.length].results[0];
   return job?[decoded(job)]:[];
 }
 export async function finishJob(env: Env,input: Input) {
@@ -223,6 +226,8 @@ export async function catalogRoute(req:Request,env:Env) {
   else if(path==='/jobs/enqueue') result=await enqueueJob(env,data);
   else if(path==='/jobs/claim') result=await claimJob(env,data);
   else if(path==='/jobs/finish') result=await finishJob(env,data);
+  else if(path==='/runner/start'&&req.method==='POST') result=await startIngestionRunner(env,data);
+  else if(path==='/runner/finish'&&req.method==='POST') result=await finishIngestionRunner(env,data);
   else if(path==='/jobs/attach-account') {
     uuid(data.id);uuid(data.token);uuid(data.account_id);
     const checks=jobChecks({job_id:data.id,lease_token:data.token}, `AND j.kind='video' AND (j.account_id IS NULL OR j.account_id=?)

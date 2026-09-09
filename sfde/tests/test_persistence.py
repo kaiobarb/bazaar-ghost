@@ -5,6 +5,9 @@ from unittest.mock import Mock
 import pytest
 from backend_client import BackendClient
 
+PROFILE = {'id': 7, 'crop_region': [0.1, 0.2, 0.3, 0.4], 'igd_crop_region': [0.01, 0.02, 0.03, 0.04],
+           'custom_edge': None, 'opaque_edge': True}
+
 
 def test_processor_credentials_never_follow_an_http_redirect():
     from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -46,6 +49,7 @@ def client(monkeypatch):
     value.retry_attempts, value.claims = 2, {'abc': 'claim-token'}
     value._request = Mock(return_value={'storage_path': '/detections/123/abc/claim-token/detection_14.jpg'})
     monkeypatch.setattr('backend_client.time.sleep', lambda _: None)
+    monkeypatch.delenv('QUEUED_AT', raising=False)
     return value
 
 def matchup():
@@ -81,8 +85,53 @@ def test_missing_screenshot_is_not_published(client):
 
 def test_claim_token_is_kept_only_after_success(client):
     client._request.return_value = {'claimed': False, 'claim_token': None}
-    assert not client.claim_chunk('new')
+    assert not client.claim_chunk('new', expected_profile=PROFILE, expected_old_templates=False)
     assert 'new' not in client.claims
     client._request.return_value = {'claimed': True, 'claim_token': 'new-token'}
-    assert client.claim_chunk('new')
+    assert client.claim_chunk('new', expected_profile=PROFILE, expected_old_templates=False)
     assert client.claims['new'] == 'new-token'
+
+
+@pytest.mark.parametrize('old', [True, False])
+def test_claim_carries_prepared_profile_template_and_dispatch_fences(client, monkeypatch, old):
+    # Attest the actual parsed runtime values, even when ambient inputs differ.
+    monkeypatch.setenv('OLD_TEMPLATES', str(not old).lower())
+    monkeypatch.setenv('SFDE_PROFILE', '{"id":999}')
+    monkeypatch.setenv('QUEUED_AT', '2026-09-07T00:00:00.000Z')
+    client._request.return_value = {'claimed': True, 'claim_token': 'new-token'}
+    assert client.claim_chunk('new', expected_profile=PROFILE, expected_old_templates=old)
+    client._request.assert_called_once_with('chunks/new/claim', 'POST', {
+        'queued_at': '2026-09-07T00:00:00.000Z', 'expected_profile': PROFILE,
+        'expected_old_templates': old,
+    })
+
+
+@pytest.mark.parametrize('profile', [None, '', [], {}, {'id': True}, {'id': 0}, {'id': '7'}])
+def test_invalid_profile_never_sends_an_unfenced_claim(client, profile):
+    with pytest.raises(ValueError, match='SFDE_PROFILE'):
+        client.claim_chunk('new', expected_profile=profile, expected_old_templates=False)
+    client._request.assert_not_called()
+    assert 'new' not in client.claims
+
+
+@pytest.mark.parametrize('old', [None, 'false', 'true', 0, 1])
+def test_invalid_template_flag_never_sends_an_ambiguous_claim(client, old):
+    with pytest.raises(ValueError, match='template selection'):
+        client.claim_chunk('new', expected_profile=PROFILE, expected_old_templates=old)
+    client._request.assert_not_called()
+
+
+def test_missing_profile_or_template_cannot_fall_back_to_an_unfenced_claim(client):
+    for kwargs in ({}, {'expected_profile': PROFILE}, {'expected_old_templates': False}):
+        with pytest.raises(TypeError):
+            client.claim_chunk('new', **kwargs)
+    client._request.assert_not_called()
+
+
+def test_stale_profile_rejection_never_saves_a_claim_token_or_retries_without_fences(client):
+    client._request.side_effect = RuntimeError('Backend POST chunks/new/claim failed: HTTP 409')
+    with pytest.raises(RuntimeError, match='HTTP 409'):
+        client.claim_chunk('new', expected_profile=PROFILE, expected_old_templates=False)
+    assert client._request.call_count == 1
+    assert client._request.call_args.args[2]['expected_profile'] == PROFILE
+    assert 'new' not in client.claims

@@ -24,7 +24,7 @@ on:
         options: [validation, dev, production]
         default: validation
       sfde_profile:
-        description: Optional profile JSON override (defaults to the streamer's profile)
+        description: Optional saved catalog profile snapshot; differing ad hoc overrides fail claim
         type: string
       local:
         description: Use a prebuilt local image and skip rendition discovery
@@ -37,7 +37,7 @@ on:
         description: Dispatch timestamp supplied by the backend (leave blank for manual runs)
         type: string
       old_templates:
-        description: Use pre-August-2025 templates (480p only)
+        description: Require old templates (480p only); must match the catalog template era
         type: boolean
         default: false
 

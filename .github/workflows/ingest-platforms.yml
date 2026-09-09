@@ -2,6 +2,12 @@ name: Ingest platforms
 on:
   workflow_call:
     inputs:
+      environment:
+        type: string
+        default: validation
+      dispatch_ticket:
+        type: string
+        default: ''
       source:
         type: string
         default: none
@@ -22,6 +28,14 @@ on:
         default: 1200
   workflow_dispatch:
     inputs:
+      environment:
+        description: Backend environment paired with this branch
+        type: choice
+        options: [validation, dev, production]
+        default: validation
+      dispatch_ticket:
+        description: Backend dispatch identifier (leave empty for manual runs)
+        type: string
       source:
         description: Optional account enrollment platform
         type: choice
@@ -49,16 +63,20 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: platform-ingestion-validation
+  group: platform-ingestion-${{ inputs.environment }}
   cancel-in-progress: false
 jobs:
   ingest:
-    if: github.ref == 'refs/heads/codex/cloudflare-validation'
+    if: >-
+      (inputs.environment == 'validation' && github.ref == 'refs/heads/codex/cloudflare-validation') ||
+      (inputs.environment == 'dev' && github.ref == 'refs/heads/dev') ||
+      (inputs.environment == 'production' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
-    environment: validation
+    environment: ${{ inputs.environment }}
     timeout-minutes: 35
     env:
-      ENVIRONMENT: validation
+      ENVIRONMENT: ${{ inputs.environment }}
+      INGEST_DISPATCH_TICKET: ${{ inputs.dispatch_ticket }}
       BAZAARGHOST_API_URL: ${{ vars.BAZAARGHOST_API_URL }}
       BAZAARGHOST_CATALOG_KEY: ${{ secrets.BAZAARGHOST_CATALOG_KEY }}
       SOURCE: ${{ inputs.source || 'none' }}
@@ -69,24 +87,34 @@ jobs:
       INGEST_SECONDS: ${{ inputs.seconds }}
     steps:
       - uses: actions/checkout@v5
-      - name: Verify backend environment
-        run: python scripts/backend_environment.py
       - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
+      - name: Verify backend environment
+        run: python scripts/backend_environment.py
+      - name: Start ingestion runner
+        id: runner
+        run: python scripts/catalog_api.py runner-start
       - uses: denoland/setup-deno@v2
+        if: steps.runner.outputs.proceed == 'true'
         with:
           deno-version: v2.x
       - run: pip install 'yt-dlp[default]>=2026.7.4,<2027'
+        if: steps.runner.outputs.proceed == 'true'
       - name: Enroll optional account
-        if: inputs.identity != '' && inputs.source != 'none'
+        if: steps.runner.outputs.proceed == 'true' && steps.runner.outputs.automatic == 'false' && inputs.identity != '' && inputs.source != 'none'
         run: python scripts/platform_ingestion.py enroll --source "$SOURCE" --identity "$IDENTITY"
       - name: Run bounded platform ingestion
+        if: steps.runner.outputs.proceed == 'true'
         shell: bash
         run: |
           args=(run --limit "$INGEST_LIMIT" --seconds "$INGEST_SECONDS")
           if [ "$INGEST_DISPATCH" = true ]; then args+=(--dispatch); fi
-          if [ "$DISCOVERY" != true ]; then args+=(--no-discovery); fi
+          if [ -n "$INGEST_DISPATCH_TICKET" ]; then
+            args+=(--existing-work)
+          elif [ "$DISCOVERY" != true ]; then
+            args+=(--no-discovery)
+          fi
           set -o pipefail
           python scripts/platform_ingestion.py "${args[@]}" | tee ingestion-result.jsonl
       - uses: actions/upload-artifact@v4
@@ -95,3 +123,8 @@ jobs:
           name: platform-ingestion
           path: ingestion-result.jsonl
           if-no-files-found: ignore
+      - name: Finish automatic ingestion runner
+        if: always() && steps.runner.outputs.proceed == 'true' && steps.runner.outputs.automatic == 'true'
+        env:
+          INGEST_OUTCOME: ${{ job.status }}
+        run: python scripts/catalog_api.py runner-finish

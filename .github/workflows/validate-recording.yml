@@ -12,16 +12,16 @@ on:
         required: true
         type: string
       source:
-        description: Reviewed source (temporary runner supports YouTube)
+        description: Reviewed source (Twitch requires an existing catalog entry and pending plan)
         required: true
         type: choice
-        options: [youtube]
+        options: [youtube, twitch]
       video_id:
-        description: Exact public YouTube video ID
+        description: Exact public video ID for the selected source
         required: true
         type: string
       ranges:
-        description: Reviewed gameplay seconds, e.g. [0,900]; at most 3 ranges and 3600 seconds
+        description: Reviewed seconds, e.g. [0,900]; at most 12 ranges of 1800 seconds each, six hours total
         required: true
         type: string
       templates:
@@ -41,7 +41,7 @@ on:
         type: choice
         options: [360p, 480p, 720p, 1080p]
       recorded_at:
-        description: Known gameplay recording start, ISO timestamp with timezone; otherwise blank
+        description: YouTube only, known recording start with ISO timezone; leave blank for Twitch
         type: string
       minimum_detections:
         description: Minimum high-confidence public detections required for success
@@ -61,13 +61,15 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/cloudflare-validation' && startsWith(inputs.runner_label, 'bazaarghost-validation-')
     runs-on: ${{ inputs.runner_label }}
     environment: validation
-    timeout-minutes: 90
+    # Twelve sequential chunks at 2000 seconds each, plus 50 minutes for
+    # checkout, preparation, public/JPEG verification and artifact upload.
+    timeout-minutes: 450
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Catalog, prepare, process sequentially and verify persistence
+      - name: Verify catalog, prepare, process sequentially and verify persistence
         env:
           ENVIRONMENT: validation
           BAZAARGHOST_API_URL: ${{ vars.BAZAARGHOST_API_URL }}

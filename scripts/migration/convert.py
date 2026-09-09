@@ -209,8 +209,8 @@ def convert(source, destination):
         triggers = db.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger' ORDER BY name").fetchall()
         output_counts = {table: db.execute(f'SELECT count(*) FROM {table}').fetchone()[0] for table in IMPORT_TABLES}
         # Validate the old application snapshot separately from the complete deployment
-        # schema. New auth/social tables are never source import tables, but an existing
-        # user or moderation record still makes the target unsafe for a fresh import.
+        # schema. New auth/social/dispatcher tables are never source import tables,
+        # but any existing row makes the target unsafe for a fresh import.
         with closing(sqlite3.connect(':memory:')) as target:
             apply_schema(target, TARGET_SCHEMA_VERSION)
             target_tables = [row[0] for row in target.execute(
@@ -250,7 +250,8 @@ def convert(source, destination):
                                  'websub_subscriptions': 'unconfirmed; renew only after target cutover review',
                                  'websub_delivery_receipts': 'retained', 'ingestion_jobs': 'retained; active leases refused',
                                  'auth': 'source auth is excluded; target auth and social tables must be empty',
-                                 'target': 'full schema 0001–0006 required; clips derive from imported detections'}}
+                                 'ingestion_dispatch': 'source dispatch state is excluded; target dispatcher table must be empty',
+                                 'target': f'full schema 0001–{TARGET_SCHEMA_VERSION:04d} required; clips derive from imported detections'}}
         private_json(destination / 'manifest.json', manifest)
         print(json.dumps({'counts': counts, 'absent_tables': sorted(absent), 'rotated_websub_subscriptions': counts['youtube_websub_subscriptions']}, indent=2))
         return counts

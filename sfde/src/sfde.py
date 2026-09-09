@@ -382,8 +382,8 @@ class SFDEProcessor:
         # Wrap entire processing in a root span
         with create_span("process_chunk", attributes=self.span_attributes, context=self.trace_context) as root_span:
             try:
-                if not self.backend.claim_chunk(self.chunk_id):
-                    raise ValueError(f'Chunk {self.chunk_id} is not pending or queued')
+                if not self.backend.claim_chunk(self.chunk_id, expected_profile=self.profile, expected_old_templates=self.old_templates):
+                    raise ValueError(f'Chunk {self.chunk_id} is unavailable, already claimed, or has changed profile/templates')
                 claimed = True
                 self.backend.delete_chunk_detections(self.chunk_id)
                 self.backend.update_chunk(self.chunk_id, 'processing', quality=self.formatted_quality)
