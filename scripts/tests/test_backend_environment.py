@@ -30,10 +30,10 @@ class EnvironmentTests(unittest.TestCase):
 
     def test_github_branch_and_environment_are_a_single_pair(self):
         values = {'BAZAARGHOST_API_URL': 'https://worker.example', 'ENVIRONMENT': 'validation',
-                  'GITHUB_ACTIONS': 'true', 'GITHUB_REF': 'refs/heads/codex/cloudflare-validation'}
+                  'GITHUB_ACTIONS': 'true', 'GITHUB_REF': 'refs/heads/migration/cloudflare'}
         with patch.dict(os.environ, values, clear=True):
             self.assertEqual(backend.selected_environment()[1], 'validation')
-            for ref in ('refs/heads/dev', 'refs/heads/main', 'refs/tags/codex/cloudflare-validation'):
+            for ref in ('refs/heads/dev', 'refs/heads/main', 'refs/tags/migration/cloudflare'):
                 with patch.dict(os.environ, {'GITHUB_REF': ref}):
                     with self.assertRaisesRegex(ValueError, 'branch'):
                         backend.selected_environment()

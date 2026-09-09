@@ -3,7 +3,7 @@ run-name: Validate ${{ inputs.source }} ${{ inputs.video_id }}
 on:
   # Register the branch-only workflow in GitHub; pushes never start a runner job.
   push:
-    branches: [codex/cloudflare-validation]
+    branches: [migration/cloudflare]
     paths: [.github/workflows/validate-recording.yml, 'scripts/validation_runner/**']
   workflow_dispatch:
     inputs:
@@ -58,7 +58,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   validate:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/cloudflare-validation' && startsWith(inputs.runner_label, 'bazaarghost-validation-')
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/migration/cloudflare' && startsWith(inputs.runner_label, 'bazaarghost-validation-')
     runs-on: ${{ inputs.runner_label }}
     environment: validation
     # Twelve sequential chunks at 2000 seconds each, plus 50 minutes for

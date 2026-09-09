@@ -68,7 +68,7 @@ concurrency:
 jobs:
   ingest:
     if: >-
-      (inputs.environment == 'validation' && github.ref == 'refs/heads/codex/cloudflare-validation') ||
+      (inputs.environment == 'validation' && github.ref == 'refs/heads/migration/cloudflare') ||
       (inputs.environment == 'dev' && github.ref == 'refs/heads/dev') ||
       (inputs.environment == 'production' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest

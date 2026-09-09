@@ -4,7 +4,7 @@
 
 Integrate the multiplatform backend from thread `01a07a18-dac2-7571-993b-3c00d035afd7` into the Cloudflare migration, deploy and validate a dedicated environment, then implement backend user authentication and clip likes, comments, and favorites. OCR and all workflow execution remain in GitHub Actions. Existing production and the separate frontend repository must remain untouched.
 
-Work branch: `codex/cloudflare-validation`, starting at migration commit `6a6d0ae`. Reviewed source platform commits: `c7c3863` and `ec4b870` on `dev`. The first integrated platform commit is `2923d2a`.
+Work branch: `migration/cloudflare`, starting at migration commit `6a6d0ae`. Reviewed source platform commits: `c7c3863` and `ec4b870` on `dev`. The first integrated platform commit is `2923d2a`.
 
 ## Current state — 2026-09-08, after profile-claim deployment
 

@@ -88,10 +88,10 @@ it('groups reviewed appearances before pagination and retains every surviving pl
  expect((await rows(env,'SELECT * FROM matchup_review_events')).length).toBe(2);
 });
 it('dispatches validation jobs only from the validation branch and rejects unrecognized environments',async()=>{
- expect(dispatchBranch('validation')).toBe('codex/cloudflare-validation');expect(()=>dispatchBranch('test')).toThrow();
+ expect(dispatchBranch('validation')).toBe('migration/cloudflare');expect(()=>dispatchBranch('test')).toThrow();
  const v=await catalog();
  const fetchMock=vi.fn(async(_url:RequestInfo|URL,_init?:RequestInit)=>new Response(null,{status:204}));vi.stubGlobal('fetch',fetchMock);
  await dispatch({...env,ENVIRONMENT:'validation',OUTBOUND_ENABLED:'true',GITHUB_TOKEN:'test'},v.id);
  const payload=JSON.parse(fetchMock.mock.calls[0][1]!.body as string);
- expect(payload.ref).toBe('codex/cloudflare-validation');expect(payload.inputs.source).toBe('youtube');expect(payload.inputs.environment).toBe('validation');
+ expect(payload.ref).toBe('migration/cloudflare');expect(payload.inputs.source).toBe('youtube');expect(payload.inputs.environment).toBe('validation');
 });

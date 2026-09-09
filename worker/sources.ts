@@ -23,7 +23,7 @@ export function accountIdentity(platform: Source, value: unknown): string {
   return value;
 }
 export function dispatchBranch(environment: string) {
-  const branches: Record<string, string> = { dev: "dev", production: "main", validation: "codex/cloudflare-validation" };
+  const branches: Record<string, string> = { dev: "dev", production: "main", validation: "migration/cloudflare" };
   requireValue(Object.hasOwn(branches, environment), "Dispatch requires dev, production or validation environment");
   return branches[environment];
 }

@@ -4,7 +4,7 @@ This is the acceptance record for the dedicated Cloudflare migration environment
 
 ## Environment and execution
 
-- Branch: `codex/cloudflare-validation`; existing `dev`, `main`, and the separate frontend remain untouched.
+- Branch: `migration/cloudflare`; existing `dev`, `main`, and the separate frontend remain untouched.
 - Hosted Worker: `bazaarghost-validation`, at `https://bazaarghost-validation.kaio-8df.workers.dev`.
 - Verified deployed application: `1fea42911143514376882d9345fe5ce1f803c230`; Worker version `20fa6904-f2c2-4f2b-8ca6-5ea78a6685b7`; migrations `0001`–`0007` applied.
 - D1, both R2 buckets, the queue, and dead-letter queue belong to validation. Auth is enabled; outbound integrations are disabled. The provider endpoint reports no configured login providers. Auth maintenance at `* * * * *` is the only configured Cron; actual successful minute invocations and an expired-counter deletion have been observed.

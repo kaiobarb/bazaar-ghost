@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
-BRANCHES = {'validation': 'codex/cloudflare-validation', 'dev': 'dev', 'production': 'main'}
+BRANCHES = {'validation': 'migration/cloudflare', 'dev': 'dev', 'production': 'main'}
 USER_AGENT = 'BazaarGhost/1.0 (+https://github.com/liftaris/bazaar-ghost)'
 
 

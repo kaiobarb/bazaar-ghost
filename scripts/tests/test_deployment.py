@@ -51,7 +51,7 @@ class DeploymentTests(unittest.TestCase):
                 self.assertEqual(config['vars']['OUTBOUND_ENABLED'], 'false')
 
     def test_rejects_cross_environment_branch_and_tags(self):
-        for ref in ['refs/heads/dev', 'refs/heads/main', 'refs/tags/codex/cloudflare-validation']:
+        for ref in ['refs/heads/dev', 'refs/heads/main', 'refs/tags/migration/cloudflare']:
             with self.subTest(ref=ref), self.assertRaisesRegex(ValueError, 'requires branch'):
                 self.validate(ref=ref)
 

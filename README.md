@@ -36,7 +36,7 @@ python3 -m unittest discover -s scripts/tests
 npm run build  # dry-run bundle; does not deploy
 ```
 
-See [Cloudflare setup, API contracts, migration and cutover](docs/cloudflare-migration.md) for the real local OCR smoke test and deployment prerequisites. See [SFDE usage](sfde/README.md) for processor details. The dedicated `codex/cloudflare-validation` branch and GitHub `validation` environment isolate platform testing from existing dev/production. See [work log and verification](docs/platform-work-log.md) for current deployment status.
+See [Cloudflare setup, API contracts, migration and cutover](docs/cloudflare-migration.md) for the real local OCR smoke test and deployment prerequisites. See [SFDE usage](sfde/README.md) for processor details. The dedicated `migration/cloudflare` branch and GitHub `validation` environment isolate platform testing from existing dev/production. See [work log and verification](docs/platform-work-log.md) for current deployment status.
 
 ## Layout
 

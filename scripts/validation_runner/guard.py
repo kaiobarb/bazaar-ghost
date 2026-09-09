@@ -2,7 +2,7 @@
 import os
 
 REPOSITORY = 'liftaris/bazaar-ghost'
-REF = 'refs/heads/codex/cloudflare-validation'
+REF = 'refs/heads/migration/cloudflare'
 WORKFLOW = f'{REPOSITORY}/.github/workflows/validate-recording.yml@{REF}'
 
 

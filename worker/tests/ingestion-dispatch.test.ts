@@ -57,7 +57,7 @@ it('uses the existing provider cadence, including requested discovery, but never
   log.mockRestore();
 });
 
-it.each([['validation', 'codex/cloudflare-validation'], ['dev', 'dev'], ['production', 'main']])('dispatches exact bounded %s workflow inputs and coalesces concurrent delivery', async (environment, branch) => {
+it.each([['validation', 'migration/cloudflare'], ['dev', 'dev'], ['production', 'main']])('dispatches exact bounded %s workflow inputs and coalesces concurrent delivery', async (environment, branch) => {
   await candidate();
   const context = { ...runtime(), ENVIRONMENT: environment };
   const outcomes = await Promise.all([dispatchIngestion(context), dispatchIngestion(context), dispatchIngestion(context)]);
@@ -228,7 +228,7 @@ it('connects a requested candidate through catalog planning, workflow dispatch, 
     expect(pending).toEqual([{ type: 'process', id: video.id }]);
     await handleJob(context, pending.shift());
     const request = JSON.parse(vi.mocked(fetch).mock.calls.at(-1)![1]!.body as string);
-    expect(request.inputs.source).toBe('youtube'); expect(request.ref).toBe('codex/cloudflare-validation');
+    expect(request.inputs.source).toBe('youtube'); expect(request.ref).toBe('migration/cloudflare');
     const ids = JSON.parse(request.inputs.chunk_uuids); expect(ids).toHaveLength(expected);
     for (const id of ids) {
       const token = (await claim(env, id, request.inputs.queued_at)).claim_token!;

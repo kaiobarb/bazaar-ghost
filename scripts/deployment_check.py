@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BRANCHES = {
     'dev': 'refs/heads/dev',
     'production': 'refs/heads/main',
-    'validation': 'refs/heads/codex/cloudflare-validation',
+    'validation': 'refs/heads/migration/cloudflare',
 }
 ZERO_UUID = '00000000-0000-0000-0000-000000000000'
 

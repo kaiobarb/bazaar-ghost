@@ -30,7 +30,7 @@ Conversion validates the source with schema3, emits only the explicitly supporte
 For the dedicated validation environment, inspect the actual bound database and pass deployment preflight before any remote import:
 
 ```sh
-python scripts/deployment_check.py validation --ref refs/heads/codex/cloudflare-validation
+python scripts/deployment_check.py validation --ref refs/heads/migration/cloudflare
 ```
 
 Verify output table counts against `manifest.json`, run `PRAGMA foreign_key_check`, inspect source-specific video/search results and stored screenshot objects, and confirm there are no pending historical notification records. Database import does not copy R2/storage objects. No source export or hosted import is performed automatically by tests or deployment.

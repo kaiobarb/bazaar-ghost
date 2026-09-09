@@ -91,7 +91,7 @@ Delivery digest tombstones are retained for the account lifetime. WebSub deliver
 
 ## GitHub ingestion workflow
 
-`ingest-platforms.yml` accepts `workflow_dispatch` and `workflow_call`. GitHub environment and branch must match exactly: `validation` → `codex/cloudflare-validation`, `dev` → `dev`, and `production` → `main`. Runs serialize within each environment. Both triggers expose the same controls:
+`ingest-platforms.yml` accepts `workflow_dispatch` and `workflow_call`. GitHub environment and branch must match exactly: `validation` → `migration/cloudflare`, `dev` → `dev`, and `production` → `main`. Runs serialize within each environment. Both triggers expose the same controls:
 
 | Input | Default | Behavior |
 |---|---|---|
@@ -111,7 +111,7 @@ The default drain remains thirty jobs/twenty minutes with OCR dispatch enabled. 
 For a short run of existing account/candidate jobs without broad discovery or OCR dispatch:
 
 ```bash
-gh workflow run ingest-platforms.yml --ref codex/cloudflare-validation \
+gh workflow run ingest-platforms.yml --ref migration/cloudflare \
   -f environment=validation -f source=none -f discovery=false -f dispatch=false -f limit=3 -f seconds=90
 ```
 

@@ -1,10 +1,10 @@
 name: Cloudflare Validation
 on:
   push:
-    branches: [codex/cloudflare-validation]
+    branches: [migration/cloudflare]
     paths: ["sfde/**", "worker/**", "package*.json", "wrangler*.jsonc", "vitest.config.ts", "tsconfig.json", "scripts/**", ".github/workflows/**"]
   pull_request:
-    branches: [codex/cloudflare-validation]
+    branches: [migration/cloudflare]
     paths: ["sfde/**", "worker/**", "package*.json", "wrangler*.jsonc", "vitest.config.ts", "tsconfig.json", "scripts/**", ".github/workflows/**"]
   workflow_dispatch:
 permissions:
@@ -17,7 +17,7 @@ jobs:
     uses: ./.github/workflows/test-sfde.yml
   deploy:
     needs: verify
-    if: github.ref == 'refs/heads/codex/cloudflare-validation' && github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/migration/cloudflare' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: validation
     timeout-minutes: 15

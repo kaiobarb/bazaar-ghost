@@ -22,7 +22,7 @@ The Bilibili adapter uses public web endpoints, not an approved developer API in
 
 Supply `BAZAARGHOST_API_URL`, `BAZAARGHOST_CATALOG_KEY`, and `ENVIRONMENT` explicitly. The CLI does not source `.env` files. `ENVIRONMENT=local` requires a localhost origin; hosted environments require HTTPS. Every command verifies the unauthenticated `/health` environment before sending credentials. Redirects are refused.
 
-For hosted migration testing, select `ENVIRONMENT=validation` and the dedicated validation Worker. GitHub jobs must run on `codex/cloudflare-validation` with the `validation` GitHub environment. Do not point these jobs at the existing Supabase dev or production services.
+For hosted migration testing, select `ENVIRONMENT=validation` and the dedicated validation Worker. GitHub jobs must run on `migration/cloudflare` with the `validation` GitHub environment. Do not point these jobs at the existing Supabase dev or production services.
 
 ```bash
 # Catalog only a reviewed 900-second range of a current YouTube upload.
